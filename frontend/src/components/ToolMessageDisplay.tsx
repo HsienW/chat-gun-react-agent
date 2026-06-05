@@ -21,42 +21,42 @@ interface ToolMessageDisplayProps {
   onToggle: () => void;
 }
 
-// Tool execution 狀態 indicators
 const getStatusBadge = (toolMessage?: ToolMessage) => {
   if (!toolMessage) {
     return (
       <Badge
         variant="secondary"
-        className="bg-amber-500/10 text-amber-600 border-amber-500/20 text-xs font-medium"
+        className="bg-amber-500/10 text-amber-500 border-amber-500/20 text-xs font-medium"
       >
         <Clock className="h-3 w-3 mr-1" />
         執行中
       </Badge>
     );
   }
+
   if (toolMessage.is_error) {
     return (
       <Badge
         variant="destructive"
-        className="bg-red-500/10 text-red-600 border-red-500/20 text-xs font-medium"
+        className="bg-red-500/10 text-red-400 border-red-500/20 text-xs font-medium"
       >
         <XCircle className="h-3 w-3 mr-1" />
         錯誤
       </Badge>
     );
   }
+
   return (
     <Badge
       variant="default"
-      className="mr-2 bg-green-500/10 text-green-600 border-green-500/20 text-xs font-medium"
+      className="mr-2 bg-green-500/10 text-green-500 border-green-500/20 text-xs font-medium"
     >
       <CheckCircle className="h-3 w-3 mr-1" />
-      成功
+      完成
     </Badge>
   );
 };
 
-// Inputs/outputs 的 JSON syntax highlighting
 const JsonDisplay = ({ data, title }: { data: unknown; title: string }) => (
   <div className="space-y-2">
     <h4 className="text-xs font-medium text-[#E7D9C1]/70 uppercase tracking-wider">
@@ -77,7 +77,7 @@ export function ToolMessageDisplay({
   onToggle,
 }: ToolMessageDisplayProps) {
   return (
-    <div className="border border-border bg-card/70 rounded-lg overflow-hidden mt-4 mb-4 min-w-0">
+    <div className="border border-border bg-card/70 rounded-lg overflow-hidden mt-4 mb-2 min-w-0">
       <Collapsible open={isExpanded} onOpenChange={onToggle}>
         <CollapsibleTrigger asChild>
           <button className="w-full px-4 py-3 hover:bg-[#7A1E1E]/20 transition-all duration-200 text-left focus:outline-none focus:bg-[#7A1E1E]/20">
@@ -115,12 +115,10 @@ export function ToolMessageDisplay({
         >
           <div className="px-4 pb-4 space-y-4 border-t border-border overflow-x-auto">
             <div className="pt-4 min-w-0">
-              {/* Tool inputs */}
               {Object.keys(toolCall.args).length > 0 && (
                 <JsonDisplay data={toolCall.args} title="輸入" />
               )}
 
-              {/* Tool outputs */}
               {toolMessage && (
                 <div className="space-y-2 mt-4">
                   <h4 className="text-xs font-medium text-[#E7D9C1]/70 uppercase tracking-wider">
@@ -149,7 +147,6 @@ export function ToolMessageDisplay({
                 </div>
               )}
 
-              {/* 若尚未收到 tool message，顯示等待訊息 */}
               {!toolMessage && (
                 <div className="text-xs text-[#E7D9C1]/60 italic mt-4 p-3 bg-[#2B1C17]/40 rounded-lg border border-[#5A4036]/50">
                   <div className="flex items-center gap-2">

@@ -163,9 +163,9 @@ cd frontend && npm run dev
 
 ## MCP 設定
 
-MCP 是選用功能，主要影響 `mcp_agent`。
+MCP 是選用功能，會被共用 tool registry 載入，因此可同時擴充 `deep_researcher` 與 `mcp_agent`。
 
-依照目前 `backend/src/agents/mcp-agent.ts` 的實作，MCP tools 只有在 `MCP_LOAD_ON_START=true` 時才會載入；否則 `mcp_agent` 只會使用本地 `calculator_tool`。
+依照目前 `backend/src/tools/registry.ts` 的實作，MCP tools 只有在 `MCP_LOAD_ON_START=true` 時才會載入；否則 agent 仍會使用 native tools：`calculator_tool`、`web_search`、`web_fetch`、`current_weather`。
 
 `backend/.env.example` 預設是：
 
@@ -188,6 +188,7 @@ BRAVE_API_KEY=
 
 - Filesystem MCP 啟用時會透過 `npx -y @modelcontextprotocol/server-filesystem` 啟動。
 - `MCP_FILESYSTEM_PATH` 請設定成本機存在且允許讀取的路徑。
+- `BRAVE_API_KEY` 同時供 native `web_search` 與 Brave MCP server 使用。
 - 只有在 `BRAVE_API_KEY` 有效時才把 `MCP_BRAVE_SEARCH_ENABLED` 設成 `true`。
 - 一般本地流程不需要全域安裝 MCP servers；目前 backend dependencies 已包含 filesystem server。
 
@@ -197,10 +198,17 @@ BRAVE_API_KEY=
 
 - `chatbot`：純 LLM 對話，沒有 tool calling。
 - `math_agent`：使用本地 `calculator_tool`。
-- `mcp_agent`：使用 `ToolNode` 與 `bindTools`，可載入本地工具與 MCP tools。
-- `deep_researcher`：目前流程名稱包含 research，但程式內不是實際 web search。
+- `mcp_agent`：使用 `ToolNode` 與 `bindTools`，可載入 native tools 與 MCP tools。
+- `deep_researcher`：使用真正的 tool-calling graph：`call_model -> tools -> call_model`，必要時進 `finalize_answer` 收斂。
 
-若需要查詢即時天氣、即時新聞或其他外部資料，請使用 `mcp_agent` 並啟用對應 MCP/search tool，或新增專用 tool。
+Native tools：
+
+- `web_search`：呼叫 Brave Search API，需要 `BRAVE_API_KEY`。
+- `web_fetch`：抓取公開 HTTP/HTTPS URL 並抽取可讀文字。
+- `current_weather`：呼叫 Open-Meteo current weather API，不需要 API key。
+- `calculator_tool`：本地數學計算。
+
+若需要查詢即時新聞、法規、產品規格等外部資料，請設定 `BRAVE_API_KEY`。如果需要公司內部系統、資料庫或專用 SaaS，建議新增對應 MCP server 或 native tool，並透過 `backend/src/tools/registry.ts` 納入 tool registry。
 
 ## 驗證指令
 
@@ -224,7 +232,7 @@ npm run build
 
 Docker Compose 會建置 frontend 與 backend，並將 LangGraph API image 暴露在主機 port `8123`。
 
-目前 `docker-compose.yml` 會傳入 `MCP_FILESYSTEM_ENABLED`、`MCP_FILESYSTEM_PATH`、`MCP_BRAVE_SEARCH_ENABLED`、`BRAVE_API_KEY`，但沒有傳入 `MCP_LOAD_ON_START`。因此依照目前實際配置，Docker Compose 模式下 MCP external tools 不會自動載入；`mcp_agent` 仍會有本地 `calculator_tool`。
+目前 `docker-compose.yml` 會傳入 `MCP_LOAD_ON_START`、`MCP_FILESYSTEM_ENABLED`、`MCP_FILESYSTEM_PATH`、`MCP_BRAVE_SEARCH_ENABLED`、`BRAVE_API_KEY`。Docker Compose 模式下如需 MCP external tools，請設定 `MCP_LOAD_ON_START=true`；native tools 則會隨 agent 啟動載入。
 
 PowerShell：
 

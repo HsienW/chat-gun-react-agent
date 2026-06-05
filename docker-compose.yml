@@ -43,6 +43,7 @@ services:
       REDIS_URI: redis://langgraph-redis:6379
       POSTGRES_URI: postgres://postgres:postgres@langgraph-postgres:5432/postgres?sslmode=disable
       # MCP 設定
+      MCP_LOAD_ON_START: ${MCP_LOAD_ON_START}
       MCP_FILESYSTEM_ENABLED: ${MCP_FILESYSTEM_ENABLED}
       MCP_FILESYSTEM_PATH: ${MCP_FILESYSTEM_PATH}
       MCP_BRAVE_SEARCH_ENABLED: ${MCP_BRAVE_SEARCH_ENABLED}

@@ -82,3 +82,28 @@ ${researchTopic}
 Research summaries:
 ${summaries}`;
 }
+
+export function buildToolCallingResearchSystemMessage(maxToolCalls: number): string {
+  return `你是具備真實外部工具調用能力的 research agent。
+
+Core behavior:
+- 需要即時、近期、可變動、專門資料或需要來源佐證時，必須先使用工具，不要憑模型記憶回答。
+- 可用工具包含 web_search、web_fetch、current_weather、calculator_tool，以及環境啟用的 MCP tools。
+- web_search 用來找候選來源；web_fetch 用來讀取重要來源頁面；current_weather 用於即時天氣；calculator_tool 用於可驗算數值。
+- 如果工具回傳 Error 或缺少 API key，要明確告知限制，不要編造資料。
+- 回答需要引用工具結果中的來源 URL、觀測時間或查詢時間。
+- 對同一任務最多規劃 ${maxToolCalls} 次 tool calls；優先選擇最能降低不確定性的工具。
+- 使用繁體中文回答，保留 tool name、URL、API name 等技術字眼。
+
+Today: ${getCurrentDate()}`;
+}
+
+export function buildForcedFinalResearchPrompt(): string {
+  return `請根據目前 conversation 和 tool results 產出最終答案。
+
+Rules:
+- 不要再呼叫工具。
+- 清楚區分「工具已驗證」與「工具無法取得」的資訊。
+- 如果資料不足，直接說明缺口與需要設定的外部工具或 API key。
+- 對有來源的資訊附上 URL、資料來源名稱或觀測時間。`;
+}

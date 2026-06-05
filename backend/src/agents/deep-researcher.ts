@@ -1,32 +1,22 @@
-import { BaseMessage } from "@langchain/core/messages";
+import { AIMessage, BaseMessage } from "@langchain/core/messages";
 import { RunnableConfig } from "@langchain/core/runnables";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
+import { ToolNode } from "@langchain/langgraph/prebuilt";
 
 import {
-  buildQueryWriterPrompt,
-  buildResearchAnswerPrompt,
+  buildForcedFinalResearchPrompt,
+  buildToolCallingResearchSystemMessage,
 } from "../prompts.js";
 import { llmGateway, resolveModel } from "../platform/llm-gateway.js";
-import { getResearchTopic, messageContentToString } from "../state.js";
+import { messageContentToString } from "../state.js";
+import { loadAgentTools } from "../tools/registry.js";
+import { normalizeAiMessageForStream } from "./message-normalization.js";
+
+const DEFAULT_RESEARCH_MODEL = "gemini-2.5-flash";
+const DEFAULT_TOOL_LOOP_BUDGET = 6;
 
 const DeepResearchState = Annotation.Root({
   messages: Annotation<BaseMessage[]>({
-    reducer: (left, right) => left.concat(right),
-    default: () => [],
-  }),
-  query_list: Annotation<string[]>({
-    reducer: (_left, right) => right,
-    default: () => [],
-  }),
-  search_query: Annotation<string[]>({
-    reducer: (left, right) => left.concat(right),
-    default: () => [],
-  }),
-  web_research_result: Annotation<string[]>({
-    reducer: (left, right) => left.concat(right),
-    default: () => [],
-  }),
-  sources_gathered: Annotation<Array<Record<string, unknown>>>({
     reducer: (left, right) => left.concat(right),
     default: () => [],
   }),
@@ -36,161 +26,183 @@ const DeepResearchState = Annotation.Root({
   }),
   max_research_loops: Annotation<number>({
     reducer: (_left, right) => right,
-    default: () => 1,
-  }),
-  research_loop_count: Annotation<number>({
-    reducer: (_left, right) => right,
-    default: () => 0,
+    default: () => DEFAULT_TOOL_LOOP_BUDGET,
   }),
   reasoning_model: Annotation<string>({
     reducer: (_left, right) => right,
-    default: () => "gemini-2.5-flash",
+    default: () => DEFAULT_RESEARCH_MODEL,
   }),
 });
 
-function extractJsonCandidate(text: string): string {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-  if (fenced) {
-    return fenced.trim();
+const tools = await loadAgentTools("deep_researcher");
+const toolNode = new ToolNode(tools);
+
+type MessageWithToolCalls = BaseMessage & {
+  tool_calls?: unknown[];
+};
+
+function extractToolCalls(message: BaseMessage | undefined): unknown[] {
+  const maybeToolMessage = message as MessageWithToolCalls | undefined;
+
+  if (Array.isArray(maybeToolMessage?.tool_calls)) {
+    return maybeToolMessage.tool_calls;
   }
 
-  const objectMatch = text.match(/\{[\s\S]*\}/);
-  return objectMatch ? objectMatch[0] : text;
-}
-
-function parseQueryList(
-  content: string,
-  researchTopic: string,
-  queryCount: number
-): string[] {
-  try {
-    const parsed = JSON.parse(extractJsonCandidate(content)) as {
-      query?: unknown;
-    };
-    if (Array.isArray(parsed.query)) {
-      const queries = parsed.query
-        .filter((query): query is string => typeof query === "string")
-        .map((query) => query.trim())
-        .filter((query) => query.length > 0);
-
-      if (queries.length > 0) {
-        return queries.slice(0, queryCount);
-      }
-    }
-  } catch {
-    // Gemini can return non-JSON text; fallback keeps the research flow runnable.
+  if (Array.isArray(message?.content)) {
+    return message.content.filter((block) => {
+      return (
+        block &&
+        typeof block === "object" &&
+        ("functionCall" in block ||
+          (block as { type?: string }).type === "tool_use")
+      );
+    });
   }
 
-  return Array.from({ length: queryCount }, (_, index) => {
-    return `${researchTopic} research angle ${index + 1}`;
-  });
+  return [];
 }
 
-async function generateQuery(
-  state: typeof DeepResearchState.State,
-  _config: RunnableConfig
-): Promise<Partial<typeof DeepResearchState.State>> {
-  const queryCount = state.initial_search_query_count || 3;
-  const researchTopic = getResearchTopic(state.messages);
-  const llm = llmGateway.createChatModel({
-    model: "gemini-2.5-flash",
-    temperature: 0.4,
-  });
-  const response = await llm.invoke(
-    buildQueryWriterPrompt(researchTopic, queryCount)
+function isEmptyAiResponse(message: BaseMessage): boolean {
+  return (
+    messageContentToString(message).trim().length === 0 &&
+    extractToolCalls(message).length === 0
   );
-
-  return {
-    query_list: parseQueryList(
-      messageContentToString(response),
-      researchTopic,
-      queryCount
-    ),
-  };
 }
 
-async function webResearch(
-  state: typeof DeepResearchState.State,
-  _config: RunnableConfig
-): Promise<Partial<typeof DeepResearchState.State>> {
-  const llm = llmGateway.createChatModel({
-    model: "gemini-2.5-flash",
-    temperature: 0,
-  });
-  const queries = state.query_list.length
-    ? state.query_list
-    : [getResearchTopic(state.messages)];
+function getMessageType(message: BaseMessage): string | undefined {
+  const maybeTyped = message as BaseMessage & {
+    type?: string;
+    _getType?: () => string;
+  };
 
-  const summaries = await Promise.all(
-    queries.map(async (query) => {
-      const response = await llm.invoke(`請針對下方 research query 產生一段簡短研究摘要。
+  return maybeTyped.type ?? maybeTyped._getType?.();
+}
 
-注意：
-- 這裡不是實際 web search，不要聲稱你查過網路。
-- 請根據既有模型知識整理可能的重點、風險與待驗證事項。
-- 如果需要最新資訊，請明確標註「需要外部 search provider 驗證」。
-- 使用繁體中文回答，保留必要的 English 技術字眼。
+function countToolResults(messages: BaseMessage[]): number {
+  return messages.filter((message) => getMessageType(message) === "tool").length;
+}
 
-Query: ${query}`);
-      return messageContentToString(response);
-    })
+function getToolLoopBudget(state: typeof DeepResearchState.State): number {
+  return Math.max(
+    1,
+    Math.min(Number(state.max_research_loops ?? DEFAULT_TOOL_LOOP_BUDGET), 20)
   );
-
-  return {
-    search_query: queries,
-    web_research_result: summaries,
-  };
 }
 
-async function reflection(
-  state: typeof DeepResearchState.State,
-  _config: RunnableConfig
-): Promise<Partial<typeof DeepResearchState.State>> {
-  return {
-    research_loop_count: (state.research_loop_count ?? 0) + 1,
-  };
-}
+function shouldContinue(
+  state: typeof DeepResearchState.State
+): "tools" | "finalize_answer" | typeof END {
+  const lastMessage = state.messages[
+    state.messages.length - 1
+  ];
+  const toolCalls = extractToolCalls(lastMessage);
 
-function evaluateResearch(state: typeof DeepResearchState.State): string {
-  if (state.research_loop_count >= state.max_research_loops) {
+  if (toolCalls.length === 0) {
+    return END;
+  }
+
+  if (countToolResults(state.messages) >= getToolLoopBudget(state)) {
     return "finalize_answer";
   }
-  return "finalize_answer";
+
+  return "tools";
+}
+
+async function callModel(
+  state: typeof DeepResearchState.State,
+  _config: RunnableConfig
+): Promise<Partial<typeof DeepResearchState.State>> {
+  const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
+  const llm = llmGateway.createChatModel({
+    model,
+    temperature: 0.1,
+  });
+
+  if (!llm.bindTools) {
+    throw new Error("The selected model does not support bindTools.");
+  }
+
+  const modelWithTools = llm.bindTools(tools);
+  let response: BaseMessage;
+  try {
+    response = await modelWithTools.invoke([
+      {
+        role: "system",
+        content: buildToolCallingResearchSystemMessage(getToolLoopBudget(state)),
+      },
+      ...state.messages,
+    ]);
+  } catch (error) {
+    return {
+      messages: [
+        new AIMessage(
+          `模型工具規劃失敗：${
+            error instanceof Error ? error.message : String(error)
+          }`
+        ),
+      ],
+    };
+  }
+
+  const normalizedResponse = normalizeAiMessageForStream(response);
+
+  if (isEmptyAiResponse(normalizedResponse)) {
+    return {
+      messages: [
+        new AIMessage(
+          "模型回傳了空白內容且沒有提出 tool call；請重試，或確認模型與工具 schema 是否相容。"
+        ),
+      ],
+    };
+  }
+
+  return {
+    messages: [normalizedResponse],
+  };
 }
 
 async function finalizeAnswer(
   state: typeof DeepResearchState.State,
   _config: RunnableConfig
 ): Promise<Partial<typeof DeepResearchState.State>> {
-  const reasoningModel = resolveModel(state.reasoning_model, "gemini-2.5-flash");
+  const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
   const llm = llmGateway.createChatModel({
-    model: reasoningModel,
+    model,
     temperature: 0,
   });
-  const response = await llm.invoke(
-    buildResearchAnswerPrompt(
-      getResearchTopic(state.messages),
-      state.web_research_result.join("\n\n---\n\n")
-    )
-  );
+  let response: BaseMessage;
+  try {
+    response = await llm.invoke([
+      {
+        role: "system",
+        content: buildForcedFinalResearchPrompt(),
+      },
+      ...state.messages,
+    ]);
+  } catch (error) {
+    response = new AIMessage(
+      `最終回答產生失敗：${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
 
   return {
-    messages: [response],
-    sources_gathered: state.sources_gathered,
+    messages: [normalizeAiMessageForStream(response)],
   };
 }
 
 const builder = new StateGraph(DeepResearchState)
-  .addNode("generate_query", generateQuery)
-  .addNode("web_research", webResearch)
-  .addNode("reflection", reflection)
+  .addNode("call_model", callModel)
+  .addNode("tools", toolNode)
   .addNode("finalize_answer", finalizeAnswer)
-  .addEdge(START, "generate_query")
-  .addEdge("generate_query", "web_research")
-  .addEdge("web_research", "reflection")
-  .addConditionalEdges("reflection", evaluateResearch, {
+  .addEdge(START, "call_model")
+  .addConditionalEdges("call_model", shouldContinue, {
+    tools: "tools",
     finalize_answer: "finalize_answer",
+    [END]: END,
   })
+  .addEdge("tools", "call_model")
   .addEdge("finalize_answer", END);
 
 export const deepResearcherGraph = builder.compile();
