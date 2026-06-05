@@ -163,9 +163,11 @@ cd frontend && npm run dev
 
 ## MCP 設定
 
-MCP 是選用功能，會被共用 tool registry 載入，因此可同時擴充 `deep_researcher` 與 `mcp_agent`。
+MCP 是選用功能，目前只會額外擴充 `mcp_agent`。
 
-依照目前 `backend/src/tools/registry.ts` 的實作，MCP tools 只有在 `MCP_LOAD_ON_START=true` 時才會載入；否則 agent 仍會使用 native tools：`calculator_tool`、`web_search`、`web_fetch`、`current_weather`。
+依照目前 `backend/src/tools/registry.ts` 的實作，native tools 會隨 agent 啟動載入：`calculator_tool`、`web_search`、`web_fetch`、`current_weather`。MCP tools 只有在 `mcp_agent` 啟動且 `MCP_LOAD_ON_START=true` 時才會額外載入。
+
+`deep_researcher` 目前不載入 MCP tools，避免 filesystem 類大量工具干擾 research graph 的 tool planning。若要讓 `deep_researcher` 也使用 MCP，需要在 `backend/src/agents/deep-researcher.ts` 呼叫 `loadAgentTools("deep_researcher", { includeMcp: true })`，並確認 tool schema 與 streaming serialization 可正常運作。
 
 `backend/.env.example` 預設是：
 
@@ -190,7 +192,7 @@ BRAVE_API_KEY=
 - `MCP_FILESYSTEM_PATH` 請設定成本機存在且允許讀取的路徑。
 - `BRAVE_API_KEY` 同時供 native `web_search` 與 Brave MCP server 使用。
 - 只有在 `BRAVE_API_KEY` 有效時才把 `MCP_BRAVE_SEARCH_ENABLED` 設成 `true`。
-- 一般本地流程不需要全域安裝 MCP servers；目前 backend dependencies 已包含 filesystem server。
+- 一般本地流程不需要全域安裝 MCP servers；filesystem server 已在 backend dependencies 中，Brave MCP server 會透過 `npx -y @modelcontextprotocol/server-brave-search` 啟動。
 
 ## Tool 能力說明
 
@@ -199,7 +201,9 @@ BRAVE_API_KEY=
 - `chatbot`：純 LLM 對話，沒有 tool calling。
 - `math_agent`：使用本地 `calculator_tool`。
 - `mcp_agent`：使用 `ToolNode` 與 `bindTools`，可載入 native tools 與 MCP tools。
-- `deep_researcher`：使用真正的 tool-calling graph：`call_model -> tools -> call_model`，必要時進 `finalize_answer` 收斂。
+- `deep_researcher`：使用真正的 tool-calling graph：`call_model -> tools -> call_model`，必要時進 `finalize_answer` 收斂；目前只使用 native tools，不做其他場景硬編碼路由。
+
+`deep_researcher` 與 `mcp_agent` 會將 Gemini 回傳的 raw `functionCall` content block 正規化為 LangChain 標準 `tool_calls`，避免 frontend streaming 發生 `Unknown content type undefined`。
 
 Native tools：
 
@@ -233,6 +237,8 @@ npm run build
 Docker Compose 會建置 frontend 與 backend，並將 LangGraph API image 暴露在主機 port `8123`。
 
 目前 `docker-compose.yml` 會傳入 `MCP_LOAD_ON_START`、`MCP_FILESYSTEM_ENABLED`、`MCP_FILESYSTEM_PATH`、`MCP_BRAVE_SEARCH_ENABLED`、`BRAVE_API_KEY`。Docker Compose 模式下如需 MCP external tools，請設定 `MCP_LOAD_ON_START=true`；native tools 則會隨 agent 啟動載入。
+
+注意：Docker Compose 模式下 `MCP_LOAD_ON_START=true` 只會影響 `mcp_agent`。`deep_researcher` 仍維持 native tools only。
 
 PowerShell：
 
@@ -282,7 +288,8 @@ http://localhost:8123
 - Frontend：React、TypeScript、Vite、Tailwind CSS、Radix UI。
 - Backend：TypeScript LangGraph JS graphs，本地由 `langgraphjs dev` 服務。
 - LLM provider：透過 `@langchain/google-genai` 使用 Gemini。
-- Optional tools：MCP filesystem 與 Brave Search server integration。
+- Native tools：calculator、Brave Search API、web fetch、Open-Meteo weather。
+- Optional MCP tools：filesystem MCP 與 Brave Search MCP server，主要供 `mcp_agent` 使用。
 - Docker Compose：LangGraph API image，加上 Redis 與 PostgreSQL containers。
 
 ## 常用端口對照
