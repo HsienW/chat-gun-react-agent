@@ -1,0 +1,49 @@
+volumes:
+  langgraph-data:
+    driver: local
+services:
+  langgraph-redis:
+    image: docker.io/redis:6
+    healthcheck:
+      test: redis-cli ping
+      interval: 5s
+      timeout: 1s
+      retries: 5
+  langgraph-postgres:
+    image: docker.io/postgres:16
+    ports:
+      - '5433:5432'
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - langgraph-data:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -U postgres
+      start_period: 10s
+      timeout: 1s
+      retries: 5
+      interval: 5s
+  langgraph-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chat-gun-react-agent
+    ports:
+      - '8123:8000'
+    depends_on:
+      langgraph-redis:
+        condition: service_healthy
+      langgraph-postgres:
+        condition: service_healthy
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
+      REDIS_URI: redis://langgraph-redis:6379
+      POSTGRES_URI: postgres://postgres:postgres@langgraph-postgres:5432/postgres?sslmode=disable
+      # MCP 設定
+      MCP_FILESYSTEM_ENABLED: ${MCP_FILESYSTEM_ENABLED}
+      MCP_FILESYSTEM_PATH: ${MCP_FILESYSTEM_PATH}
+      MCP_BRAVE_SEARCH_ENABLED: ${MCP_BRAVE_SEARCH_ENABLED}
+      BRAVE_API_KEY: ${BRAVE_API_KEY}

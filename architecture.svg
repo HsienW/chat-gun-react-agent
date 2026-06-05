@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2600" height="1600" viewBox="0 0 2600 1600">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 z" fill="#d8d0c5" />
+    </marker>
+    <style>
+      .bg { fill: #050b18; }
+      .panel { fill: #3f4240; stroke: #6c706e; stroke-width: 2; rx: 14; }
+      .card { fill: #fff27a; stroke: #c9a400; stroke-width: 2; rx: 12; }
+      .card-alt { fill: #fff7a8; stroke: #c9a400; stroke-width: 2; rx: 12; }
+      .title { fill: #f7f2e8; font: 700 34px Arial, sans-serif; }
+      .subtitle { fill: #e8e2d8; font: 600 21px Arial, sans-serif; }
+      .panel-title { fill: #f7f2e8; font: 700 26px Arial, sans-serif; }
+      .label { fill: #080808; font: 700 25px Arial, sans-serif; }
+      .small { fill: #080808; font: 500 21px Arial, sans-serif; }
+      .line { stroke: #d8d0c5; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #d8d0c5; stroke-width: 2.2; stroke-dasharray: 8 8; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="2600" height="1600" />
+  <text class="title" x="1300" y="56" text-anchor="middle">Chat Gun React Agent Architecture</text>
+  <text class="subtitle" x="1300" y="91" text-anchor="middle">Current backend: TypeScript + LangGraph.js, served by langgraphjs dev / LangGraph Agent Server</text>
+
+  <rect class="panel" x="760" y="125" width="1080" height="190" />
+  <text class="panel-title" x="1300" y="160" text-anchor="middle">Frontend (React + TypeScript + Vite)</text>
+  <rect class="card" x="1050" y="195" width="500" height="80" />
+  <text class="label" x="1300" y="245" text-anchor="middle">React UI / Agent Selector / Chat</text>
+
+  <rect class="panel" x="420" y="440" width="1760" height="515" />
+  <text class="panel-title" x="1300" y="475" text-anchor="middle">Backend (TypeScript + LangGraph.js)</text>
+
+  <rect class="card" x="520" y="530" width="440" height="90" />
+  <text class="label" x="740" y="565" text-anchor="middle">LangGraph Agent Server</text>
+  <text class="small" x="740" y="596" text-anchor="middle">npm run dev -> langgraphjs dev</text>
+
+  <rect class="card-alt" x="1060" y="530" width="480" height="90" />
+  <text class="label" x="1300" y="565" text-anchor="middle">backend/langgraph.json</text>
+  <text class="small" x="1300" y="596" text-anchor="middle">graph registry + .env</text>
+
+  <rect class="card" x="1060" y="705" width="480" height="150" />
+  <text class="label" x="1300" y="745" text-anchor="middle">TypeScript LangGraph Graphs</text>
+  <text class="small" x="1300" y="780" text-anchor="middle">chatbot.ts / math-agent.ts</text>
+  <text class="small" x="1300" y="812" text-anchor="middle">deep-researcher.ts / mcp-agent.ts</text>
+
+  <rect class="card-alt" x="560" y="735" width="360" height="150" />
+  <text class="label" x="740" y="775" text-anchor="middle">Platform Layer</text>
+  <text class="small" x="740" y="810" text-anchor="middle">LLM Gateway</text>
+  <text class="small" x="740" y="842" text-anchor="middle">Tool Governance</text>
+  <text class="small" x="740" y="874" text-anchor="middle">Observability</text>
+
+  <rect class="card-alt" x="1690" y="735" width="360" height="150" />
+  <text class="label" x="1870" y="775" text-anchor="middle">Specialized Agents</text>
+  <text class="small" x="1870" y="810" text-anchor="middle">Deep Researcher / Chatbot</text>
+  <text class="small" x="1870" y="842" text-anchor="middle">Math Agent / MCP Agent</text>
+
+  <rect class="panel" x="80" y="1040" width="680" height="360" />
+  <text class="panel-title" x="420" y="1080" text-anchor="middle">Optional Deployment Infrastructure</text>
+  <rect class="card" x="135" y="1145" width="260" height="135" />
+  <text class="label" x="265" y="1190" text-anchor="middle">Redis</text>
+  <text class="small" x="265" y="1224" text-anchor="middle">pub/sub streaming</text>
+  <text class="small" x="265" y="1256" text-anchor="middle">background runs</text>
+  <rect class="card" x="445" y="1145" width="260" height="135" />
+  <text class="label" x="575" y="1190" text-anchor="middle">PostgreSQL</text>
+  <text class="small" x="575" y="1224" text-anchor="middle">threads / runs</text>
+  <text class="small" x="575" y="1256" text-anchor="middle">state / task queue</text>
+
+  <rect class="panel" x="930" y="1040" width="740" height="360" />
+  <text class="panel-title" x="1300" y="1080" text-anchor="middle">External Services</text>
+  <rect class="card" x="985" y="1150" width="280" height="130" />
+  <text class="label" x="1125" y="1198" text-anchor="middle">Gemini</text>
+  <text class="small" x="1125" y="1232" text-anchor="middle">@langchain/google-genai</text>
+  <rect class="card" x="1335" y="1150" width="280" height="130" />
+  <text class="label" x="1475" y="1198" text-anchor="middle">LangSmith</text>
+  <text class="small" x="1475" y="1232" text-anchor="middle">optional tracing</text>
+
+  <rect class="panel" x="1815" y="1040" width="700" height="360" />
+  <text class="panel-title" x="2165" y="1080" text-anchor="middle">MCP Servers / Tools</text>
+  <rect class="card" x="1880" y="1145" width="255" height="135" />
+  <text class="label" x="2008" y="1190" text-anchor="middle">Filesystem MCP</text>
+  <text class="small" x="2008" y="1224" text-anchor="middle">file operations</text>
+  <rect class="card" x="2188" y="1145" width="255" height="135" />
+  <text class="label" x="2316" y="1190" text-anchor="middle">Brave Search MCP</text>
+  <text class="small" x="2316" y="1224" text-anchor="middle">optional web search</text>
+  <rect class="card-alt" x="2030" y="1305" width="270" height="72" />
+  <text class="label" x="2165" y="1350" text-anchor="middle">Calculator Tool</text>
+
+  <path class="line" d="M1300 275 C1300 350, 740 350, 740 530" />
+  <text class="subtitle" x="1002" y="382" text-anchor="middle">@langchain/langgraph-sdk / useStream</text>
+  <path class="line" d="M960 575 L1060 575" />
+  <path class="line" d="M1300 620 L1300 705" />
+  <path class="line" d="M1060 780 L920 810" />
+  <path class="line" d="M1540 780 L1690 810" />
+  <path class="line" d="M740 885 C700 960, 575 1040, 575 1145" />
+  <path class="line" d="M740 885 C620 980, 265 1035, 265 1145" />
+  <path class="line" d="M1180 855 C1150 960, 1125 1040, 1125 1150" />
+  <path class="dash" d="M1420 855 C1455 970, 1475 1040, 1475 1150" />
+  <path class="line" d="M1870 885 C1995 970, 2008 1040, 2008 1145" />
+  <path class="line" d="M1870 885 C2290 960, 2316 1040, 2316 1145" />
+  <path class="line" d="M1300 855 C1580 980, 2165 1010, 2165 1305" />
+  <path class="dash" d="M740 530 C660 430, 1230 360, 1300 275" />
+</svg>

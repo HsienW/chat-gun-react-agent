@@ -1,0 +1,81 @@
+---
+description: Model Context Protocol 的專案內部參考說明
+globs:
+alwaysApply: false
+---
+# MCP Reference
+
+本文件提供 Model Context Protocol (MCP) 的精簡參考，供本專案開發 agent 與 tools 時使用。
+
+## MCP 是什麼
+
+Model Context Protocol 是讓 AI applications 與 external tools、resources、prompts 溝通的標準協定。此專案透過 MCP servers 讓 LangGraph agents 可以使用 filesystem、search 或其他外部服務。
+
+## Core Concepts
+
+- **Client**：發起 MCP request 的應用端，例如 agent runtime。
+- **Server**：提供 tools、resources 或 prompts 的服務。
+- **Tools**：可由 model 呼叫的 actions，例如 search、read file、query database。
+- **Resources**：可讀取的 context data，例如 files、documents、database schema。
+- **Prompts**：server 提供的 reusable prompt templates。
+- **Transport**：client/server 溝通方式，常見為 `stdio` 或 `streamable_http`。
+
+## Tool Definition
+
+Tool 應包含下列資訊：
+
+- `name`：唯一 tool identifier。
+- `description`：清楚描述 tool 的功能與使用時機。
+- `inputSchema`：JSON Schema，定義 expected parameters。
+- `outputSchema`：選用，定義 structured output。
+- `annotations`：選用，描述 tool behavior；client 不應盲目信任未驗證 annotations。
+
+## Tool Result
+
+Tool result 可以是 structured 或 unstructured content。
+
+- **Unstructured content**：通常放在 `content` field，可能包含 text、image、audio 或 embedded resources。
+- **Structured content**：通常放在 `structuredContent` field，應符合 output schema。
+- 若提供 output schema，server 應回傳符合 schema 的結果，client 應進行 validation。
+
+## Error Handling
+
+MCP tool 可能有兩種錯誤：
+
+- **Protocol Errors**：JSON-RPC errors，例如 unknown tool、invalid arguments、server errors。
+- **Tool Execution Errors**：tool result 中以 `isError: true` 表示，例如 API failure、invalid input data、business logic error。
+
+## Security Considerations
+
+Servers 應：
+
+- Validate all tool inputs。
+- Implement access controls。
+- Rate limit tool invocations。
+- Sanitize tool outputs。
+- 避免回傳 credentials、PII 或敏感 internal details。
+
+Clients 應：
+
+- 對 sensitive operations 要求 user confirmation。
+- 在呼叫 server 前讓 user 看見 tool inputs。
+- Validate tool results 後再交給 LLM。
+- 設定 tool call timeout。
+- 記錄 tool usage 以供 audit。
+
+## 本專案使用方式
+
+- MCP server 設定集中於 `backend/src/config/mcp_config.py`。
+- Tool loading 由 `backend/src/tools/mcp_loader.py` 處理。
+- `MCP_FILESYSTEM_ENABLED` 控制 filesystem server。
+- `MCP_BRAVE_SEARCH_ENABLED` 控制 Brave Search server。
+- `MCP_FILESYSTEM_PATH` 必須限制在安全 workspace。
+- `BRAVE_API_KEY` 僅在啟用 Brave Search 時需要。
+
+## 開發建議
+
+- Tool description 要明確說明輸入、輸出與限制。
+- 優先使用最小權限。
+- 對 network tools 加 timeout 與 retry。
+- 對 filesystem tools 加 sandbox path。
+- 對 production tools 加 authentication、observability 與 audit logs。

@@ -1,0 +1,82 @@
+---
+description:
+globs:
+alwaysApply: true
+---
+# Chat Gun React Agent - Project Standards
+
+本文件定義此專案的 coding standards、architecture patterns 與 development practices。
+
+## Project Architecture
+
+此專案採用 fullstack 架構，並清楚拆分 frontend、backend 與 external tool integration。
+
+- **Frontend**：React + TypeScript + Vite application，位於 [frontend/](mdc:frontend)。
+- **Backend**：TypeScript LangGraph agents，位於 [backend/](mdc:backend)。
+- **MCP Servers**：透過 Model Context Protocol 連接外部 tools 與 services。
+
+## Core Dependencies
+
+- Frontend：React 19、TypeScript、Tailwind CSS、Radix UI、LangGraph SDK。
+- Backend：LangGraph.js、LangChain、Google Gemini AI、MCP adapters。
+- MCP：LangChain MCP Adapters 與 MultiServerMCPClient。
+
+## Frontend Standards
+
+- 使用 functional components 與 TypeScript interfaces 定義 props。
+- 使用 Tailwind CSS 與既有 Radix UI / shadcn-style components。
+- UI 文案使用繁體中文；Agent、Model、MCP、LangGraph 等技術字眼保留英文。
+- 對 streaming responses、loading、empty、error states 做清楚處理。
+- 使用 `@langchain/langgraph-sdk` 與 backend 溝通。
+
+## Backend Standards
+
+- 使用 LangGraph `StateGraph` 建立 agent flow。
+- Node functions 需有清楚 typing 與 docstring。
+- Prompt、docstring、comment 使用繁體中文；schema key、function name、model name 保留英文。
+- 透過 environment variables 管理 API keys 與 MCP settings。
+- 工具錯誤需回傳可讀訊息，避免未處理 exception 直接中斷 user flow。
+
+## LangGraph Patterns
+
+- 簡單對話使用單節點 graph。
+- Tool calling 使用 `ToolNode` 與 conditional edges。
+- Research 任務可使用 query generation、parallel web research、reflection loop 與 final answer。
+- 需要穩定 production 執行時，搭配 Redis 與 PostgreSQL。
+
+## MCP Standards
+
+- MCP server config 應集中管理。
+- 支援 `stdio` 與 `streamable_http` transport。
+- Tool 名稱、description、input schema 要清楚，方便 LLM 正確使用。
+- 對 sensitive tools 加上 authentication、permission 與 audit。
+
+## Development Workflow
+
+1. Backend 使用 Python 3.11+。
+2. Frontend 使用 Node.js 18+。
+3. 在 `.env` 中設定 `GEMINI_API_KEY` 與 MCP 相關變數。
+4. 使用 `make dev` 同時啟動 frontend/backend。
+5. 修改後至少執行 Python compile 與 frontend build。
+
+## Code Quality
+
+- Frontend 使用 TypeScript strict mode。
+- Backend 使用 type hints 與清楚 docstring。
+- 避免無關 refactor。
+- 保持 prompt、schema 與 UI 文案一致。
+
+## Deployment Standards
+
+- Production image 使用 multi-stage build。
+- Backend 提供 optimized frontend static build。
+- Redis 用於 streaming 與 state coordination。
+- PostgreSQL 用於 persistence、threads、runs 與 background queue。
+- Production 需設定 HTTPS、monitoring、API key rotation 與 rate limiting。
+
+## Security Guidelines
+
+- 驗證所有 user input 與 tool input。
+- 使用 environment variables 管理 secrets。
+- 對外部 API 與 MCP tools 實作權限控制。
+- 不在 logs 或 model context 中洩漏 credentials、PII 或敏感系統資訊。

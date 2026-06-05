@@ -1,0 +1,15 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>ChatGun Agent Paper Plane Logo</title>
+  <desc>Minimal flat paper-plane logo in deep maroon on a warm cream background, with negative-space fold inspired by the selected concept.</desc>
+  <rect width="1024" height="1024" rx="0" fill="#F4E9D8"/>
+  <g transform="translate(170 245)">
+    <!-- main left wing -->
+    <path d="M683.5 0L0 270.8L213.8 391.2L683.5 0Z" fill="#7A1E1E"/>
+    <!-- left lower fold -->
+    <path d="M213.8 391.2L247.2 647L350.5 334.2L213.8 391.2Z" fill="#7A1E1E"/>
+    <!-- right wing -->
+    <path d="M683.5 0L515.7 690L398.4 394.7L683.5 0Z" fill="#7A1E1E"/>
+    <!-- negative-space central fold -->
+    <path d="M683.5 0L350.5 334.2L300.5 486.2L420.5 363.2L683.5 0Z" fill="#F4E9D8"/>
+  </g>
+</svg>

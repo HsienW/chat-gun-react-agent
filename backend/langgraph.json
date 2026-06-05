@@ -1,0 +1,11 @@
+{
+  "node_version": "20",
+  "dependencies": ["."],
+  "graphs": {
+    "deep_researcher": "./src/agents/deep-researcher.ts:deepResearcherGraph",
+    "chatbot": "./src/agents/chatbot.ts:chatbotGraph",
+    "math_agent": "./src/agents/math-agent.ts:mathAgentGraph",
+    "mcp_agent": "./src/agents/mcp-agent.ts:mcpAgentGraph"
+  },
+  "env": ".env"
+}
