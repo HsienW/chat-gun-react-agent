@@ -1,13 +1,18 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 
+import { getEnv } from "../platform/env.js";
+
 type GeocodingResult = {
   name: string;
   country?: string;
+  country_code?: string;
   admin1?: string;
+  admin2?: string;
   latitude: number;
   longitude: number;
   timezone?: string;
+  population?: number;
 };
 
 type GeocodingResponse = {
@@ -22,91 +27,285 @@ type ForecastResponse = {
   current_units?: Record<string, string>;
 };
 
-const LOCATION_ALIASES: Record<string, GeocodingResult> = {
-  kaohsiung: {
-    name: "Kaohsiung",
-    country: "Taiwan",
-    admin1: "Kaohsiung",
-    latitude: 22.6273,
-    longitude: 120.3014,
-    timezone: "Asia/Taipei",
-  },
-  "高雄": {
-    name: "Kaohsiung",
-    country: "Taiwan",
-    admin1: "Kaohsiung",
-    latitude: 22.6273,
-    longitude: 120.3014,
-    timezone: "Asia/Taipei",
-  },
-  "高雄市": {
-    name: "Kaohsiung",
-    country: "Taiwan",
-    admin1: "Kaohsiung",
-    latitude: 22.6273,
-    longitude: 120.3014,
-    timezone: "Asia/Taipei",
-  },
+type LocationAlias = {
+  query: string;
+  country?: string;
+  region?: string;
 };
 
-function normalizeLocationKey(location: string): string {
-  return location.trim().toLowerCase().replace(/\s+/g, " ");
+type LocationResolutionInput = {
+  location: string;
+  country?: string;
+  region?: string;
+};
+
+type ResolvedLocationQuery = Required<Pick<LocationResolutionInput, "location">> &
+  Pick<LocationResolutionInput, "country" | "region">;
+
+function normalizeKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizeComparable(value: string | undefined): string {
+  return normalizeKey(value ?? "")
+    .replaceAll("臺", "台")
+    .replaceAll("台湾", "台灣");
+}
+
+function loadConfiguredAliases(): Record<string, LocationAlias> {
+  const raw = getEnv("WEATHER_LOCATION_ALIASES_JSON");
+  if (!raw.trim()) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).flatMap(([key, value]) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          return [];
+        }
+
+        const alias = value as Partial<LocationAlias>;
+        if (typeof alias.query !== "string" || !alias.query.trim()) {
+          return [];
+        }
+
+        return [
+          [
+            normalizeKey(key),
+            {
+              query: alias.query.trim(),
+              country: typeof alias.country === "string" ? alias.country : undefined,
+              region: typeof alias.region === "string" ? alias.region : undefined,
+            },
+          ],
+        ];
+      })
+    );
+  } catch {
+    return {};
+  }
+}
+
+function getConfiguredAlias(location: string): LocationAlias | undefined {
+  return loadConfiguredAliases()[normalizeKey(location)];
+}
+
+function unique(values: string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    const key = normalizeKey(trimmed);
+    if (!trimmed || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(trimmed);
+  }
+  return output;
+}
+
+function buildLocationQueries(input: LocationResolutionInput): ResolvedLocationQuery[] {
+  const configuredAlias = getConfiguredAlias(input.location);
+  const base: LocationResolutionInput = configuredAlias
+    ? {
+        location: configuredAlias.query,
+        country: input.country ?? configuredAlias.country,
+        region: input.region ?? configuredAlias.region,
+      }
+    : input;
+
+  const variants = unique([
+    base.location,
+    base.country ? `${base.location} ${base.country}` : "",
+    base.country ? `${base.location}, ${base.country}` : "",
+    base.region ? `${base.location} ${base.region}` : "",
+    base.region ? `${base.location}, ${base.region}` : "",
+    base.location.replaceAll("臺", "台"),
+    base.location.replaceAll("台", "臺"),
+    base.location.replace(/[市縣县區区]$/u, ""),
+  ]);
+
+  return variants.map((location) => ({
+    location,
+    country: base.country,
+    region: base.region,
+  }));
+}
+
+function matchesText(value: string | undefined, expected: string | undefined): boolean {
+  if (!expected) {
+    return false;
+  }
+  return normalizeComparable(value).includes(normalizeComparable(expected));
+}
+
+function countryMatches(candidate: GeocodingResult, expectedCountry: string | undefined): boolean {
+  if (!expectedCountry) {
+    return false;
+  }
+
+  const expected = normalizeComparable(expectedCountry);
+  const countryCode = normalizeComparable(candidate.country_code);
+
+  if (expected.length === 2 && expected === countryCode) {
+    return true;
+  }
+
+  if (matchesText(candidate.country, expectedCountry)) {
+    return true;
+  }
+
+  const candidateCountryCode = candidate.country_code;
+  if (!candidateCountryCode) {
+    return false;
+  }
+
+  const displayNames = ["en", "zh-Hant", "zh-Hans"].flatMap((locale) => {
+    const displayName = new Intl.DisplayNames([locale], { type: "region" });
+    const name = displayName.of(candidateCountryCode);
+    return name ? [name] : [];
+  });
+
+  return displayNames.some((name) => normalizeComparable(name) === expected);
+}
+
+function scoreCandidate(candidate: GeocodingResult, input: ResolvedLocationQuery): number {
+  const normalizedQuery = normalizeComparable(input.location);
+  let score = 0;
+
+  if (normalizeComparable(candidate.name) === normalizedQuery) {
+    score += 40;
+  } else if (matchesText(candidate.name, input.location)) {
+    score += 20;
+  }
+
+  if (countryMatches(candidate, input.country)) {
+    score += 35;
+  }
+
+  if (matchesText(candidate.admin1, input.region) || matchesText(candidate.admin2, input.region)) {
+    score += 25;
+  }
+
+  if (candidate.population !== undefined) {
+    score += Math.min(Math.log10(Math.max(candidate.population, 1)), 8);
+  }
+
+  return score;
+}
+
+function formatCandidate(candidate: GeocodingResult): string {
+  return [candidate.name, candidate.admin2, candidate.admin1, candidate.country]
+    .filter(Boolean)
+    .join(", ");
+}
+
+function chooseBestCandidate(
+  candidates: Array<{ candidate: GeocodingResult; query: ResolvedLocationQuery }>,
+  originalInput: LocationResolutionInput
+): GeocodingResult {
+  const countryFilteredCandidates = originalInput.country
+    ? candidates.filter((entry) => countryMatches(entry.candidate, originalInput.country))
+    : candidates;
+
+  if (originalInput.country && countryFilteredCandidates.length === 0) {
+    const options = candidates
+      .slice(0, 5)
+      .map((entry) => formatCandidate(entry.candidate))
+      .join("; ");
+    throw new Error(
+      `No geocoding result matched country "${originalInput.country}" for location "${originalInput.location}". Try an English place name or provide a more specific region. Candidates: ${options}`
+    );
+  }
+
+  const scored = countryFilteredCandidates
+    .map((entry) => ({
+      candidate: entry.candidate,
+      score: scoreCandidate(entry.candidate, entry.query),
+    }))
+    .sort((left, right) => right.score - left.score);
+  const best = scored[0];
+  const second = scored[1];
+  const hasContext = Boolean(originalInput.country || originalInput.region);
+
+  if (!best) {
+    throw new Error(`Location not found: ${originalInput.location}`);
+  }
+
+  if (!hasContext && second && best.score - second.score < 8) {
+    const options = scored
+      .slice(0, 5)
+      .map((entry) => formatCandidate(entry.candidate))
+      .join("; ");
+    throw new Error(
+      `Location "${originalInput.location}" is ambiguous. Please provide country or region. Candidates: ${options}`
+    );
+  }
+
+  return best.candidate;
 }
 
 function describeWeatherCode(code: number | undefined): string {
   switch (code) {
     case 0:
-      return "晴朗";
+      return "clear sky";
     case 1:
     case 2:
     case 3:
-      return "晴時多雲或多雲";
+      return "mainly clear, partly cloudy, or overcast";
     case 45:
     case 48:
-      return "有霧";
+      return "fog";
     case 51:
     case 53:
     case 55:
-      return "毛毛雨";
+      return "drizzle";
     case 56:
     case 57:
-      return "凍毛毛雨";
+      return "freezing drizzle";
     case 61:
     case 63:
     case 65:
-      return "降雨";
+      return "rain";
     case 66:
     case 67:
-      return "凍雨";
+      return "freezing rain";
     case 71:
     case 73:
     case 75:
-      return "降雪";
+      return "snowfall";
     case 77:
-      return "雪粒";
+      return "snow grains";
     case 80:
     case 81:
     case 82:
-      return "陣雨";
+      return "rain showers";
     case 85:
     case 86:
-      return "陣雪";
+      return "snow showers";
     case 95:
-      return "雷雨";
+      return "thunderstorm";
     case 96:
     case 99:
-      return "雷雨伴隨冰雹";
+      return "thunderstorm with hail";
     default:
-      return "未知天氣狀態";
+      return "unknown weather condition";
   }
 }
 
 function describeWindDirection(degrees: number | undefined): string {
   if (degrees === undefined || Number.isNaN(degrees)) {
-    return "未知";
+    return "unknown";
   }
 
-  const directions = ["北", "東北", "東", "東南", "南", "西南", "西", "西北"];
+  const directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
   const index = Math.round((((degrees % 360) + 360) % 360) / 45) % 8;
   return directions[index];
 }
@@ -133,28 +332,35 @@ async function fetchJson<T>(url: URL): Promise<T> {
   }
 }
 
-async function resolveLocation(location: string): Promise<GeocodingResult> {
-  const normalized = normalizeLocationKey(location);
-  const alias = LOCATION_ALIASES[normalized];
-
-  if (alias) {
-    return alias;
-  }
-
+async function geocodeLocation(query: ResolvedLocationQuery): Promise<GeocodingResult[]> {
   const geocodingUrl = new URL("https://geocoding-api.open-meteo.com/v1/search");
-  geocodingUrl.searchParams.set("name", location);
-  geocodingUrl.searchParams.set("count", "1");
+  geocodingUrl.searchParams.set("name", query.location);
+  geocodingUrl.searchParams.set("count", "5");
   geocodingUrl.searchParams.set("language", "zh");
   geocodingUrl.searchParams.set("format", "json");
 
   const geocoding = await fetchJson<GeocodingResponse>(geocodingUrl);
-  const firstResult = geocoding.results?.[0];
+  return geocoding.results ?? [];
+}
 
-  if (!firstResult) {
-    throw new Error(`找不到地點：${location}`);
+async function resolveLocation(input: LocationResolutionInput): Promise<GeocodingResult> {
+  const queries = buildLocationQueries(input);
+  const candidates: Array<{ candidate: GeocodingResult; query: ResolvedLocationQuery }> = [];
+  const seen = new Set<string>();
+
+  for (const query of queries) {
+    const results = await geocodeLocation(query);
+    for (const candidate of results) {
+      const key = `${candidate.latitude}:${candidate.longitude}:${candidate.name}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      candidates.push({ candidate, query });
+    }
   }
 
-  return firstResult;
+  return chooseBestCandidate(candidates, input);
 }
 
 function numberValue(
@@ -166,9 +372,9 @@ function numberValue(
 }
 
 export const weatherTool = tool(
-  async ({ location }) => {
+  async ({ location, country, region }) => {
     try {
-      const place = await resolveLocation(location);
+      const place = await resolveLocation({ location, country, region });
       const forecastUrl = new URL("https://api.open-meteo.com/v1/forecast");
       forecastUrl.searchParams.set("latitude", String(place.latitude));
       forecastUrl.searchParams.set("longitude", String(place.longitude));
@@ -195,34 +401,34 @@ export const weatherTool = tool(
       const current = forecast.current;
 
       if (!current) {
-        throw new Error("Open-Meteo 回傳缺少 current weather 資料");
+        throw new Error("Open-Meteo did not return current weather data.");
       }
 
       const units = forecast.current_units ?? {};
       const weatherCode = numberValue(current, "weather_code");
       const windDirection = numberValue(current, "wind_direction_10m");
       const sourceUrl = forecastUrl.toString();
-      const displayName = [place.name, place.admin1, place.country]
-        .filter(Boolean)
-        .join(", ");
+      const displayName = formatCandidate(place);
 
       return [
-        `資料來源：Open-Meteo current weather API`,
-        `查詢地點：${displayName} (${forecast.latitude}, ${forecast.longitude})`,
-        `觀測時間：${String(current.time)}，時區：${forecast.timezone}`,
-        `天氣狀態：${describeWeatherCode(weatherCode)} (code ${weatherCode ?? "unknown"})`,
-        `氣溫：${current.temperature_2m}${units.temperature_2m ?? ""}`,
-        `體感溫度：${current.apparent_temperature}${units.apparent_temperature ?? ""}`,
-        `相對濕度：${current.relative_humidity_2m}${units.relative_humidity_2m ?? ""}`,
-        `降水量：${current.precipitation}${units.precipitation ?? ""}`,
-        `雲量：${current.cloud_cover}${units.cloud_cover ?? ""}`,
-        `風速：${current.wind_speed_10m}${units.wind_speed_10m ?? ""}，風向：${describeWindDirection(windDirection)} (${windDirection ?? "unknown"}${units.wind_direction_10m ?? ""})`,
-        `陣風：${current.wind_gusts_10m}${units.wind_gusts_10m ?? ""}`,
-        `氣壓：${current.pressure_msl}${units.pressure_msl ?? ""}`,
+        "Provider: Open-Meteo current weather API",
+        "Data scope: latest current weather observation, not a full-day forecast.",
+        `Resolved location: ${displayName} (${forecast.latitude}, ${forecast.longitude})`,
+        `Observation time: ${String(current.time)}, timezone: ${forecast.timezone}`,
+        `Condition: ${describeWeatherCode(weatherCode)} (code ${weatherCode ?? "unknown"})`,
+        `Temperature: ${current.temperature_2m}${units.temperature_2m ?? ""}`,
+        `Feels like: ${current.apparent_temperature}${units.apparent_temperature ?? ""}`,
+        `Humidity: ${current.relative_humidity_2m}${units.relative_humidity_2m ?? ""}`,
+        `Precipitation: ${current.precipitation}${units.precipitation ?? ""}`,
+        `Rain: ${current.rain}${units.rain ?? ""}`,
+        `Cloud cover: ${current.cloud_cover}${units.cloud_cover ?? ""}`,
+        `Wind: ${current.wind_speed_10m}${units.wind_speed_10m ?? ""}, direction ${describeWindDirection(windDirection)} (${windDirection ?? "unknown"}${units.wind_direction_10m ?? ""})`,
+        `Wind gusts: ${current.wind_gusts_10m}${units.wind_gusts_10m ?? ""}`,
+        `Pressure: ${current.pressure_msl}${units.pressure_msl ?? ""}`,
         `Source URL: ${sourceUrl}`,
       ].join("\n");
     } catch (error) {
-      return `Error: 無法取得即時天氣資料 - ${
+      return `Error: current_weather failed - ${
         error instanceof Error ? error.message : String(error)
       }`;
     }
@@ -230,12 +436,17 @@ export const weatherTool = tool(
   {
     name: "current_weather",
     description:
-      "Get real-time current weather for a city or location using Open-Meteo. Use this for questions about current weather, temperature, humidity, rain, wind, or forecasts such as '高雄天氣如何'.",
+      "Get real-time current weather for a city or location using Open-Meteo. Use this for current weather, temperature, humidity, rain, wind, or forecast questions. Provide country or region when the location is ambiguous. The tool does not contain built-in city aliases; pass the most geocoding-friendly place name you can infer.",
     schema: z.object({
-      location: z
+      location: z.string().min(1).describe("City or location name."),
+      country: z
         .string()
-        .min(1)
-        .describe("City or location name, for example '高雄', 'Kaohsiung', or 'Tokyo'."),
+        .optional()
+        .describe("Optional country hint, for example 'Taiwan', 'Japan', or 'United States'."),
+      region: z
+        .string()
+        .optional()
+        .describe("Optional state, province, or administrative region hint, for example 'New York'."),
     }),
   }
 );

@@ -3,41 +3,89 @@ import { z } from "zod";
 
 import { getEnv } from "../platform/env.js";
 
-type BraveSearchResult = {
+type TavilySearchDepth = "basic" | "advanced";
+type TavilyTopic = "general" | "news" | "finance";
+type TavilyTimeRange = "day" | "week" | "month" | "year";
+
+type TavilySearchResult = {
   title?: string;
   url?: string;
-  description?: string;
+  content?: string;
+  score?: number;
+  raw_content?: string | null;
+  favicon?: string;
+  published_date?: string;
+};
+
+type TavilySearchResponse = {
+  query?: string;
+  answer?: string;
+  results?: TavilySearchResult[];
+  response_time?: number | string;
+  auto_parameters?: {
+    topic?: string;
+    search_depth?: string;
+  };
+  usage?: {
+    credits?: number;
+  };
+  request_id?: string;
+};
+
+type NormalizedSearchResult = {
+  title: string;
+  url: string;
+  snippet: string;
+  sourceType: TavilyTopic;
+  score?: number;
   age?: string;
-  profile?: {
-    name?: string;
-    url?: string;
-  };
+  favicon?: string;
+  query: string;
 };
 
-type BraveSearchResponse = {
-  query?: {
-    original?: string;
-  };
-  web?: {
-    results?: BraveSearchResult[];
-  };
-  news?: {
-    results?: BraveSearchResult[];
-  };
-};
+function hasUsableApiKey(apiKey: string | undefined): apiKey is string {
+  if (!apiKey) {
+    return false;
+  }
 
-async function fetchJson<T>(url: URL, headers: Record<string, string>): Promise<T> {
+  const normalized = apiKey.trim().toLowerCase();
+  return !["", "your_tavily_api_key", "your_tavily_api_key_here", "changeme"].includes(
+    normalized
+  );
+}
+
+function mapFreshness(freshness: "pd" | "pw" | "pm" | "py" | undefined): TavilyTimeRange | undefined {
+  switch (freshness) {
+    case "pd":
+      return "day";
+    case "pw":
+      return "week";
+    case "pm":
+      return "month";
+    case "py":
+      return "year";
+    default:
+      return undefined;
+  }
+}
+
+async function postJson<T>(url: URL, body: unknown, headers: Record<string, string>): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10_000);
+  const timeout = setTimeout(() => controller.abort(), 15_000);
 
   try {
     const response = await fetch(url, {
+      method: "POST",
       signal: controller.signal,
       headers,
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
-      throw new Error(`${response.status} ${response.statusText}`);
+      const errorText = await response.text().catch(() => "");
+      throw new Error(
+        `${response.status} ${response.statusText}${errorText ? ` - ${errorText.slice(0, 500)}` : ""}`
+      );
     }
 
     return (await response.json()) as T;
@@ -46,18 +94,38 @@ async function fetchJson<T>(url: URL, headers: Record<string, string>): Promise<
   }
 }
 
-function formatResults(results: BraveSearchResult[], sourceType: string): string {
+function normalizeResults(
+  results: TavilySearchResult[],
+  query: string,
+  topic: TavilyTopic
+): NormalizedSearchResult[] {
+  return results
+    .map((result) => ({
+      title: result.title ?? "Untitled",
+      url: result.url ?? "",
+      snippet: result.content ?? result.raw_content ?? "",
+      sourceType: topic,
+      score: result.score,
+      age: result.published_date,
+      favicon: result.favicon,
+      query,
+    }))
+    .filter((result) => result.url.length > 0);
+}
+
+function formatResults(results: NormalizedSearchResult[]): string {
   if (results.length === 0) {
-    return `${sourceType}: no results`;
+    return "No results";
   }
 
   return results
     .map((result, index) => {
       return [
-        `${index + 1}. ${result.title ?? "Untitled"}`,
-        `URL: ${result.url ?? result.profile?.url ?? "N/A"}`,
-        result.description ? `Snippet: ${result.description}` : undefined,
-        result.age ? `Age: ${result.age}` : undefined,
+        `${index + 1}. ${result.title}`,
+        `URL: ${result.url}`,
+        result.snippet ? `Snippet: ${result.snippet}` : undefined,
+        result.score !== undefined ? `Score: ${result.score}` : undefined,
+        result.age ? `Published/Updated: ${result.age}` : undefined,
       ]
         .filter(Boolean)
         .join("\n");
@@ -66,70 +134,115 @@ function formatResults(results: BraveSearchResult[], sourceType: string): string
 }
 
 export const webSearchTool = tool(
-  async ({ query, count, freshness }) => {
-    const apiKey = getEnv("BRAVE_API_KEY");
+  async ({ query, count, freshness, format, searchDepth, topic }) => {
+    const apiKey = getEnv("TAVILY_API_KEY");
+    const requestedFormat = format ?? "text";
+    const selectedTopic = topic ?? "general";
 
-    if (!apiKey) {
-      return [
-        "Error: BRAVE_API_KEY is not configured.",
-        "Set BRAVE_API_KEY in backend/.env to enable real web search.",
+    if (!hasUsableApiKey(apiKey)) {
+      const message = [
+        "Error: TAVILY_API_KEY is not configured.",
+        "Set TAVILY_API_KEY in backend/.env to enable real web search.",
         "This tool intentionally does not fabricate search results.",
       ].join("\n");
+      return requestedFormat === "json"
+        ? JSON.stringify({ error: message, results: [] }, null, 2)
+        : message;
     }
 
     try {
-      const url = new URL("https://api.search.brave.com/res/v1/web/search");
-      url.searchParams.set("q", query);
-      url.searchParams.set("count", String(Math.min(Math.max(count ?? 5, 1), 10)));
-      url.searchParams.set("safesearch", "moderate");
-      url.searchParams.set("text_decorations", "false");
+      const maxResults = Math.min(Math.max(count ?? 5, 1), 20);
+      const body = {
+        query,
+        max_results: maxResults,
+        search_depth: searchDepth ?? "basic",
+        topic: selectedTopic,
+        time_range: mapFreshness(freshness),
+        include_answer: false,
+        include_raw_content: false,
+        include_images: false,
+      };
 
-      if (freshness) {
-        url.searchParams.set("freshness", freshness);
+      const data = await postJson<TavilySearchResponse>(
+        new URL("https://api.tavily.com/search"),
+        body,
+        {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "User-Agent": "chat-gun-react-agent/0.1",
+        }
+      );
+
+      const normalizedResults = normalizeResults(
+        data.results ?? [],
+        data.query ?? query,
+        selectedTopic
+      );
+
+      if (requestedFormat === "json") {
+        return JSON.stringify(
+          {
+            query: data.query ?? query,
+            provider: "Tavily Search API",
+            results: normalizedResults,
+            responseTime: data.response_time,
+            usage: data.usage,
+            requestId: data.request_id,
+          },
+          null,
+          2
+        );
       }
 
-      const data = await fetchJson<BraveSearchResponse>(url, {
-        "x-subscription-token": apiKey,
-        "User-Agent": "chat-gun-react-agent/0.1",
-      });
-
-      const webResults = data.web?.results ?? [];
-      const newsResults = data.news?.results ?? [];
-
       return [
-        `Search query: ${data.query?.original ?? query}`,
-        "Provider: Brave Search API",
+        `Search query: ${data.query ?? query}`,
+        "Provider: Tavily Search API",
+        data.usage?.credits !== undefined ? `Credits used: ${data.usage.credits}` : undefined,
+        data.request_id ? `Request ID: ${data.request_id}` : undefined,
         "",
-        "Web results:",
-        formatResults(webResults, "Web results"),
-        newsResults.length ? "\nNews results:" : "",
-        newsResults.length ? formatResults(newsResults, "News results") : "",
+        "Results:",
+        formatResults(normalizedResults),
       ]
-        .filter((part) => part.length > 0)
+        .filter((part) => part !== undefined && part.length > 0)
         .join("\n");
     } catch (error) {
-      return `Error: web_search failed - ${
+      const message = `Error: web_search failed - ${
         error instanceof Error ? error.message : String(error)
       }`;
+      return requestedFormat === "json"
+        ? JSON.stringify({ error: message, results: [] }, null, 2)
+        : message;
     }
   },
   {
     name: "web_search",
     description:
-      "Search the public web using Brave Search API. Use this for current events, factual lookup, sources, product/news/law/regulation changes, and research tasks that need internet evidence.",
+      "Search the public web using Tavily Search API. Use this for current events, factual lookup, sources, product/news/law/regulation changes, and research tasks that need internet evidence.",
     schema: z.object({
       query: z.string().min(1).describe("Search query."),
       count: z
         .number()
         .int()
         .min(1)
-        .max(10)
+        .max(20)
         .optional()
-        .describe("Number of results, 1 to 10. Default is 5."),
+        .describe("Number of results, 1 to 20. Default is 5."),
       freshness: z
         .enum(["pd", "pw", "pm", "py"])
         .optional()
         .describe("Optional recency filter: pd day, pw week, pm month, py year."),
+      searchDepth: z
+        .enum(["basic", "advanced"])
+        .optional()
+        .describe("Tavily search depth. basic costs fewer credits; advanced does deeper retrieval."),
+      topic: z
+        .enum(["general", "news", "finance"])
+        .optional()
+        .describe("Tavily search topic. Use news for current events and finance for market/company financial topics."),
+      format: z
+        .enum(["text", "json"])
+        .optional()
+        .describe("Return format. Use json when another graph node will rank or deduplicate results."),
     }),
   }
 );
