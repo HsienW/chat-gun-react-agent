@@ -6,7 +6,7 @@
 
 🤖 Chat Gun React Agent 是一個 fullstack AI agent studio，使用 React、TypeScript、LangGraph JS、Gemini，並可選擇整合 MCP tools。
 
-💡 本專案僅做個人研究使用。
+💡 本專案僅做個人研究使用 (This project is for personal research use only)。
 
 ## Demo
 
