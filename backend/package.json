@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "author": "HsienW",
   "scripts": {
     "dev": "langgraphjs dev",
     "build": "tsc -p tsconfig.json --noEmit",

@@ -4,18 +4,10 @@ import { ToolNode } from "@langchain/langgraph/prebuilt";
 
 import { llmGateway } from "../platform/llm-gateway.js";
 import { mcpSystemMessage } from "../prompts.js";
-import { calculatorTool } from "../tools/calculator.js";
-import { loadMcpTools } from "../tools/mcp-loader.js";
+import { loadAgentTools } from "../tools/registry.js";
+import { normalizeAiMessageForStream } from "./message-normalization.js";
 
-const localTools = [calculatorTool];
-const mcpTools =
-  process.env.MCP_LOAD_ON_START === "true"
-    ? await loadMcpTools().catch((error) => {
-        console.warn("MCP tools 載入失敗，將只使用 local tools。", error);
-        return [];
-      })
-    : [];
-const tools = [...localTools, ...mcpTools];
+const tools = await loadAgentTools("mcp_agent", { includeMcp: true });
 const toolNode = new ToolNode(tools);
 
 function shouldContinue(state: typeof MessagesAnnotation.State): "tools" | typeof END {
@@ -35,8 +27,9 @@ async function callModel(
   });
 
   if (!llm.bindTools) {
-    throw new Error("目前 LLM Gateway 回傳的 model 不支援 bindTools。");
+    throw new Error("The selected model does not support bindTools.");
   }
+
   const modelWithTools = llm.bindTools(tools);
   const response = await modelWithTools.invoke([
     { role: "system", content: mcpSystemMessage },
@@ -44,7 +37,7 @@ async function callModel(
   ]);
 
   return {
-    messages: [response],
+    messages: [normalizeAiMessageForStream(response)],
   };
 }
 

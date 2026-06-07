@@ -1,11 +1,72 @@
 import { useStream } from '@langchain/langgraph-sdk/react';
 import type { Message } from '@langchain/langgraph-sdk';
 import { useState, useEffect, useRef, useCallback } from 'react';
+
 import { ProcessedEvent } from '@/components/ActivityTimeline';
 import { WelcomeScreen } from '@/components/WelcomeScreen';
 import { ChatMessagesView } from '@/components/ChatMessagesView';
 import { AgentId, DEFAULT_AGENT } from '@/types/agents';
 import { getAgentById, isValidAgentId } from '@/lib/agents';
+import { extractToolCallsFromMessage } from '@/types/messages';
+
+function stringifyEventData(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(stringifyEventData).join(', ');
+  if (value && typeof value === 'object') return JSON.stringify(value);
+  return String(value ?? '');
+}
+
+function getMessageToolCalls(message: unknown): Array<{ name?: string }> {
+  if (!message || typeof message !== 'object') return [];
+  return extractToolCallsFromMessage(message as never);
+}
+
+function getNodeMessages(nodeValue: unknown): unknown[] {
+  if (!nodeValue || typeof nodeValue !== 'object') return [];
+  const messages = (nodeValue as { messages?: unknown }).messages;
+  return Array.isArray(messages) ? messages : [];
+}
+
+function processDeepResearchEvent(
+  event: Record<string, unknown>
+): ProcessedEvent | null {
+  if ('call_model' in event) {
+    const messages = getNodeMessages(event.call_model);
+    const lastMessage = messages[messages.length - 1];
+    const toolCalls = getMessageToolCalls(lastMessage);
+
+    return {
+      title: toolCalls.length ? 'Model Requested Tools' : 'Model Response',
+      data: toolCalls.length
+        ? toolCalls.map((call) => call.name ?? 'tool').join(', ')
+        : 'No tool call requested; model is ready to answer.',
+    };
+  }
+
+  if ('tools' in event) {
+    const messages = getNodeMessages(event.tools);
+    const toolNames = messages
+      .map((message) => {
+        if (!message || typeof message !== 'object') return undefined;
+        return (message as { name?: string }).name;
+      })
+      .filter(Boolean);
+
+    return {
+      title: 'Tool Results',
+      data: toolNames.length ? toolNames.join(', ') : stringifyEventData(event.tools),
+    };
+  }
+
+  if ('finalize_answer' in event) {
+    return {
+      title: 'Final Answer',
+      data: 'Generated final answer from accumulated conversation and tool results.',
+    };
+  }
+
+  return null;
+}
 
 export default function App() {
   const [processedEventsTimeline, setProcessedEventsTimeline] = useState<
@@ -16,7 +77,6 @@ export default function App() {
   >({});
   const [selectedAgentId, setSelectedAgentId] = useState(DEFAULT_AGENT);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const hasFinalizeEventOccurredRef = useRef(false);
 
   const validateAgentId = useCallback((agentId: string): string => {
     if (isValidAgentId(agentId)) {
@@ -33,9 +93,6 @@ export default function App() {
         setSelectedAgentId(validAgentId as AgentId);
         setProcessedEventsTimeline([]);
         setHistoricalActivities({});
-        hasFinalizeEventOccurredRef.current = false;
-        // 目前切換 agents 時直接重新載入頁面
-        // 這能在不引入複雜 thread management 的情況下重置乾淨 state
         window.location.reload();
       }
     },
@@ -65,91 +122,21 @@ export default function App() {
       console.log(event);
     },
     onUpdateEvent: (event: Record<string, unknown>) => {
-      // 只處理啟用 showActivityTimeline 的 agents events
       const currentAgent = getAgentById(selectedAgentId);
-
-      if (!currentAgent?.showActivityTimeline) {
-        return;
-      }
+      if (!currentAgent?.showActivityTimeline) return;
 
       let processedEvent: ProcessedEvent | null = null;
 
       if (selectedAgentId === AgentId.DEEP_RESEARCHER) {
-        // Deep researcher agent events
-        if (
-          'generate_query' in event &&
-          event.generate_query &&
-          typeof event.generate_query === 'object'
-        ) {
-          const generateQuery = event.generate_query as {
-            query_list: string[];
-          };
-          processedEvent = {
-            title: '產生 Search Queries',
-            data: generateQuery.query_list.join(', '),
-          };
-        } else if (
-          'web_research' in event &&
-          event.web_research &&
-          typeof event.web_research === 'object'
-        ) {
-          const webResearch = event.web_research as {
-            sources_gathered?: { label?: string }[];
-          };
-          const sources = webResearch.sources_gathered || [];
-          const numSources = sources.length;
-          const uniqueLabels = [
-            ...new Set(sources.map((s) => s.label).filter(Boolean)),
-          ];
-          const exampleLabels = uniqueLabels.slice(0, 3).join(', ');
-          processedEvent = {
-            title: 'Web Research',
-            data: `已蒐集 ${numSources} 個 sources。相關項目：${
-              exampleLabels || 'N/A'
-            }。`,
-          };
-        } else if (
-          'reflection' in event &&
-          event.reflection &&
-          typeof event.reflection === 'object'
-        ) {
-          const reflection = event.reflection as {
-            is_sufficient: boolean;
-            follow_up_queries: string[];
-          };
-          processedEvent = {
-            title: 'Reflection',
-            data: reflection.is_sufficient
-              ? 'Search 成功，正在產生 final answer。'
-              : `需要更多資訊，正在搜尋 ${reflection.follow_up_queries.join(
-                  ', '
-                )}`,
-          };
-        } else if ('finalize_answer' in event) {
-          processedEvent = {
-            title: '產生 Final Answer',
-            data: '正在整理並呈現 final answer。',
-          };
-          hasFinalizeEventOccurredRef.current = true;
-        }
+        processedEvent = processDeepResearchEvent(event);
       }
 
-      // 處理所有 agents 的 tool call chunks
-      if (
-        'tool_call_chunks' in event &&
-        Array.isArray(event.tool_call_chunks)
-      ) {
-        // 處理 tool call chunks，以即時顯示 tool execution
+      if ('tool_call_chunks' in event && Array.isArray(event.tool_call_chunks)) {
         const toolChunks = event.tool_call_chunks as Array<{ name?: string }>;
-        setProcessedEventsTimeline((prevEvents) => [
-          ...prevEvents,
-          {
-            title: 'Tool Execution',
-            data: `正在執行 ${toolChunks
-              .map((chunk) => chunk.name || 'tool')
-              .join(', ')}`,
-          },
-        ]);
+        processedEvent = {
+          title: 'Tool Call Streaming',
+          data: toolChunks.map((chunk) => chunk.name || 'tool').join(', '),
+        };
       }
 
       if (processedEvent) {
@@ -173,19 +160,17 @@ export default function App() {
   }, [thread.messages]);
 
   useEffect(() => {
-    if (
-      hasFinalizeEventOccurredRef.current &&
-      !thread.isLoading &&
-      thread.messages.length > 0
-    ) {
-      const lastMessage = thread.messages[thread.messages.length - 1];
-      if (lastMessage && lastMessage.type === 'ai' && lastMessage.id) {
-        setHistoricalActivities((prev) => ({
+    if (thread.isLoading || processedEventsTimeline.length === 0) return;
+
+    const lastMessage = thread.messages[thread.messages.length - 1];
+    if (lastMessage?.type === 'ai' && lastMessage.id) {
+      setHistoricalActivities((prev) => {
+        if (prev[lastMessage.id!]) return prev;
+        return {
           ...prev,
           [lastMessage.id!]: [...processedEventsTimeline],
-        }));
-      }
-      hasFinalizeEventOccurredRef.current = false;
+        };
+      });
     }
   }, [thread.messages, thread.isLoading, processedEventsTimeline]);
 
@@ -201,48 +186,41 @@ export default function App() {
 
       handleAgentSwitch(validAgentId);
       setProcessedEventsTimeline([]);
-      hasFinalizeEventOccurredRef.current = false;
 
       const newMessages: Message[] = [
-        ...(thread.messages || []),
         {
           type: 'human',
           content: submittedInputValue,
-          id: Date.now().toString(),
+          id: crypto.randomUUID(),
         },
       ];
 
-      // 只針對 deep researcher 傳入 research-specific parameters
       if (validAgentId === AgentId.DEEP_RESEARCHER) {
-        // 將 effort 轉成 initial_search_query_count 與 max_research_loops
-        // low 代表最多 1 個 loop 與 1 個 query
-        // medium 代表最多 3 個 loops 與 3 個 queries
-        // high 代表最多 10 個 loops 與 5 個 queries
-        let initial_search_query_count = 0;
-        let max_research_loops = 0;
+        let max_research_loops = 3;
+        let initial_search_query_count = 3;
+
         switch (effort) {
           case 'low':
+            max_research_loops = 2;
             initial_search_query_count = 1;
-            max_research_loops = 1;
             break;
           case 'medium':
+            max_research_loops = 6;
             initial_search_query_count = 3;
-            max_research_loops = 3;
             break;
           case 'high':
+            max_research_loops = 12;
             initial_search_query_count = 5;
-            max_research_loops = 10;
             break;
         }
 
         thread.submit({
           messages: newMessages,
-          initial_search_query_count: initial_search_query_count,
-          max_research_loops: max_research_loops,
+          initial_search_query_count,
+          max_research_loops,
           reasoning_model: model,
         });
       } else {
-        // Chatbot 只傳送 messages
         thread.submit({
           messages: newMessages,
         });

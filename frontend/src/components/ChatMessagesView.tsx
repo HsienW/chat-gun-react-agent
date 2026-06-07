@@ -17,9 +17,9 @@ import { ToolMessageDisplay } from '@/components/ToolMessageDisplay';
 import {
   extractToolCallsFromMessage,
   findToolMessageForCall,
+  messageContentToDisplayText,
 } from '@/types/messages';
 import { ToolCall } from '@/types/tools';
-import { AgentId } from '@/types/agents';
 
 // 將 messages 分組，合併 AI responses 與對應的 tool calls/results
 interface MessageGroup {
@@ -257,7 +257,7 @@ const mdComponents = {
 };
 
 const messageBubbleClass =
-  'text-[#FFF7ED] rounded-3xl break-words bg-[#6e3030] max-w-[100%] sm:max-w-[90%] px-4 pt-3 shadow-lg shadow-black/10';
+  'text-[#FFF7ED] rounded-3xl break-words bg-[#6e3030] max-w-[100%] sm:max-w-[90%] px-4 py-4 shadow-lg shadow-black/10';
 
 // HumanMessageBubble props
 interface HumanMessageBubbleProps {
@@ -276,9 +276,8 @@ const HumanMessageBubble: React.FC<HumanMessageBubbleProps> = ({
       className={cn(messageBubbleClass, 'min-h-7 rounded-br-lg')}
     >
       <ReactMarkdown components={mdComponents}>
-        {typeof message.content === 'string'
-          ? message.content
-          : JSON.stringify(message.content)}
+        {messageContentToDisplayText(message.content) ||
+          JSON.stringify(message.content)}
       </ReactMarkdown>
     </div>
   );
@@ -341,7 +340,7 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
       (activityForThisBubble && activityForThisBubble.length > 0));
 
   // 檢查是否要對 DeepResearcher 隱藏 tool messages
-  const shouldHideToolMessages = selectedAgentId === AgentId.DEEP_RESEARCHER;
+  const shouldHideToolMessages = false;
 
   // 檢查是否要隱藏 copy button，也就是此 message group 仍在 loading 時
   const shouldHideCopyButton = isLastGroup && isOverallLoading;
@@ -349,11 +348,7 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
   // 合併所有文字 content，供 copy 功能使用
   const combinedTextContent = group.messages
     .filter((msg) => msg.type === 'ai' && msg.content)
-    .map((msg) =>
-      typeof msg.content === 'string'
-        ? msg.content
-        : JSON.stringify(msg.content)
-    )
+    .map((msg) => messageContentToDisplayText(msg.content))
     .filter((content) => content.trim())
     .join('\n\n');
 
@@ -378,19 +373,15 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
       {group.messages.map((message, index) => {
         if (message.type === 'ai') {
           const toolCalls = extractToolCallsFromMessage(message);
-          const hasContent =
-            message.content &&
-            typeof message.content === 'string' &&
-            message.content.trim();
+          const displayText = messageContentToDisplayText(message.content);
+          const hasContent = displayText.trim().length > 0;
 
           return (
             <div key={message.id || `ai-${index}`} className="space-y-3">
               {/* 若存在 AI content，則 render */}
               {hasContent && (
                 <ReactMarkdown components={mdComponents}>
-                  {typeof message.content === 'string'
-                    ? message.content
-                    : JSON.stringify(message.content)}
+                  {displayText}
                 </ReactMarkdown>
               )}
 
@@ -401,10 +392,19 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
                     <ToolMessageDisplay
                       key={toolCall.id}
                       toolCall={toolCall}
-                      toolMessage={findToolMessageForCall(
-                        allMessages,
-                        toolCall.id
-                      )}
+                      toolMessage={
+                        findToolMessageForCall(
+                          group.messages,
+                          toolCall.id,
+                          toolCall.name,
+                          true
+                        ) ??
+                        findToolMessageForCall(
+                          allMessages,
+                          toolCall.id,
+                          toolCall.name
+                        )
+                      }
                       isExpanded={expandedTools.has(toolCall.id)}
                       onToggle={() => toggleTool(toolCall.id)}
                     />

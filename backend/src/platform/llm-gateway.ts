@@ -26,8 +26,16 @@ class GeminiGateway implements LlmGateway {
 
 export const llmGateway: LlmGateway = new GeminiGateway();
 
+const deprecatedModelAliases: Record<string, string> = {
+  "gemini-2.5-flash-preview-04-17": "gemini-2.5-flash",
+  "gemini-2.5-pro-preview-05-06": "gemini-2.5-pro",
+};
+
 export function resolveModel(requestedModel: unknown, fallback: string): string {
-  return typeof requestedModel === "string" && requestedModel.trim()
-    ? requestedModel
-    : fallback;
+  if (typeof requestedModel !== "string" || !requestedModel.trim()) {
+    return fallback;
+  }
+
+  const model = requestedModel.trim();
+  return deprecatedModelAliases[model] ?? model;
 }
