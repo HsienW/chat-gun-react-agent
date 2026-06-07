@@ -98,7 +98,7 @@ MCP_AGENT_MODEL=gemini-2.5-flash
 TAVILY_API_KEY=your_tavily_api_key
 ```
 
-`current_weather` 使用 Open-Meteo，不需要 API key。若需要自訂地名 alias，請用環境變數設定，不要在程式碼寫死：
+`current_weather` 使用 Open-Meteo，不需要 API key。若需要自訂地名 alias，請用環境變數設定：
 
 ```env
 WEATHER_LOCATION_ALIASES_JSON={"台北":{"query":"Taipei","country":"Taiwan"}}
@@ -218,7 +218,7 @@ TAVILY_API_KEY=your_tavily_api_key
 - `chatbot`：純 LLM 對話，沒有 tool calling。
 - `math_agent`：使用本地 `calculator_tool`。
 - `mcp_agent`：使用 `ToolNode` 與 `bindTools`，可載入 native tools 與 MCP tools。
-- `deep_researcher`：使用明確的 research orchestration graph：`plan_research -> targeted_tools | search_web -> rank_sources -> fetch_sources -> extract_evidence -> verify_citations -> synthesize_answer`。預設使用 native tools，不做特定城市或特定問題的硬編碼路由。
+- `deep_researcher`：使用明確的 research orchestration graph：`plan_research -> targeted_tools | search_web -> rank_sources -> fetch_sources -> extract_evidence -> verify_citations -> synthesize_answer`。預設使用 native tools。
 
 `deep_researcher` 與 `mcp_agent` 會將 Gemini 回傳的 raw `functionCall` content block 正規化為 LangChain 標準 `tool_calls`，避免 frontend streaming 發生 `Unknown content type undefined`。
 
