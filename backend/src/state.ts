@@ -8,9 +8,37 @@ export interface MessageState {
   messages: BaseMessage[];
 }
 
+export function getMessageType(message: BaseMessage | undefined): string | undefined {
+  if (!message) {
+    return undefined;
+  }
+
+  const maybeTypedMessage = message as BaseMessage & {
+    type?: string;
+    role?: string;
+    _getType?: () => string;
+    getType?: () => string;
+  };
+
+  return (
+    maybeTypedMessage.type ??
+    maybeTypedMessage.role ??
+    maybeTypedMessage.getType?.() ??
+    maybeTypedMessage._getType?.()
+  );
+}
+
+export function isHumanMessage(message: BaseMessage | undefined): boolean {
+  return message instanceof HumanMessage || getMessageType(message) === "human";
+}
+
+export function isAiMessage(message: BaseMessage | undefined): boolean {
+  return message instanceof AIMessage || getMessageType(message) === "ai";
+}
+
 export function getLatestUserMessage(messages: BaseMessage[]): string {
   const latest = [...messages].reverse().find((message) => {
-    return message instanceof HumanMessage || message.getType() === "human";
+    return isHumanMessage(message);
   });
   return messageContentToString(latest);
 }
@@ -19,10 +47,7 @@ export function buildConversationContext(messages: BaseMessage[]): string {
   return messages
     .slice(-10)
     .map((message) => {
-      const role =
-        message instanceof HumanMessage || message.getType() === "human"
-          ? "Human"
-          : "Assistant";
+      const role = isHumanMessage(message) ? "Human" : "Assistant";
       return `${role}: ${messageContentToString(message)}`;
     })
     .join("\n");
@@ -34,10 +59,7 @@ export function getResearchTopic(messages: BaseMessage[]): string {
   }
   return messages
     .map((message) => {
-      const role =
-        message instanceof AIMessage || message.getType() === "ai"
-          ? "Assistant"
-          : "User";
+      const role = isAiMessage(message) ? "Assistant" : "User";
       return `${role}: ${messageContentToString(message)}`;
     })
     .join("\n");

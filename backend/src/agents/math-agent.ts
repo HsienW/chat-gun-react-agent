@@ -4,12 +4,13 @@ import { END, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph
 
 import { llmGateway } from "../platform/llm-gateway.js";
 import { mathSystemMessage } from "../prompts.js";
+import { isHumanMessage } from "../state.js";
 import { calculatorTool } from "../tools/calculator.js";
 
 function extractExpressionFromUserMessage(messages: BaseMessage[]): string {
   const latestHuman = [...messages]
     .reverse()
-    .find((message) => message.getType() === "human");
+    .find((message) => isHumanMessage(message));
 
   const content =
     typeof latestHuman?.content === "string" ? latestHuman.content : "";
@@ -27,7 +28,7 @@ function extractExpressionFromUserMessage(messages: BaseMessage[]): string {
 function latestUserText(messages: BaseMessage[]): string {
   const latestHuman = [...messages]
     .reverse()
-    .find((message) => message.getType() === "human");
+    .find((message) => isHumanMessage(message));
   return typeof latestHuman?.content === "string" ? latestHuman.content : "";
 }
 
