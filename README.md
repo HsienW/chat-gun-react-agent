@@ -11,15 +11,15 @@
 ## Demo
 
 <p align="center">
-  <img src="./chat-demo.gif" alt="Demo Video" width="1280" />
+  <img src="./chat-gun-demo.gif" alt="Demo Video" width="1280" />
 </p>
 
 <p align="center">
-  <img src="./chat-01.png" alt="Chat Home Screen" width="1280" />
+  <img src="./chat-gun-01.png" alt="Chat Home Screen" width="1280" />
 </p>
 
 <p align="center">
-  <img src="./chat-02.png" alt="Chat Agent Results" width="1280" />
+  <img src="./chat-gun-02.png" alt="Chat Agent Results" width="1280" />
 </p>
 
 ## 目前實際運行方式
