@@ -1,0 +1,19 @@
+{
+  "name": "chat-gun-react-agent-bff",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "author": "HsienW",
+  "scripts": {
+    "dev": "npm run build && node dist/server.js",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.17",
+    "typescript": "~5.7.2"
+  }
+}
