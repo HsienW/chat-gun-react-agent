@@ -1,7 +1,14 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 
-import { getEnv } from "../platform/env.js";
+import {
+  createErrorEnvelope,
+  parseErrorEnvelope,
+  serializeErrorEnvelope,
+} from "../platform/errors.js";
+import { configureNetwork } from "../platform/network.js";
+
+configureNetwork();
 
 type GeocodingResult = {
   name: string;
@@ -27,12 +34,6 @@ type ForecastResponse = {
   current_units?: Record<string, string>;
 };
 
-type LocationAlias = {
-  query: string;
-  country?: string;
-  region?: string;
-};
-
 type LocationResolutionInput = {
   location: string;
   country?: string;
@@ -47,53 +48,7 @@ function normalizeKey(value: string): string {
 }
 
 function normalizeComparable(value: string | undefined): string {
-  return normalizeKey(value ?? "")
-    .replaceAll("臺", "台")
-    .replaceAll("台湾", "台灣");
-}
-
-function loadConfiguredAliases(): Record<string, LocationAlias> {
-  const raw = getEnv("WEATHER_LOCATION_ALIASES_JSON");
-  if (!raw.trim()) {
-    return {};
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
-    }
-
-    return Object.fromEntries(
-      Object.entries(parsed as Record<string, unknown>).flatMap(([key, value]) => {
-        if (!value || typeof value !== "object" || Array.isArray(value)) {
-          return [];
-        }
-
-        const alias = value as Partial<LocationAlias>;
-        if (typeof alias.query !== "string" || !alias.query.trim()) {
-          return [];
-        }
-
-        return [
-          [
-            normalizeKey(key),
-            {
-              query: alias.query.trim(),
-              country: typeof alias.country === "string" ? alias.country : undefined,
-              region: typeof alias.region === "string" ? alias.region : undefined,
-            },
-          ],
-        ];
-      })
-    );
-  } catch {
-    return {};
-  }
-}
-
-function getConfiguredAlias(location: string): LocationAlias | undefined {
-  return loadConfiguredAliases()[normalizeKey(location)];
+  return normalizeKey(value ?? "");
 }
 
 function unique(values: string[]): string[] {
@@ -112,14 +67,7 @@ function unique(values: string[]): string[] {
 }
 
 function buildLocationQueries(input: LocationResolutionInput): ResolvedLocationQuery[] {
-  const configuredAlias = getConfiguredAlias(input.location);
-  const base: LocationResolutionInput = configuredAlias
-    ? {
-        location: configuredAlias.query,
-        country: input.country ?? configuredAlias.country,
-        region: input.region ?? configuredAlias.region,
-      }
-    : input;
+  const base = input;
 
   const variants = unique([
     base.location,
@@ -127,9 +75,6 @@ function buildLocationQueries(input: LocationResolutionInput): ResolvedLocationQ
     base.country ? `${base.location}, ${base.country}` : "",
     base.region ? `${base.location} ${base.region}` : "",
     base.region ? `${base.location}, ${base.region}` : "",
-    base.location.replaceAll("臺", "台"),
-    base.location.replaceAll("台", "臺"),
-    base.location.replace(/[市縣县區区]$/u, ""),
   ]);
 
   return variants.map((location) => ({
@@ -327,6 +272,17 @@ async function fetchJson<T>(url: URL): Promise<T> {
     }
 
     return (await response.json()) as T;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("fetch failed") || message.includes("aborted")) {
+      const proxyHint = process.env.HTTPS_PROXY || process.env.HTTP_PROXY
+        ? "A proxy is configured, but the request still failed. Check that the proxy is reachable by the backend Node process."
+        : "No HTTPS_PROXY/HTTP_PROXY is configured. If this network requires a proxy, set it before starting the backend.";
+      throw new Error(
+        `Weather provider network request failed for ${url.hostname}. ${proxyHint} Raw error: ${message}`
+      );
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -339,8 +295,24 @@ async function geocodeLocation(query: ResolvedLocationQuery): Promise<GeocodingR
   geocodingUrl.searchParams.set("language", "zh");
   geocodingUrl.searchParams.set("format", "json");
 
-  const geocoding = await fetchJson<GeocodingResponse>(geocodingUrl);
-  return geocoding.results ?? [];
+  try {
+    const geocoding = await fetchJson<GeocodingResponse>(geocodingUrl);
+    return geocoding.results ?? [];
+  } catch (error) {
+    throw new Error(
+      serializeErrorEnvelope(
+        createErrorEnvelope(error, {
+          source: "backend",
+          stage: "weather_geocoding",
+          provider: "Open-Meteo",
+          details: {
+            query,
+            url: geocodingUrl.toString(),
+          },
+        })
+      )
+    );
+  }
 }
 
 async function resolveLocation(input: LocationResolutionInput): Promise<GeocodingResult> {
@@ -397,7 +369,25 @@ export const weatherTool = tool(
       );
       forecastUrl.searchParams.set("timezone", place.timezone ?? "auto");
 
-      const forecast = await fetchJson<ForecastResponse>(forecastUrl);
+      let forecast: ForecastResponse;
+      try {
+        forecast = await fetchJson<ForecastResponse>(forecastUrl);
+      } catch (error) {
+        return serializeErrorEnvelope(
+          createErrorEnvelope(error, {
+            source: "backend",
+            stage: "weather_forecast",
+            provider: "Open-Meteo",
+            details: {
+              location,
+              country,
+              region,
+              resolvedLocation: formatCandidate(place),
+              url: forecastUrl.toString(),
+            },
+          })
+        );
+      }
       const current = forecast.current;
 
       if (!current) {
@@ -428,9 +418,22 @@ export const weatherTool = tool(
         `Source URL: ${sourceUrl}`,
       ].join("\n");
     } catch (error) {
-      return `Error: current_weather failed - ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      if (error instanceof Error && parseErrorEnvelope(error.message)) {
+        return error.message;
+      }
+
+      return serializeErrorEnvelope(
+        createErrorEnvelope(error, {
+          source: "backend",
+          stage: "current_weather",
+          provider: "Open-Meteo",
+          details: {
+            location,
+            country,
+            region,
+          },
+        })
+      );
     }
   },
   {

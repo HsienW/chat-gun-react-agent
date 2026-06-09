@@ -1,4 +1,5 @@
 import type { Message as LangGraphMessage } from '@langchain/langgraph-sdk';
+import { formatErrorEnvelope, parseErrorEnvelope } from './errors';
 import { ToolCall, ToolMessage } from './tools';
 
 export interface ExtendedMessage {
@@ -156,6 +157,11 @@ export function findToolMessageForCall(
 }
 
 export function messageContentToDisplayText(content: unknown): string {
+  const envelope = parseErrorEnvelope(content);
+  if (envelope) {
+    return formatErrorEnvelope(envelope);
+  }
+
   if (typeof content === 'string') {
     return content;
   }

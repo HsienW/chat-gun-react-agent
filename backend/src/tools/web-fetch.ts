@@ -1,17 +1,163 @@
 import { tool } from "@langchain/core/tools";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { z } from "zod";
+
+import { configureNetwork } from "../platform/network.js";
+
+configureNetwork();
 
 const DEFAULT_MAX_CONTENT_CHARS = 12_000;
 const ABSOLUTE_MAX_CONTENT_CHARS = 30_000;
+const MAX_RESPONSE_BYTES = 1_000_000;
+const DEFAULT_ALLOWED_PORTS = new Set(["80", "443"]);
 
-function assertHttpUrl(rawUrl: string): URL {
+function getAllowedPorts(): Set<string> {
+  const configuredPorts = (process.env.WEB_FETCH_ALLOWED_PORTS ?? "")
+    .split(",")
+    .map((port) => port.trim())
+    .filter(Boolean);
+
+  return configuredPorts.length > 0 ? new Set(configuredPorts) : DEFAULT_ALLOWED_PORTS;
+}
+
+function getEffectivePort(url: URL): string {
+  if (url.port) {
+    return url.port;
+  }
+
+  return url.protocol === "https:" ? "443" : "80";
+}
+
+function isPrivateIpv4(address: string): boolean {
+  const octets = address.split(".").map((part) => Number(part));
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part))) {
+    return true;
+  }
+
+  const [first, second] = octets;
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 198 && (second === 18 || second === 19)) ||
+    first >= 224
+  );
+}
+
+function isPrivateIpv6(address: string): boolean {
+  const normalized = address.toLowerCase();
+  return (
+    normalized === "::" ||
+    normalized === "::1" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe80:") ||
+    normalized.startsWith("ff") ||
+    normalized.startsWith("::ffff:127.") ||
+    normalized.startsWith("::ffff:10.") ||
+    normalized.startsWith("::ffff:192.168.")
+  );
+}
+
+function assertPublicIp(address: string): void {
+  const ipVersion = isIP(address);
+  if (ipVersion === 4 && isPrivateIpv4(address)) {
+    throw new Error(`Blocked non-public IPv4 address: ${address}`);
+  }
+  if (ipVersion === 6 && isPrivateIpv6(address)) {
+    throw new Error(`Blocked non-public IPv6 address: ${address}`);
+  }
+  if (ipVersion === 0) {
+    throw new Error(`Invalid resolved IP address: ${address}`);
+  }
+}
+
+async function assertHttpUrl(rawUrl: string): Promise<URL> {
   const url = new URL(rawUrl);
 
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("Only http and https URLs are allowed");
   }
 
+  if (url.username || url.password) {
+    throw new Error("URLs with embedded credentials are not allowed");
+  }
+
+  const effectivePort = getEffectivePort(url);
+  if (!getAllowedPorts().has(effectivePort)) {
+    throw new Error(`Port ${effectivePort} is not allowed by WEB_FETCH_ALLOWED_PORTS`);
+  }
+
+  if (["localhost", "localhost."].includes(url.hostname.toLowerCase())) {
+    throw new Error("localhost URLs are not allowed");
+  }
+
+  if (isIP(url.hostname)) {
+    assertPublicIp(url.hostname);
+    return url;
+  }
+
+  const resolvedAddresses = await lookup(url.hostname, {
+    all: true,
+    verbatim: true,
+  });
+
+  if (resolvedAddresses.length === 0) {
+    throw new Error(`Could not resolve hostname: ${url.hostname}`);
+  }
+
+  for (const address of resolvedAddresses) {
+    assertPublicIp(address.address);
+  }
+
   return url;
+}
+
+async function fetchWithValidatedRedirects(
+  url: URL,
+  init: RequestInit,
+  maxRedirects = 3
+): Promise<Response> {
+  let currentUrl = url;
+
+  for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
+    const response = await fetch(currentUrl, {
+      ...init,
+      redirect: "manual",
+    });
+
+    if (![301, 302, 303, 307, 308].includes(response.status)) {
+      return response;
+    }
+
+    const location = response.headers.get("location");
+    if (!location) {
+      return response;
+    }
+
+    currentUrl = await assertHttpUrl(new URL(location, currentUrl).toString());
+  }
+
+  throw new Error(`Too many redirects; maximum is ${maxRedirects}`);
+}
+
+async function readLimitedText(response: Response): Promise<string> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength && Number(contentLength) > MAX_RESPONSE_BYTES) {
+    throw new Error(`Response is too large; maximum is ${MAX_RESPONSE_BYTES} bytes`);
+  }
+
+  const rawContent = await response.text();
+  if (Buffer.byteLength(rawContent, "utf8") > MAX_RESPONSE_BYTES) {
+    throw new Error(`Response is too large; maximum is ${MAX_RESPONSE_BYTES} bytes`);
+  }
+
+  return rawContent;
 }
 
 function decodeHtmlEntities(text: string): string {
@@ -92,12 +238,12 @@ function limitContent(content: string, maxCharacters: number): string {
 export const webFetchTool = tool(
   async ({ url, maxCharacters }) => {
     try {
-      const parsedUrl = assertHttpUrl(url);
+      const parsedUrl = await assertHttpUrl(url);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 12_000);
 
       try {
-        const response = await fetch(parsedUrl, {
+        const response = await fetchWithValidatedRedirects(parsedUrl, {
           signal: controller.signal,
           headers: {
             Accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.8",
@@ -110,7 +256,7 @@ export const webFetchTool = tool(
         }
 
         const contentType = response.headers.get("content-type") ?? "";
-        const rawContent = await response.text();
+        const rawContent = await readLimitedText(response);
         const metadata = contentType.includes("text/html")
           ? extractHtmlMetadata(rawContent)
           : {};

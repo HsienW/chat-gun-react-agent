@@ -6,6 +6,7 @@ import { ProcessedEvent } from '@/components/ActivityTimeline';
 import { WelcomeScreen } from '@/components/WelcomeScreen';
 import { ChatMessagesView } from '@/components/ChatMessagesView';
 import { AgentId, DEFAULT_AGENT } from '@/types/agents';
+import { formatErrorEnvelope, parseErrorEnvelope } from '@/types/errors';
 import { getAgentById, isValidAgentId } from '@/lib/agents';
 
 function stringifyEventData(value: unknown): string {
@@ -28,6 +29,23 @@ function isAbortError(error: unknown): boolean {
     return /abort|aborted/i.test(`${error.name} ${error.message}`);
   }
   return /abort|aborted/i.test(String(error));
+}
+
+function formatStreamError(error: unknown): string {
+  const envelope =
+    parseErrorEnvelope(error) ||
+    parseErrorEnvelope(error instanceof Error ? error.message : String(error));
+
+  if (envelope) {
+    return formatErrorEnvelope(envelope);
+  }
+
+  return [
+    'Source: frontend',
+    'Stage: langgraph_stream',
+    'Code: unknown_error',
+    `Message: ${error instanceof Error ? error.message : String(error)}`,
+  ].join('\n');
 }
 
 function getLangGraphApiUrl(): string {
@@ -122,6 +140,7 @@ export default function App() {
     Record<string, ProcessedEvent[]>
   >({});
   const [selectedAgentId, setSelectedAgentId] = useState(DEFAULT_AGENT);
+  const [streamErrorMessage, setStreamErrorMessage] = useState<string | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   const validateAgentId = useCallback((agentId: string): string => {
@@ -166,6 +185,7 @@ export default function App() {
         console.debug('Stream aborted by client action.');
         return;
       }
+      setStreamErrorMessage(formatStreamError(error));
       console.error('LangGraph stream error:', error);
     },
     onFinish: (event: unknown) => {
@@ -236,6 +256,7 @@ export default function App() {
 
       handleAgentSwitch(validAgentId);
       setProcessedEventsTimeline([]);
+      setStreamErrorMessage(null);
 
       const newMessages: Message[] = [
         {
@@ -305,7 +326,18 @@ export default function App() {
             />
           ) : (
             <ChatMessagesView
-              messages={thread.messages}
+              messages={
+                streamErrorMessage
+                  ? [
+                      ...thread.messages,
+                      {
+                        type: 'ai',
+                        content: streamErrorMessage,
+                        id: 'stream-error',
+                      } as Message,
+                    ]
+                  : thread.messages
+              }
               isLoading={thread.isLoading}
               scrollAreaRef={scrollAreaRef}
               onSubmit={handleSubmit}

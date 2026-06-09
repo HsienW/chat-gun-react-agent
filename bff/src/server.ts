@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 
 import { loadConfig, type BffConfig } from "./config.js";
+import { createBffErrorEnvelope } from "./errors.js";
 import { InMemoryRateLimiter } from "./rate-limit.js";
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -440,10 +441,23 @@ async function proxyLangGraph(
     }
 
     const isAbort = error instanceof Error && error.name === "AbortError";
+    const envelope = createBffErrorEnvelope(error, {
+      stage: "langgraph_upstream_proxy",
+      provider: "LangGraph",
+      message: isAbort ? "LangGraph upstream timeout" : "LangGraph upstream error",
+      details: {
+        upstreamUrl: attemptedUpstreamUrl?.toString(),
+        attemptedUpstreamUrls: upstreamUrls.map((url) => url.toString()),
+        method: req.method,
+        path: req.url,
+        requestId: ctx.requestId,
+      },
+    });
+
     sendJson(
       res,
       isAbort ? 504 : 502,
-      { error: isAbort ? "LangGraph upstream timeout" : "LangGraph upstream error" },
+      envelope,
       ctx.requestId
     );
   }

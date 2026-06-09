@@ -4,6 +4,12 @@ import { StructuredToolInterface } from "@langchain/core/tools";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 
 import { getBooleanEnv } from "../platform/env.js";
+import {
+  createErrorEnvelope,
+  formatErrorEnvelope,
+  parseErrorEnvelope,
+  serializeErrorEnvelope,
+} from "../platform/errors.js";
 import { formatLlmError, llmGateway, resolveModel } from "../platform/llm-gateway.js";
 import { getResearchTopic, messageContentToString } from "../state.js";
 import { loadAgentTools } from "../tools/registry.js";
@@ -200,48 +206,25 @@ function uniqueStrings(values: unknown[], max: number): string[] {
   return output;
 }
 
-function fallbackPlan(question: string, state: typeof DeepResearchState.State): ResearchPlan {
-  const weatherPattern = /weather|temperature|forecast|rain|humidity|wind|天氣|天气|氣溫|气温|溫度|温度|下雨|降雨|濕度|湿度|風|风/iu;
-  const currentPattern = /today|latest|recent|current|now|202[0-9]|目前|現在|今天|最新|最近|即時|实时/iu;
-  const calculationPattern = /^[\s\d+\-*/().,^%]+$/u;
-  const queryCount = clampInt(
-    state.initial_search_query_count,
-    DEFAULT_SEARCH_QUERY_COUNT,
-    1,
-    5
-  );
-
-  if (weatherPattern.test(question)) {
-    return {
-      question,
-      answerMode: "weather",
-      rationale: "The question asks for weather data.",
-      queries: [],
-      urls: [],
-      weather: { location: question },
-      requiredSourceCount: 1,
-    };
-  }
-
-  if (calculationPattern.test(question.trim())) {
-    return {
-      question,
-      answerMode: "calculation",
-      rationale: "The question is a mathematical expression.",
-      queries: [],
-      urls: [],
-      calculation: { expression: question.trim() },
-      requiredSourceCount: 1,
-    };
-  }
+function fallbackPlan(
+  question: string,
+  state: typeof DeepResearchState.State,
+  plannerFailureReason?: string
+): ResearchPlan {
+  void state;
+  const clarification = plannerFailureReason
+    ? `我需要先使用模型判斷你的意圖與地點，但 planner LLM 目前不可用。原因：${plannerFailureReason}`
+    : "我需要先使用模型判斷你的意圖與地點，但目前 planner LLM 不可用。請稍後重試，或先確認 backend 的模型 API / quota / proxy / network 設定。";
 
   return {
     question,
-    answerMode: currentPattern.test(question) ? "research" : "direct",
-    rationale: "Fallback plan created without structured planner output.",
-    queries: uniqueStrings([question, `${question} ${today()}`], queryCount),
+    answerMode: "clarify",
+    rationale:
+      "The planner LLM was unavailable, so the application did not infer intent or entities with hard-coded rules.",
+    queries: [],
     urls: [],
-    requiredSourceCount: 3,
+    clarification,
+    requiredSourceCount: 1,
   };
 }
 
@@ -252,30 +235,56 @@ function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string
     ? (rawPlan?.answerMode as AnswerMode)
     : fallback.answerMode;
   const maxQueries = clampInt(state.initial_search_query_count, DEFAULT_SEARCH_QUERY_COUNT, 1, 5);
+  const weather =
+    rawPlan?.weather && typeof rawPlan.weather.location === "string"
+      ? {
+          location: rawPlan.weather.location,
+          country: rawPlan.weather.country,
+          region: rawPlan.weather.region,
+        }
+      : undefined;
+  const calculation =
+    rawPlan?.calculation && typeof rawPlan.calculation.expression === "string"
+      ? { expression: rawPlan.calculation.expression }
+      : undefined;
+  const clarification =
+    typeof rawPlan?.clarification === "string" ? rawPlan.clarification : undefined;
+
+  if (answerMode === "weather" && !weather?.location.trim()) {
+    return {
+      ...fallback,
+      rationale: "The planner classified weather intent but did not provide a geocoding-friendly location.",
+      clarification: "請提供更明確的天氣查詢地點，或稍後重試讓模型重新判斷地點。",
+    };
+  }
+
+  if (answerMode === "calculation" && !calculation?.expression.trim()) {
+    return {
+      ...fallback,
+      rationale: "The planner classified calculation intent but did not provide an expression.",
+      clarification: "請提供要計算的明確算式。",
+    };
+  }
 
   return {
     question: typeof rawPlan?.question === "string" && rawPlan.question.trim() ? rawPlan.question.trim() : question,
     answerMode,
     rationale: typeof rawPlan?.rationale === "string" ? rawPlan.rationale : fallback.rationale,
-    queries: uniqueStrings(Array.isArray(rawPlan?.queries) ? rawPlan.queries : fallback.queries, maxQueries),
+    queries: uniqueStrings(
+      Array.isArray(rawPlan?.queries)
+        ? rawPlan.queries
+        : answerMode === "research"
+          ? [question]
+          : [],
+      maxQueries
+    ),
     urls: uniqueStrings(Array.isArray(rawPlan?.urls) ? rawPlan.urls : [], 5),
     freshness: ["pd", "pw", "pm", "py"].includes(rawPlan?.freshness as string)
       ? (rawPlan?.freshness as Freshness)
       : undefined,
-    weather:
-      rawPlan?.weather && typeof rawPlan.weather.location === "string"
-        ? {
-            location: rawPlan.weather.location,
-            country: rawPlan.weather.country,
-            region: rawPlan.weather.region,
-          }
-        : fallback.weather,
-    calculation:
-      rawPlan?.calculation && typeof rawPlan.calculation.expression === "string"
-        ? { expression: rawPlan.calculation.expression }
-        : fallback.calculation,
-    clarification:
-      typeof rawPlan?.clarification === "string" ? rawPlan.clarification : undefined,
+    weather,
+    calculation,
+    clarification,
     requiredSourceCount: clampInt(rawPlan?.requiredSourceCount, fallback.requiredSourceCount, 1, 8),
   };
 }
@@ -290,7 +299,17 @@ async function invokeTool(toolName: string, input: Record<string, unknown>): Pro
     const result = await selectedTool.invoke(input);
     return typeof result === "string" ? result : JSON.stringify(result, null, 2);
   } catch (error) {
-    return `Error: ${toolName} failed - ${error instanceof Error ? error.message : String(error)}`;
+    return serializeErrorEnvelope(
+      createErrorEnvelope(error, {
+        source: "backend",
+        stage: "tool_invoke",
+        provider: toolName,
+        details: {
+          toolName,
+          input,
+        },
+      })
+    );
   }
 }
 
@@ -336,6 +355,17 @@ async function repairWeatherRequest(
   return undefined;
 }
 
+function shouldRepairWeatherRequest(errorText: string): boolean {
+  const envelope = parseErrorEnvelope(errorText);
+  if (envelope) {
+    return envelope.error.stage === "current_weather" || envelope.error.stage === "weather_geocoding";
+  }
+
+  return /geocoding|location|ambiguous|country|region|not found|matched country/i.test(
+    errorText
+  );
+}
+
 async function planResearch(
   state: typeof DeepResearchState.State,
   _config: RunnableConfig
@@ -376,8 +406,8 @@ async function planResearch(
     const response = await llm.invoke(prompt);
     const parsed = parseJsonObject<Partial<ResearchPlan>>(messageContentToString(response));
     return { plan: coercePlan(parsed, question, state) };
-  } catch {
-    return { plan: fallbackPlan(question, state) };
+  } catch (error) {
+    return { plan: fallbackPlan(question, state, formatLlmError(error)) };
   }
 }
 
@@ -407,7 +437,7 @@ async function targetedTools(
     const request = plan.weather ?? { location: plan.question };
     let content = await invokeTool("current_weather", request as Record<string, unknown>);
 
-    if (content.startsWith("Error:")) {
+    if (content.startsWith("Error:") && shouldRepairWeatherRequest(content)) {
       const repairedRequest = await repairWeatherRequest(request, state, content);
       if (repairedRequest) {
         const retryContent = await invokeTool(
@@ -516,7 +546,7 @@ function sourceScore(result: SearchResult, question: string): { score: number; r
   if (result.age) {
     score += 2;
   }
-  if (/\.gov|\.edu|\.org|docs\.|developer\.|official|官方/i.test(result.url)) {
+  if (/\.gov|\.edu|\.org|docs\.|developer\.|official/i.test(result.url)) {
     score += 5;
   }
 
@@ -603,7 +633,7 @@ async function extractEvidence(
   const extractedSources: ExtractedSource[] = state.fetchedSources.map((source, index) => {
     const usable = !source.fetchError && source.content.trim().length >= 200;
     const sentences = source.content
-      .split(/(?<=[.!?。！？])\s+/u)
+      .split(/(?<=[.!?])\s+/u)
       .map((sentence) => sentence.trim())
       .filter((sentence) => sentence.length > 40);
     const keyClaims = sentences.slice(0, 5).map((sentence) => excerpt(sentence, 320));
@@ -682,6 +712,153 @@ function formatEvidence(state: typeof DeepResearchState.State): string {
   return [toolEvidence, sourceEvidence].filter(Boolean).join("\n\n");
 }
 
+function getLatestToolMessageContent(
+  state: typeof DeepResearchState.State,
+  toolName: string
+): string | undefined {
+  const matchingMessages = state.messages.filter((message) => {
+    return (
+      message.getType?.() === "tool" &&
+      "name" in message &&
+      (message as ToolMessage).name === toolName
+    );
+  });
+  const latest = matchingMessages.at(-1);
+  return latest ? messageContentToString(latest) : undefined;
+}
+
+function getLastLabeledValue(content: string, label: string): string | undefined {
+  const prefix = `${label}:`;
+  return content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith(prefix))
+    .map((line) => line.slice(prefix.length).trim())
+    .at(-1);
+}
+
+function buildWeatherFailureMessage(content: string): string {
+  const envelope = parseErrorEnvelope(content);
+  if (envelope) {
+    return formatErrorEnvelope(envelope);
+  }
+
+  const hasNetworkFailure =
+    content.includes("Weather provider network request failed") ||
+    content.includes("fetch failed");
+
+  if (hasNetworkFailure) {
+    return [
+      "I cannot retrieve live weather for that location right now.",
+      "Reason: the backend Node process cannot connect to the Open-Meteo weather provider.",
+      "Check VPN/proxy/firewall/DNS settings, or set HTTPS_PROXY/HTTP_PROXY before starting the backend if your network requires a proxy.",
+    ].join("\n");
+  }
+
+  if (shouldRepairWeatherRequest(content)) {
+    return [
+      "I could not resolve the weather location.",
+      "Please provide a more specific location, or retry so the planner model can extract a geocoding-friendly location.",
+    ].join("\n");
+  }
+
+  return [
+    "I cannot retrieve weather for that location right now.",
+    content.split("\n").find((line) => line.startsWith("Error:")) ?? content,
+  ].join("\n");
+}
+
+function buildWeatherToolAnswer(
+  state: typeof DeepResearchState.State
+): AIMessage | undefined {
+  const content = getLatestToolMessageContent(state, "current_weather");
+  if (!content) {
+    return undefined;
+  }
+
+  if (!content.includes("Provider: Open-Meteo current weather API")) {
+    return new AIMessage(buildWeatherFailureMessage(content));
+  }
+
+  const resolvedLocation = getLastLabeledValue(content, "Resolved location");
+  const observationTime = getLastLabeledValue(content, "Observation time");
+  const condition = getLastLabeledValue(content, "Condition");
+  const temperature = getLastLabeledValue(content, "Temperature");
+  const feelsLike = getLastLabeledValue(content, "Feels like");
+  const humidity = getLastLabeledValue(content, "Humidity");
+  const rain = getLastLabeledValue(content, "Rain");
+  const precipitation = getLastLabeledValue(content, "Precipitation");
+  const cloudCover = getLastLabeledValue(content, "Cloud cover");
+  const wind = getLastLabeledValue(content, "Wind");
+  const sourceUrl = getLastLabeledValue(content, "Source URL");
+
+  return new AIMessage(
+    [
+      resolvedLocation ? `Current weather for ${resolvedLocation}:` : "Current weather:",
+      observationTime ? `Observation time: ${observationTime}` : undefined,
+      condition ? `Condition: ${condition}` : undefined,
+      temperature ? `Temperature: ${temperature}` : undefined,
+      feelsLike ? `Feels like: ${feelsLike}` : undefined,
+      humidity ? `Humidity: ${humidity}` : undefined,
+      precipitation ? `Precipitation: ${precipitation}` : undefined,
+      rain ? `Rain: ${rain}` : undefined,
+      cloudCover ? `Cloud cover: ${cloudCover}` : undefined,
+      wind ? `Wind: ${wind}` : undefined,
+      "",
+      "Provider: Open-Meteo current weather API.",
+      sourceUrl ? `Source URL: ${sourceUrl}` : undefined,
+    ]
+      .filter((line): line is string => line !== undefined)
+      .join("\n")
+  );
+}
+
+function buildCalculationToolAnswer(
+  state: typeof DeepResearchState.State
+): AIMessage | undefined {
+  const content = getLatestToolMessageContent(state, "calculator_tool");
+  if (!content) {
+    return undefined;
+  }
+
+  return new AIMessage(`Calculation result: ${content}`);
+}
+
+function buildTargetedToolAnswer(
+  plan: ResearchPlan,
+  state: typeof DeepResearchState.State
+): AIMessage | undefined {
+  if (plan.answerMode === "weather") {
+    return buildWeatherToolAnswer(state);
+  }
+
+  if (plan.answerMode === "calculation") {
+    return buildCalculationToolAnswer(state);
+  }
+
+  return undefined;
+}
+
+function buildTargetedToolErrorAnswer(
+  plan: ResearchPlan,
+  state: typeof DeepResearchState.State
+): AIMessage | undefined {
+  const toolName =
+    plan.answerMode === "weather"
+      ? "current_weather"
+      : plan.answerMode === "calculation"
+        ? "calculator_tool"
+        : undefined;
+
+  if (!toolName) {
+    return undefined;
+  }
+
+  const content = getLatestToolMessageContent(state, toolName);
+  const envelope = parseErrorEnvelope(content);
+  return envelope ? new AIMessage(formatErrorEnvelope(envelope)) : undefined;
+}
+
 async function synthesizeAnswer(
   state: typeof DeepResearchState.State,
   _config: RunnableConfig
@@ -694,6 +871,13 @@ async function synthesizeAnswer(
     };
   }
 
+  const targetedToolErrorAnswer = buildTargetedToolErrorAnswer(plan, state);
+  if (targetedToolErrorAnswer) {
+    return { messages: [targetedToolErrorAnswer] };
+  }
+
+  const targetedToolFallback = buildTargetedToolAnswer(plan, state);
+
   const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
   const llm = llmGateway.createChatModel({ model, temperature: 0.1 });
   const evidence = formatEvidence(state);
@@ -702,10 +886,12 @@ async function synthesizeAnswer(
     "Answer the user in the same language as the user unless they requested otherwise.",
     "Use only the provided tool results and evidence for current or researched facts.",
     "If evidence contains tool/API errors or no usable sources, state the limitation clearly and do not fabricate facts.",
+    "If evidence contains a JSON error envelope with source, stage, provider, code, message, rawMessage, details, or cause, preserve those fields in the final answer. Do not replace a structured error with a generic explanation unless the envelope is missing.",
     "If a tool result includes an initial error followed by a successful retry result, use the successful retry result as the answer basis and do not say the task failed.",
     "For web research answers, cite sources inline with [1], [2], etc. using the evidence index numbers.",
-    "For weather or calculation answers, cite the tool/provider name instead of web citations.",
+    "For weather or calculation answers, do not use web-style bracket citations and do not write bracketed tool names such as [current_weather] or [calculator_tool]. Mention the provider or tool in plain text only when useful.",
     "For weather answers, current_weather returns the latest current observation, not a full-day forecast. If the user asks about today/current weather and the tool returned data, answer with the latest observation time and values. Do not claim the weather is unavailable only because the observation timestamp differs from the prompt date.",
+    "If current_weather reports 'Weather provider network request failed' or 'fetch failed', explain that the backend Node process could not connect to Open-Meteo. Do not imply the user's location is invalid or that Open-Meteo itself is down unless the evidence says so. Include a concise next step: check backend VPN/proxy/firewall/DNS or set HTTPS_PROXY/HTTP_PROXY before restarting the backend.",
     "Keep the answer concise but include exact numbers, dates, and source limitations when relevant.",
     `Today is ${today()}.`,
     `Plan: ${JSON.stringify(plan, null, 2)}`,
@@ -720,6 +906,10 @@ async function synthesizeAnswer(
     const response = await llm.invoke(prompt);
     return { messages: [normalizeAiMessageForStream(response)] };
   } catch (error) {
+    if (targetedToolFallback) {
+      return { messages: [targetedToolFallback] };
+    }
+
     return {
       messages: [
         new AIMessage(

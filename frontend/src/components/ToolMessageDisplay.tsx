@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { ToolCall, ToolMessage } from '@/types/tools';
 import { cn } from '@/lib/utils';
+import { formatErrorEnvelope, parseErrorEnvelope } from '@/types/errors';
 
 interface ToolMessageDisplayProps {
   toolCall: ToolCall;
@@ -34,7 +35,7 @@ const getStatusBadge = (toolMessage?: ToolMessage) => {
     );
   }
 
-  if (toolMessage.is_error) {
+  if (toolMessage.is_error || parseErrorEnvelope(toolMessage.content)) {
     return (
       <Badge
         variant="destructive"
@@ -76,6 +77,11 @@ export function ToolMessageDisplay({
   isExpanded,
   onToggle,
 }: ToolMessageDisplayProps) {
+  const errorEnvelope = parseErrorEnvelope(toolMessage?.content);
+  const displayContent = errorEnvelope
+    ? formatErrorEnvelope(errorEnvelope)
+    : toolMessage?.content;
+
   return (
     <div className="border border-border bg-card/70 rounded-lg overflow-hidden mt-4 mb-2 min-w-0">
       <Collapsible open={isExpanded} onOpenChange={onToggle}>
@@ -132,14 +138,14 @@ export function ToolMessageDisplay({
                         : 'bg-[#2B1C17]/70 border-[#5A4036]/70 text-[#F8F1E7]'
                     )}
                   >
-                    {typeof toolMessage.content === 'string' ? (
+                    {typeof displayContent === 'string' ? (
                       <pre className="whitespace-pre-wrap overflow-x-auto font-mono text-xs leading-relaxed break-words min-w-0">
-                        {toolMessage.content}
+                        {displayContent}
                       </pre>
                     ) : (
                       <pre className="overflow-x-auto font-mono text-xs leading-relaxed min-w-0">
                         <code className="whitespace-pre-wrap break-words">
-                          {JSON.stringify(toolMessage.content, null, 2)}
+                          {JSON.stringify(displayContent, null, 2)}
                         </code>
                       </pre>
                     )}
