@@ -4,7 +4,7 @@ import { StructuredToolInterface } from "@langchain/core/tools";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 
 import { getBooleanEnv } from "../platform/env.js";
-import { llmGateway, resolveModel } from "../platform/llm-gateway.js";
+import { formatLlmError, llmGateway, resolveModel } from "../platform/llm-gateway.js";
 import { getResearchTopic, messageContentToString } from "../state.js";
 import { loadAgentTools } from "../tools/registry.js";
 import { normalizeAiMessageForStream } from "./message-normalization.js";
@@ -723,7 +723,7 @@ async function synthesizeAnswer(
     return {
       messages: [
         new AIMessage(
-          `Research synthesis failed: ${error instanceof Error ? error.message : String(error)}`
+          `Research synthesis failed: ${formatLlmError(error)}`
         ),
       ],
     };

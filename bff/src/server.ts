@@ -9,6 +9,7 @@ import { InMemoryRateLimiter } from "./rate-limit.js";
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "content-length",
+  "host",
   "keep-alive",
   "proxy-authenticate",
   "proxy-authorization",
@@ -26,6 +27,17 @@ const ALLOWED_PROXY_METHODS = new Set([
   "DELETE",
   "HEAD",
   "OPTIONS",
+]);
+
+const FORWARDED_REQUEST_HEADERS = new Set([
+  "accept",
+  "accept-language",
+  "authorization",
+  "content-type",
+  "user-agent",
+  "x-api-key",
+  "x-tenant-id",
+  "x-user-id",
 ]);
 
 type RequestContext = {
@@ -147,6 +159,7 @@ function copyRequestHeaders(req: IncomingMessage, ctx: RequestContext): Headers 
   for (const [name, value] of Object.entries(req.headers)) {
     const lowerName = name.toLowerCase();
     if (HOP_BY_HOP_HEADERS.has(lowerName)) continue;
+    if (!FORWARDED_REQUEST_HEADERS.has(lowerName)) continue;
     if (value === undefined) continue;
 
     headers.set(name, Array.isArray(value) ? value.join(", ") : value);
@@ -190,12 +203,30 @@ async function pipeWebResponseBody(
   }
 }
 
-function buildUpstreamUrl(reqUrl: URL, config: BffConfig): URL {
-  const upstream = new URL(config.langGraphApiUrl);
+function buildUpstreamUrl(reqUrl: URL, baseUrl: URL): URL {
+  const upstream = new URL(baseUrl);
   const strippedPath = reqUrl.pathname.replace(/^\/api\/langgraph\/?/, "/");
   upstream.pathname = path.posix.join(upstream.pathname, strippedPath);
   upstream.search = reqUrl.search;
   return upstream;
+}
+
+function buildUpstreamBaseUrls(config: BffConfig): URL[] {
+  const urls = [new URL(config.langGraphApiUrl)];
+
+  if (config.langGraphApiUrl.hostname === "127.0.0.1") {
+    const fallbackBase = new URL(config.langGraphApiUrl);
+    fallbackBase.hostname = "localhost";
+    urls.push(fallbackBase);
+  }
+
+  return urls;
+}
+
+function buildUpstreamUrls(reqUrl: URL, config: BffConfig): URL[] {
+  return buildUpstreamBaseUrls(config).map((baseUrl) =>
+    buildUpstreamUrl(reqUrl, baseUrl)
+  );
 }
 
 function logAudit(
@@ -240,6 +271,50 @@ function getContentType(filePath: string): string {
     default:
       return "application/octet-stream";
   }
+}
+
+async function checkLangGraphReady(config: BffConfig): Promise<{
+  ok: boolean;
+  status?: number;
+  checkedUrls?: string[];
+  error?: string;
+}> {
+  const readyUrls = buildUpstreamBaseUrls(config).map((baseUrl) => new URL("/ok", baseUrl));
+  let lastError: unknown;
+  let lastStatus: number | undefined;
+
+  for (const readyUrl of readyUrls) {
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), 3_000);
+
+    try {
+      const response = await fetch(readyUrl, {
+        method: "GET",
+        signal: abortController.signal,
+      });
+
+      if (response.ok) {
+        return {
+          ok: true,
+          status: response.status,
+          checkedUrls: readyUrls.map((url) => url.toString()),
+        };
+      }
+
+      lastStatus = response.status;
+    } catch (error) {
+      lastError = error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return {
+    ok: false,
+    status: lastStatus,
+    checkedUrls: readyUrls.map((url) => url.toString()),
+    error: lastError instanceof Error ? lastError.message : String(lastError),
+  };
 }
 
 async function serveFrontend(
@@ -296,18 +371,37 @@ async function proxyLangGraph(
     return;
   }
 
-  const upstreamUrl = buildUpstreamUrl(reqUrl, config);
-  const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), config.upstreamTimeoutMs);
+  const upstreamUrls = buildUpstreamUrls(reqUrl, config);
+  let attemptedUpstreamUrl = upstreamUrls[0];
+  let lastUpstreamError: unknown;
 
   try {
     const body = await readRequestBody(req, config.maxBodyBytes);
-    const upstreamResponse = await fetch(upstreamUrl, {
-      method: req.method,
-      headers: copyRequestHeaders(req, ctx),
-      body,
-      signal: abortController.signal,
-    });
+    let upstreamResponse: Response | undefined;
+
+    for (const upstreamUrl of upstreamUrls) {
+      attemptedUpstreamUrl = upstreamUrl;
+      const abortController = new AbortController();
+      const timeout = setTimeout(() => abortController.abort(), config.upstreamTimeoutMs);
+
+      try {
+        upstreamResponse = await fetch(upstreamUrl, {
+          method: req.method,
+          headers: copyRequestHeaders(req, ctx),
+          body,
+          signal: abortController.signal,
+        });
+        break;
+      } catch (error) {
+        lastUpstreamError = error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    if (!upstreamResponse) {
+      throw lastUpstreamError ?? new Error("LangGraph upstream fetch failed");
+    }
 
     res.statusCode = upstreamResponse.status;
     res.statusMessage = upstreamResponse.statusText;
@@ -322,6 +416,24 @@ async function proxyLangGraph(
 
     await pipeWebResponseBody(responseBody, res);
   } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "bff_upstream_error",
+        requestId: ctx.requestId,
+        upstreamUrl: attemptedUpstreamUrl?.toString(),
+        attemptedUpstreamUrls: upstreamUrls.map((url) => url.toString()),
+        errorName: error instanceof Error ? error.name : undefined,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        errorCause:
+          error instanceof Error && error.cause instanceof Error
+            ? {
+                name: error.cause.name,
+                message: error.cause.message,
+              }
+            : undefined,
+      })
+    );
+
     if (error instanceof Error && error.name === "PayloadTooLargeError") {
       sendJson(res, 413, { error: "Request body too large" }, ctx.requestId);
       return;
@@ -334,8 +446,6 @@ async function proxyLangGraph(
       { error: isAbort ? "LangGraph upstream timeout" : "LangGraph upstream error" },
       ctx.requestId
     );
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -377,6 +487,21 @@ export function createServer(config = loadConfig()): http.Server {
         {
           status: "ok",
           langGraphApiUrl: config.langGraphApiUrl.origin,
+        },
+        ctx.requestId
+      );
+      return;
+    }
+
+    if (reqUrl.pathname === "/api/ready" || reqUrl.pathname === "/api/bff/ready") {
+      const upstream = await checkLangGraphReady(config);
+      sendJson(
+        res,
+        upstream.ok ? 200 : 503,
+        {
+          status: upstream.ok ? "ready" : "not_ready",
+          langGraphApiUrl: config.langGraphApiUrl.origin,
+          upstream,
         },
         ctx.requestId
       );

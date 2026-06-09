@@ -16,9 +16,10 @@ Default local routing:
 
 - Frontend: `http://localhost:5173/app/`
 - BFF: `http://127.0.0.1:8787`
-- LangGraph API: `http://127.0.0.1:2024`
+- LangGraph API: `http://localhost:2024`
 - Frontend SDK base URL: `/api/langgraph`
 - BFF health check: `/api/health`
+- BFF readiness check: `/api/ready`
 
 Vite proxies `/api/*` to the BFF during local development.
 

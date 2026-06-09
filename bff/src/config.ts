@@ -46,7 +46,7 @@ export function loadConfig(): BffConfig {
     langGraphApiUrl: new URL(
       process.env.BFF_LANGGRAPH_API_URL ??
         process.env.LANGGRAPH_API_URL ??
-        "http://127.0.0.1:2024"
+        "http://localhost:2024"
     ),
     frontendDist:
       process.env.BFF_FRONTEND_DIST ??

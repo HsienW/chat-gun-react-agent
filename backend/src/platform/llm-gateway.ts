@@ -2,6 +2,9 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 
 import { getEnv, requireEnv } from "./env.js";
+import { configureNetwork } from "./network.js";
+
+configureNetwork();
 
 export interface ChatModelOptions {
   model?: string;
@@ -38,4 +41,33 @@ export function resolveModel(requestedModel: unknown, fallback: string): string 
 
   const model = requestedModel.trim();
   return deprecatedModelAliases[model] ?? model;
+}
+
+export function formatLlmError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+
+  const cause = error.cause as
+    | { code?: string; name?: string; message?: string }
+    | undefined;
+  const details = [
+    error.message,
+    cause?.code ? `cause code: ${cause.code}` : undefined,
+    cause?.message ? `cause: ${cause.message}` : undefined,
+  ].filter(Boolean);
+
+  if (
+    error.message.includes("fetch failed") ||
+    cause?.code === "UND_ERR_CONNECT_TIMEOUT"
+  ) {
+    return [
+      "Gemini request failed before receiving an API response.",
+      "The backend Node process cannot connect to generativelanguage.googleapis.com:443.",
+      "Check VPN/proxy/firewall/DNS settings, or set HTTPS_PROXY/HTTP_PROXY before starting the backend if your network requires a proxy.",
+      `Raw error: ${details.join("; ")}`,
+    ].join(" ");
+  }
+
+  return details.join("; ");
 }

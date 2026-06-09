@@ -30,6 +30,13 @@ function isAbortError(error: unknown): boolean {
   return /abort|aborted/i.test(String(error));
 }
 
+function getLangGraphApiUrl(): string {
+  const configuredUrl = import.meta.env.VITE_LANGGRAPH_API_URL;
+  if (configuredUrl) return configuredUrl;
+
+  return new URL('/api/langgraph', window.location.origin).toString();
+}
+
 function processDeepResearchEvent(
   event: Record<string, unknown>
 ): ProcessedEvent | null {
@@ -151,7 +158,7 @@ export default function App() {
     max_research_loops: number;
     reasoning_model: string;
   }>({
-    apiUrl: import.meta.env.VITE_LANGGRAPH_API_URL ?? '/api/langgraph',
+    apiUrl: getLangGraphApiUrl(),
     assistantId: selectedAgentId,
     messagesKey: 'messages',
     onError: (error: unknown) => {
