@@ -97,7 +97,7 @@ npm install
 PowerShell：
 
 ```powershell
-cd C:\D\ai-agent\chat-gun-react-agent\backend
+cd chat-gun-react-agent\backend
 npm install
 
 cd ..\bff
