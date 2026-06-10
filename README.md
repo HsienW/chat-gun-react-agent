@@ -4,7 +4,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-JS-06B6D4)](https://langchain-ai.github.io/langgraphjs/)
 [![Source](https://img.shields.io/badge/Source-Ylang--Labs%2Flanggraph--react--agent--studio-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
 
-🤖 Chat Gun React Agent 是一個 fullstack AI agent studio，使用 React、TypeScript、LangGraph JS、Gemini，並可選擇整合 MCP tools。
+Chat Gun React Agent 是一個以 React、TypeScript、LangGraph JS、Gemini、原生工具與選用 MCP tools 組成的 Fullstack AI agent studio。
 
 💡 本專案僅做個人研究使用 (This project is for personal research use only)。
 
@@ -22,53 +22,96 @@
   <img src="./chat-gun-02.png" alt="Chat Agent Results" width="1280" />
 </p>
 
-## 目前實際運行方式
+## 目前架構
 
-此專案分成兩個本地開發服務：
+實際程式碼目前分成三個主要 package：
 
-- `backend`：LangGraph JS agent server，由 `npm run dev` 啟動，預設 API URL 是 `http://localhost:2024`。
-- `frontend`：Vite React app，由 `npm run dev` 啟動，預設頁面 URL 是 `http://localhost:5173/app/`。
+| 目錄 | 職責 | 本機預設 port |
+| --- | --- | --- |
+| `frontend/` | Vite React 前端聊天介面 | `5173` |
+| `bff/` | BFF / API Gateway，代理前端到 LangGraph 的流量 | `8787` |
+| `backend/` | LangGraph JS agent runtime、LLM gateway、tools | `2024` |
 
-前端會從 `VITE_LANGGRAPH_API_URL` 讀取 LangGraph API URL。若未設定，依照目前 `frontend/src/App.tsx` 的實作會使用：
+本機開發流量：
 
-- 開發環境：`http://localhost:2024`
-- production build：`http://localhost:8123`
+```text
+Browser
+  -> http://localhost:5173/app/
+  -> /api/langgraph/*
+  -> Vite proxy
+  -> BFF http://127.0.0.1:8787
+  -> LangGraph API http://localhost:2024
+```
 
-## 可用 Agent
+`frontend/src/App.tsx` 會預設產生絕對 API URL：
 
-目前 `backend/langgraph.json` 註冊了以下 graph ID：
+```text
+http://localhost:5173/api/langgraph
+```
+
+`frontend/vite.config.ts` 會把 `/api/*` proxy 到：
+
+```text
+http://127.0.0.1:8787
+```
+
+## Agent
+
+LangGraph graph ID 定義在 `backend/langgraph.json`：
 
 - `deep_researcher`
 - `chatbot`
 - `math_agent`
 - `mcp_agent`
 
-前端 agent selector 使用相同 ID。
+前端預設 agent 由 `frontend/src/types/agents.ts` 設定，目前是：
 
-## 前置需求
+```text
+chatbot
+```
+
+## 需求
 
 - Node.js 20+
 - npm
-- Gemini API Key：<https://ai.google.dev/>
-- 選用：Tavily API Key，用於 `deep_researcher` 的真實網路搜尋
-- 選用：Docker，用於 Docker Compose 啟動
-- 選用：`make`，用於 Makefile shortcut
+- Gemini API Key
+- 選用：Tavily API Key，供 `deep_researcher` 的 `web_search` 使用
+- 選用：Docker / Docker Compose
+- 選用：make
 
-## 本地開發啟動
+## 安裝
 
-### 1. 安裝依賴
+三個 package 需要分別安裝依賴：
 
 ```bash
 cd backend
+npm install
+
+cd ../bff
 npm install
 
 cd ../frontend
 npm install
 ```
 
-### 2. 設定 backend 環境變數
+PowerShell：
 
-從範例建立 `backend/.env`：
+```powershell
+cd C:\D\ai-agent\chat-gun-react-agent\backend
+npm install
+
+cd ..\bff
+npm install
+
+cd ..\frontend
+npm install
+```
+
+## 環境變數
+
+### Backend
+
+建立 `backend/.env`：
 
 ```bash
 cd backend
@@ -82,7 +125,7 @@ cd backend
 Copy-Item .env.example .env
 ```
 
-至少需要設定真實 Gemini key：
+Gemini 相關設定：
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key
@@ -92,177 +135,183 @@ MATH_MODEL=gemini-2.5-flash
 MCP_AGENT_MODEL=gemini-2.5-flash
 ```
 
-若需要 `deep_researcher` 真正查網路，請設定 Tavily key：
+`deep_researcher` 使用原生 `web_search` 時需要：
 
 ```env
 TAVILY_API_KEY=your_tavily_api_key
 ```
 
-`current_weather` 使用 Open-Meteo，不需要 API key。若需要自訂地名 alias，請用環境變數設定：
+如果 backend 所在網路無法直連 Gemini API，可以在啟動 backend 前設定 proxy：
 
 ```env
-WEATHER_LOCATION_ALIASES_JSON={"台北":{"query":"Taipei","country":"Taiwan"}}
+HTTPS_PROXY=http://127.0.0.1:7890
+HTTP_PROXY=http://127.0.0.1:7890
+NO_PROXY=localhost,127.0.0.1
 ```
 
-`LANGSMITH_API_KEY`、`REDIS_URI`、`POSTGRES_URI` 對預設本地 `langgraphjs dev` 流程不是必填，除非你已經把這些服務接進 runtime。
+`backend/src/platform/network.ts` 會讀取 `HTTPS_PROXY` / `HTTP_PROXY`，並透過 `undici` 設定 Node fetch 的全域 proxy dispatcher。
 
-### 3. 啟動 backend
+### BFF
 
-Terminal 1：
+建立 `bff/.env`：
+
+```bash
+cd bff
+cp .env.example .env
+```
+
+預設 BFF 設定：
+
+```env
+BFF_PORT=8787
+BFF_LANGGRAPH_API_URL=http://localhost:2024
+BFF_FRONTEND_DIST=../frontend/dist
+BFF_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+BFF_REQUIRE_AUTH=false
+BFF_API_KEYS=
+BFF_MAX_BODY_BYTES=1048576
+BFF_UPSTREAM_TIMEOUT_MS=120000
+BFF_RATE_LIMIT_WINDOW_MS=60000
+BFF_RATE_LIMIT_MAX_REQUESTS=120
+```
+
+BFF 目前提供：
+
+- `/api/health`：BFF process health
+- `/api/ready`：檢查 LangGraph upstream `/ok`
+- `/api/langgraph/*`：代理到 LangGraph API
+- CORS allowlist
+- optional API key auth
+- request body size limit
+- upstream timeout
+- in-memory rate limit
+- JSON audit log
+
+## 本機開發
+
+請開三個 terminal。
+
+Terminal 1：啟動 LangGraph backend
 
 ```bash
 cd backend
-npm run dev -- --no-browser
+npm run dev
 ```
 
-PowerShell：
-
-```powershell
-cd <project-root>\backend
-npm run dev -- --no-browser
-```
-
-實際 backend URL：
+Backend 預設 URL：
 
 ```text
 http://localhost:2024
 ```
 
-這是 `langgraphjs dev` 目前的預設 port。
-
-### 4. 啟動 frontend
-
-Terminal 2：
+Terminal 2：啟動 BFF
 
 ```bash
-cd frontend
-VITE_LANGGRAPH_API_URL=http://localhost:2024 npm run dev
-```
-
-PowerShell：
-
-```powershell
-cd <project-root>\frontend
-$env:VITE_LANGGRAPH_API_URL="http://localhost:2024"
+cd bff
 npm run dev
 ```
 
-打開：
+BFF 預設 URL：
+
+```text
+http://127.0.0.1:8787
+```
+
+確認 BFF 能連到 LangGraph：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8787/api/ready
+```
+
+預期會看到：
+
+```json
+{
+  "status": "ready"
+}
+```
+
+Terminal 3：啟動前端
+
+```bash
+cd frontend
+npm run dev
+```
+
+開啟：
 
 ```text
 http://localhost:5173/app/
 ```
 
-明確設定 `VITE_LANGGRAPH_API_URL` 可以避免端口混淆。如果不設定，目前前端開發環境也會 fallback 到 `http://localhost:2024`。
+## Makefile
 
-## Makefile 指令
-
-Makefile 目前對應到這些實際 script：
+根目錄 `Makefile` 目前提供：
 
 ```bash
 make dev-backend
+make dev-bff
 make dev-frontend
 make dev
 ```
 
-等價指令：
+在 Windows / PowerShell 環境下，建議三個服務分別用三個 terminal 啟動，除錯會比較清楚。
 
-```bash
-cd backend && npm run dev
-cd frontend && npm run dev
-```
+## Build / Typecheck
 
-在 Windows / PowerShell 上，建議用兩個 terminal 分開啟動 backend 與 frontend；`make dev` 會同時啟動兩個長駐程序，排錯不如分開清楚。
-
-## MCP 設定
-
-MCP 是選用功能，目前預設只會額外擴充 `mcp_agent`。
-
-依照目前 `backend/src/tools/registry.ts` 的實作，native tools 會隨 agent 啟動載入：`calculator_tool`、`web_search`、`web_fetch`、`current_weather`。MCP tools 只有在 agent 要求載入 MCP 且 `MCP_LOAD_ON_START=true` 時才會額外載入。
-
-`deep_researcher` 預設不載入 MCP tools，避免 filesystem 類大量工具干擾 research graph 啟動與 tool planning。若要讓 `deep_researcher` 也使用 MCP，請同時設定 `DEEP_RESEARCHER_MCP_ENABLED=true` 與 `MCP_LOAD_ON_START=true`。
-
-`backend/.env.example` 預設是：
-
-```env
-MCP_LOAD_ON_START=false
-DEEP_RESEARCHER_MCP_ENABLED=false
-```
-
-如果你要在本地啟用 MCP tools，請在 `backend/.env` 改成：
-
-```env
-MCP_LOAD_ON_START=true
-DEEP_RESEARCHER_MCP_ENABLED=false
-MCP_FILESYSTEM_ENABLED=true
-MCP_FILESYSTEM_PATH=<project-root>
-
-MCP_BRAVE_SEARCH_ENABLED=false
-BRAVE_API_KEY=
-TAVILY_API_KEY=your_tavily_api_key
-```
-
-注意：
-
-- Filesystem MCP 啟用時會透過 `npx -y @modelcontextprotocol/server-filesystem` 啟動。
-- `MCP_FILESYSTEM_PATH` 請設定成本機存在且允許讀取的路徑。
-- `TAVILY_API_KEY` 供 native `web_search` 使用。
-- `BRAVE_API_KEY` 只供選用的 Brave MCP server 使用。
-- 只有在 `BRAVE_API_KEY` 有效時才把 `MCP_BRAVE_SEARCH_ENABLED` 設成 `true`。
-- 一般本地流程不需要全域安裝 MCP servers；filesystem server 已在 backend dependencies 中，Brave MCP server 會透過 `npx -y @modelcontextprotocol/server-brave-search` 啟動。
-
-## Tool 能力說明
-
-目前不是所有 agent 都有外部 tool 能力：
-
-- `chatbot`：純 LLM 對話，沒有 tool calling。
-- `math_agent`：使用本地 `calculator_tool`。
-- `mcp_agent`：使用 `ToolNode` 與 `bindTools`，可載入 native tools 與 MCP tools。
-- `deep_researcher`：使用明確的 research orchestration graph：`plan_research -> targeted_tools | search_web -> rank_sources -> fetch_sources -> extract_evidence -> verify_citations -> synthesize_answer`。預設使用 native tools。
-
-`deep_researcher` 與 `mcp_agent` 會將 Gemini 回傳的 raw `functionCall` content block 正規化為 LangChain 標準 `tool_calls`，避免 frontend streaming 發生 `Unknown content type undefined`。
-
-Native tools：
-
-- `web_search`：呼叫 Tavily Search API，需要 `TAVILY_API_KEY`。
-- `web_fetch`：抓取公開 HTTP/HTTPS URL，抽取 title、description 與可讀文字。
-- `current_weather`：呼叫 Open-Meteo current weather API，不需要 API key；使用通用 geocoding、`country/region` 消歧，沒有內建城市白名單。
-- `calculator_tool`：本地數學計算。
-
-若需要查詢即時新聞、法規、產品規格等外部資料，請設定 `TAVILY_API_KEY`。如果需要公司內部系統、資料庫或專用 SaaS，建議新增對應 MCP server 或 native tool，並透過 `backend/src/tools/registry.ts` 納入 tool registry。
-
-## 驗證指令
-
-Backend typecheck：
+Backend：
 
 ```bash
 cd backend
 npm run build
 ```
 
-Frontend production build：
+BFF：
+
+```bash
+cd bff
+npm run build
+```
+
+Frontend：
 
 ```bash
 cd frontend
 npm run build
 ```
 
-目前預期結果：兩個 build 都會通過。前端 build 可能出現 Vite chunk size warning，這不影響本地啟動。
+Frontend build 可能出現 Vite chunk size warning；只要 process exit code 是 0，build 仍是成功。
 
-## Docker Compose 啟動
+## Docker Compose
 
-Docker Compose 會建置 frontend 與 backend，並將 LangGraph API image 暴露在主機 port `8123`。
+`docker-compose.yml` 目前有：
 
-目前 `docker-compose.yml` 會傳入 `MCP_LOAD_ON_START`、`DEEP_RESEARCHER_MCP_ENABLED`、`MCP_FILESYSTEM_ENABLED`、`MCP_FILESYSTEM_PATH`、`MCP_BRAVE_SEARCH_ENABLED`、`BRAVE_API_KEY`、`TAVILY_API_KEY`。Docker Compose 模式下如需 MCP external tools，請設定 `MCP_LOAD_ON_START=true`；native tools 則會隨 agent 啟動載入。
+- `langgraph-redis`
+- `langgraph-postgres`
+- `langgraph-api`
+- `bff`
 
-注意：Docker Compose 模式下 `MCP_LOAD_ON_START=true` 預設只會影響 `mcp_agent`。`deep_researcher` 若要載入 MCP，還需要設定 `DEEP_RESEARCHER_MCP_ENABLED=true`。
+`langgraph-api` 不對 host 暴露 port，只在 Compose network 內提供 `8000`。
 
-PowerShell：
+對外暴露的是 BFF：
+
+```text
+http://localhost:8123
+```
+
+啟動：
+
+```bash
+docker compose up --build
+```
+
+PowerShell 範例：
 
 ```powershell
 cd <project-root>
 $env:GEMINI_API_KEY="your_gemini_api_key"
 $env:LANGSMITH_API_KEY=""
+$env:MCP_LOAD_ON_START="false"
 $env:DEEP_RESEARCHER_MCP_ENABLED="false"
 $env:MCP_FILESYSTEM_ENABLED="true"
 $env:MCP_FILESYSTEM_PATH="/app/workspace"
@@ -272,60 +321,110 @@ $env:BRAVE_API_KEY=""
 docker compose up --build
 ```
 
-Bash：
-
-```bash
-GEMINI_API_KEY=your_gemini_api_key \
-LANGSMITH_API_KEY= \
-DEEP_RESEARCHER_MCP_ENABLED=false \
-MCP_FILESYSTEM_ENABLED=true \
-MCP_FILESYSTEM_PATH=/app/workspace \
-MCP_BRAVE_SEARCH_ENABLED=false \
-TAVILY_API_KEY= \
-BRAVE_API_KEY= \
-docker compose up --build
-```
-
-打開：
+開啟：
 
 ```text
 http://localhost:8123/app/
 ```
 
-Docker Compose 模式下 API base URL：
+Docker Compose 流量：
 
 ```text
-http://localhost:8123
+Browser
+  -> http://localhost:8123/app/
+  -> BFF container
+  -> http://langgraph-api:8000
 ```
 
-## 架構概覽
+如果 Docker 內的 backend 也需要 proxy，目前 `docker-compose.yml` 尚未把 `HTTPS_PROXY` / `HTTP_PROXY` 傳給 `langgraph-api`，需要自行加到 `langgraph-api.environment`。
 
-<p align="center">
-  <img src="./architecture.svg" alt="Architecture Overview" width="1280" />
-</p>
+## Tools
 
-目前 runtime layer：
+原生 tools 由 `backend/src/tools/registry.ts` 載入。
 
-- Frontend：React、TypeScript、Vite、Tailwind CSS、Radix UI。
-- Backend：TypeScript LangGraph JS graphs，本地由 `langgraphjs dev` 服務。
-- LLM provider：透過 `@langchain/google-genai` 使用 Gemini。
-- Native tools：calculator、Tavily Search API、web fetch、Open-Meteo weather。
-- Optional MCP tools：filesystem MCP 與 Brave Search MCP server，主要供 `mcp_agent` 使用。
-- Docker Compose：LangGraph API image，加上 Redis 與 PostgreSQL containers。
+目前包含：
 
-## 常用端口對照
+- `calculator_tool`
+- `web_search`
+- `web_fetch`
+- `current_weather`
 
-| 模式 | Frontend | Backend API | 指令 |
-| --- | --- | --- | --- |
-| 本地開發 | `http://localhost:5173/app/` | `http://localhost:2024` | 兩個子專案各自執行 `npm run dev` |
-| Docker Compose | `http://localhost:8123/app/` | `http://localhost:8123` | `docker compose up --build` |
+注意：
 
-## 目前設定注意事項
+- `web_search` 使用 Tavily API，需要 `TAVILY_API_KEY`。
+- `current_weather` 使用 Open-Meteo，不需要 API key。
+- `web_fetch` 目前只做基本 HTTP/HTTPS 檢查，不是完整 SSRF sandbox。
+- MCP tools 是選用功能，透過 backend env flags 控制。
 
-- `frontend/vite.config.ts` 有一段 `/api` proxy 指向 `http://127.0.0.1:8000`，但目前主流程是 `useStream` 直接使用 `VITE_LANGGRAPH_API_URL` 或 fallback URL，沒有依賴這個 `/api` proxy。
-- 本地開發請以 `http://localhost:2024` 作為 LangGraph API 的實際來源。
-- Docker Compose 請以 `http://localhost:8123` 作為對外 API 來源。
+## MCP
+
+相關 backend env：
+
+```env
+MCP_LOAD_ON_START=false
+DEEP_RESEARCHER_MCP_ENABLED=false
+MCP_FILESYSTEM_ENABLED=true
+MCP_FILESYSTEM_PATH=your_filesystem_path
+MCP_BRAVE_SEARCH_ENABLED=false
+BRAVE_API_KEY=your_brave_api_key_here
+```
+
+說明：
+
+- `mcp_agent` 會依設定載入 MCP tools。
+- `deep_researcher` 只有在 `DEEP_RESEARCHER_MCP_ENABLED=true` 時才會包含 MCP tools。
+- 生產環境建議把 MCP execution 拆到獨立 Tool Service / container，並加上權限、沙箱、egress policy、timeout 與 audit。
+
+## 疑難排解
+
+### 前端出現 `Invalid URL`
+
+LangGraph SDK 需要 absolute API URL。目前前端預設會用：
+
+```text
+window.location.origin + /api/langgraph
+```
+
+如果自行設定 `VITE_LANGGRAPH_API_URL`，必須是完整 URL，例如：
+
+```env
+VITE_LANGGRAPH_API_URL=http://localhost:5173/api/langgraph
+```
+
+### 前端 `/api/langgraph/threads` 回 502
+
+先檢查 BFF readiness：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8787/api/ready
+```
+
+再檢查 backend：
+
+```powershell
+Invoke-RestMethod http://localhost:2024/ok
+```
+
+### `Research synthesis failed ... Gemini ... fetch failed`
+
+這表示 frontend、BFF、LangGraph 已經通了，但 backend 連不到 Gemini。
+
+檢查：
+
+```powershell
+Test-NetConnection generativelanguage.googleapis.com -Port 443
+```
+
+如果你的網路需要 proxy，請在啟動 `backend` 前設定 `HTTPS_PROXY` / `HTTP_PROXY`。
+
+## 更多文件
+
+BFF 細節請看：
+
+```text
+docs/bff.md
+```
 
 ## License
 
-本專案採用 Apache License 2.0。詳細內容請見 [LICENSE](LICENSE)。
+Apache License 2.0。詳見 [LICENSE](./LICENSE)。

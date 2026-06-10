@@ -29,9 +29,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: langgraph-api
     image: chat-gun-react-agent
-    ports:
-      - '8123:8000'
+    expose:
+      - '8000'
     depends_on:
       langgraph-redis:
         condition: service_healthy
@@ -50,3 +51,23 @@ services:
       MCP_BRAVE_SEARCH_ENABLED: ${MCP_BRAVE_SEARCH_ENABLED}
       BRAVE_API_KEY: ${BRAVE_API_KEY}
       TAVILY_API_KEY: ${TAVILY_API_KEY}
+  bff:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: bff
+    image: chat-gun-react-agent-bff
+    ports:
+      - '8123:8000'
+    depends_on:
+      - langgraph-api
+    environment:
+      BFF_PORT: 8000
+      BFF_LANGGRAPH_API_URL: http://langgraph-api:8000
+      BFF_ALLOWED_ORIGINS: ${BFF_ALLOWED_ORIGINS:-}
+      BFF_REQUIRE_AUTH: ${BFF_REQUIRE_AUTH:-false}
+      BFF_API_KEYS: ${BFF_API_KEYS:-}
+      BFF_MAX_BODY_BYTES: ${BFF_MAX_BODY_BYTES:-1048576}
+      BFF_UPSTREAM_TIMEOUT_MS: ${BFF_UPSTREAM_TIMEOUT_MS:-120000}
+      BFF_RATE_LIMIT_WINDOW_MS: ${BFF_RATE_LIMIT_WINDOW_MS:-60000}
+      BFF_RATE_LIMIT_MAX_REQUESTS: ${BFF_RATE_LIMIT_MAX_REQUESTS:-120}

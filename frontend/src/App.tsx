@@ -7,7 +7,6 @@ import { WelcomeScreen } from '@/components/WelcomeScreen';
 import { ChatMessagesView } from '@/components/ChatMessagesView';
 import { AgentId, DEFAULT_AGENT } from '@/types/agents';
 import { getAgentById, isValidAgentId } from '@/lib/agents';
-import { extractToolCallsFromMessage } from '@/types/messages';
 
 function stringifyEventData(value: unknown): string {
   if (typeof value === 'string') return value;
@@ -16,35 +15,54 @@ function stringifyEventData(value: unknown): string {
   return String(value ?? '');
 }
 
-function getMessageToolCalls(message: unknown): Array<{ name?: string }> {
-  if (!message || typeof message !== 'object') return [];
-  return extractToolCallsFromMessage(message as never);
-}
-
 function getNodeMessages(nodeValue: unknown): unknown[] {
   if (!nodeValue || typeof nodeValue !== 'object') return [];
   const messages = (nodeValue as { messages?: unknown }).messages;
   return Array.isArray(messages) ? messages : [];
 }
 
+function isAbortError(error: unknown): boolean {
+  if (!error) return false;
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+  if (error instanceof Error) {
+    return /abort|aborted/i.test(`${error.name} ${error.message}`);
+  }
+  return /abort|aborted/i.test(String(error));
+}
+
+function getLangGraphApiUrl(): string {
+  const configuredUrl = import.meta.env.VITE_LANGGRAPH_API_URL;
+  if (configuredUrl) return configuredUrl;
+
+  return new URL('/api/langgraph', window.location.origin).toString();
+}
+
 function processDeepResearchEvent(
   event: Record<string, unknown>
 ): ProcessedEvent | null {
-  if ('call_model' in event) {
-    const messages = getNodeMessages(event.call_model);
-    const lastMessage = messages[messages.length - 1];
-    const toolCalls = getMessageToolCalls(lastMessage);
-
+  if ('plan_research' in event) {
     return {
-      title: toolCalls.length ? 'Model Requested Tools' : 'Model Response',
-      data: toolCalls.length
-        ? toolCalls.map((call) => call.name ?? 'tool').join(', ')
-        : 'No tool call requested; model is ready to answer.',
+      title: 'Research Plan',
+      data: 'Planned route and selected tools.',
     };
   }
 
-  if ('tools' in event) {
-    const messages = getNodeMessages(event.tools);
+  if ('targeted_tools' in event) {
+    const messages = getNodeMessages(event.targeted_tools);
+    const toolNames = messages
+      .map((message) => {
+        if (!message || typeof message !== 'object') return undefined;
+        return (message as { name?: string }).name;
+      })
+      .filter(Boolean);
+    return {
+      title: 'Targeted Tool Results',
+      data: toolNames.length ? toolNames.join(', ') : stringifyEventData(event.targeted_tools),
+    };
+  }
+
+  if ('search_web' in event) {
+    const messages = getNodeMessages(event.search_web);
     const toolNames = messages
       .map((message) => {
         if (!message || typeof message !== 'object') return undefined;
@@ -53,12 +71,40 @@ function processDeepResearchEvent(
       .filter(Boolean);
 
     return {
-      title: 'Tool Results',
-      data: toolNames.length ? toolNames.join(', ') : stringifyEventData(event.tools),
+      title: 'Web Search Results',
+      data: toolNames.length ? toolNames.join(', ') : stringifyEventData(event.search_web),
     };
   }
 
-  if ('finalize_answer' in event) {
+  if ('rank_sources' in event) {
+    return {
+      title: 'Source Ranking',
+      data: 'Deduplicated and ranked candidate sources.',
+    };
+  }
+
+  if ('fetch_sources' in event) {
+    return {
+      title: 'Source Fetching',
+      data: 'Fetched selected source pages.',
+    };
+  }
+
+  if ('extract_evidence' in event) {
+    return {
+      title: 'Evidence Extraction',
+      data: 'Extracted source summaries and key claims.',
+    };
+  }
+
+  if ('verify_citations' in event) {
+    return {
+      title: 'Citation Verification',
+      data: 'Checked usable sources and warnings.',
+    };
+  }
+
+  if ('synthesize_answer' in event) {
     return {
       title: 'Final Answer',
       data: 'Generated final answer from accumulated conversation and tool results.',
@@ -93,7 +139,6 @@ export default function App() {
         setSelectedAgentId(validAgentId as AgentId);
         setProcessedEventsTimeline([]);
         setHistoricalActivities({});
-        window.location.reload();
       }
     },
     [selectedAgentId, validateAgentId]
@@ -113,11 +158,16 @@ export default function App() {
     max_research_loops: number;
     reasoning_model: string;
   }>({
-    apiUrl:
-      import.meta.env.VITE_LANGGRAPH_API_URL ??
-      (import.meta.env.DEV ? 'http://localhost:2024' : 'http://localhost:8123'),
+    apiUrl: getLangGraphApiUrl(),
     assistantId: selectedAgentId,
     messagesKey: 'messages',
+    onError: (error: unknown) => {
+      if (isAbortError(error)) {
+        console.debug('Stream aborted by client action.');
+        return;
+      }
+      console.error('LangGraph stream error:', error);
+    },
     onFinish: (event: unknown) => {
       console.log(event);
     },
@@ -219,10 +269,14 @@ export default function App() {
           initial_search_query_count,
           max_research_loops,
           reasoning_model: model,
+        }, {
+          onDisconnect: 'continue',
         });
       } else {
         thread.submit({
           messages: newMessages,
+        }, {
+          onDisconnect: 'continue',
         });
       }
     },
@@ -231,7 +285,6 @@ export default function App() {
 
   const handleCancel = useCallback(() => {
     thread.stop();
-    window.location.reload();
   }, [thread]);
 
   return (

@@ -12,7 +12,7 @@ lint:
 	npm run lint
 
 help:
-	@echo '----'
-	@echo 'dev     - 啟動 TypeScript LangGraph Agent Server'
-	@echo 'build   - 執行 TypeScript compile 檢查'
-	@echo 'lint    - 執行 TypeScript lint/compile 檢查'
+	@echo "----"
+	@echo "dev   - start LangGraph agent server"
+	@echo "build - typecheck backend"
+	@echo "lint  - run backend typecheck"
