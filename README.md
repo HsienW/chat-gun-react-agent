@@ -4,7 +4,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-JS-06B6D4)](https://langchain-ai.github.io/langgraphjs/)
 [![Source](https://img.shields.io/badge/Source-Ylang--Labs%2Flanggraph--react--agent--studio-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
 
-Chat Gun React Agent 是一個以 React、TypeScript、LangGraph JS、Gemini、原生工具與選用 MCP tools 組成的 Fullstack AI agent studio。
+🤖 Chat Gun React Agent 是一個以 React、TypeScript、LangGraph JS、Gemini、原生工具與選用 MCP tools 組成的 Fullstack AI agent studio。
 
 💡 本專案僅做個人研究使用 (This project is for personal research use only)。
 
