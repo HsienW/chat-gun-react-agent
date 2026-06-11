@@ -25,7 +25,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { getAgentById } from '@/lib/agents';
+import { getAgentById, getVisibleAgents } from '@/lib/agents';
+import { FRONTEND_ERROR_MESSAGES } from '@/lib/error-messages';
 import {
   getImageUploadConfig,
   ImageUploadItem,
@@ -34,7 +35,7 @@ import {
   validateImageFile,
 } from '@/lib/image-upload';
 import { isValidModelId } from '@/lib/models';
-import { AVAILABLE_AGENTS, AgentId } from '@/types/agents';
+import { AgentId } from '@/types/agents';
 import { AVAILABLE_MODELS, DEFAULT_MODEL } from '@/types/models';
 
 interface InputFormProps {
@@ -71,6 +72,7 @@ export const InputForm: React.FC<InputFormProps> = ({
   const imageItemsRef = useRef<ImageUploadItem[]>([]);
   const activeUploadCountRef = useRef(0);
   const supportsImageUpload = selectedAgent === AgentId.DEEP_RESEARCHER;
+  const visibleAgents = getVisibleAgents();
 
   const patchImageItem = useCallback((id: string, patch: Partial<ImageUploadItem>) => {
     const updatedItems = imageItemsRef.current.map((item) =>
@@ -118,13 +120,13 @@ export const InputForm: React.FC<InputFormProps> = ({
     const currentItems = imageItemsRef.current;
     const availableSlots = uploadConfig.maxFiles - currentItems.length;
     if (availableSlots <= 0) {
-      setPreflightError(`You can upload at most ${uploadConfig.maxFiles} images.`);
+      setPreflightError(FRONTEND_ERROR_MESSAGES.imageUpload.tooManyImages(uploadConfig.maxFiles));
       return;
     }
 
     const acceptedFiles = selectedFiles.slice(0, availableSlots);
     if (selectedFiles.length > availableSlots) {
-      setPreflightError(`Only ${availableSlots} more image(s) can be added.`);
+      setPreflightError(FRONTEND_ERROR_MESSAGES.imageUpload.remainingSlots(availableSlots));
     }
 
     const newItems: ImageUploadItem[] = acceptedFiles.map((file) => {
@@ -142,7 +144,12 @@ export const InputForm: React.FC<InputFormProps> = ({
     if (failedItems.length) {
       setPreflightError(
         failedItems
-          .map((item) => `${item.file.name}: ${item.error ?? 'Invalid image.'}`)
+          .map(
+            (item) =>
+              `${item.file.name}: ${
+                item.error ?? FRONTEND_ERROR_MESSAGES.imageUpload.invalidImage
+              }`
+          )
           .join('\n')
       );
     }
@@ -239,7 +246,7 @@ export const InputForm: React.FC<InputFormProps> = ({
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-[#E0A458]" />
               <div className="min-w-0">
                 <h2 className="text-base font-semibold text-[#F8F1E7]">
-                  Image preprocessing failed
+                  {FRONTEND_ERROR_MESSAGES.imageUpload.dialogTitle}
                 </h2>
                 <pre className="mt-3 max-h-60 whitespace-pre-wrap rounded-xl border border-[#5A4036] bg-[#160F0C] p-3 text-xs text-[#E7D9C1]">
                   {preflightError}
@@ -252,7 +259,7 @@ export const InputForm: React.FC<InputFormProps> = ({
                 className="rounded-xl bg-[#7A1E1E] text-[#F8F1E7] hover:bg-[#9F3434]"
                 onClick={() => setPreflightError(null)}
               >
-                Close
+                {FRONTEND_ERROR_MESSAGES.imageUpload.close}
               </Button>
             </div>
           </div>
@@ -277,7 +284,7 @@ export const InputForm: React.FC<InputFormProps> = ({
                 type="button"
                 className="absolute right-1 top-1 rounded-full bg-black/60 p-1 text-[#F8F1E7] hover:bg-[#7A1E1E]"
                 onClick={() => removeImageItem(item.id)}
-                aria-label={`Remove ${item.file.name}`}
+                aria-label={FRONTEND_ERROR_MESSAGES.imageUpload.removeImageLabel(item.file.name)}
               >
                 <X className="h-3 w-3" />
               </button>
@@ -289,12 +296,12 @@ export const InputForm: React.FC<InputFormProps> = ({
                 />
               ) : (
                 <div className="flex h-24 items-center justify-center rounded-xl bg-[#160F0C] text-xs text-[#E7D9C1]/70">
-                  {item.status}
+                  {FRONTEND_ERROR_MESSAGES.imageUpload.uploadingStatus[item.status]}
                 </div>
               )}
               <div className="mt-2 truncate text-xs text-[#F8F1E7]">{item.file.name}</div>
               <div className="text-[11px] capitalize text-[#E7D9C1]/60">
-                {item.status}
+                {FRONTEND_ERROR_MESSAGES.imageUpload.uploadingStatus[item.status]}
                 {item.error ? `: ${item.error}` : ''}
               </div>
             </div>
@@ -332,7 +339,7 @@ export const InputForm: React.FC<InputFormProps> = ({
               className="text-[#E7D9C1] hover:text-white hover:bg-[#7A1E1E]/25 p-2 cursor-pointer rounded-full transition-all duration-200"
               disabled={isLoading || imageItems.length >= uploadConfig.maxFiles}
               onClick={() => fileInputRef.current?.click()}
-              title={`Upload up to ${uploadConfig.maxFiles} images`}
+              title={FRONTEND_ERROR_MESSAGES.imageUpload.uploadButtonTitle(uploadConfig.maxFiles)}
             >
               <ImagePlus className="h-5 w-5" />
             </Button>
@@ -368,7 +375,8 @@ export const InputForm: React.FC<InputFormProps> = ({
 
       <div className="flex items-center justify-between gap-2">
         <div className="flex flex-row flex-wrap gap-2">
-          {!hasHistory && (
+          {/* 暫時只開放 Deep Research；其他 Agent 程式碼保留，後續功能成熟後再逐步開放選項。 */}
+          {!hasHistory && visibleAgents.length > 1 && (
             <div className={controlClass}>
               <div className="flex flex-row items-center text-sm">
                 <Bot className="h-4 w-4 mr-2" />
@@ -379,7 +387,7 @@ export const InputForm: React.FC<InputFormProps> = ({
                   <SelectValue placeholder="Agent" />
                 </SelectTrigger>
                 <SelectContent className={selectContentClass}>
-                  {AVAILABLE_AGENTS.map((agent) => (
+                  {visibleAgents.map((agent) => (
                     <SelectItem
                       key={agent.id}
                       value={agent.id}

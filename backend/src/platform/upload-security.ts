@@ -1,5 +1,6 @@
 import { BaseMessage } from "@langchain/core/messages";
 
+import { BACKEND_ERROR_MESSAGES } from "./error-messages.js";
 import { getEnv } from "./env.js";
 
 export type BackendUploadSecurityConfig = {
@@ -124,46 +125,46 @@ export function validateImageAttachments(
   if (imageBlocks.length === 0) return undefined;
 
   if (imageBlocks.length > config.maxFiles) {
-    return `Too many image attachments: ${imageBlocks.length}. Max: ${config.maxFiles}.`;
+    return BACKEND_ERROR_MESSAGES.upload.tooManyImages(imageBlocks.length, config.maxFiles);
   }
 
   for (const [index, block] of imageBlocks.entries()) {
     const rawUrl = getImageUrl(block);
     if (!rawUrl) {
-      return `Image attachment ${index + 1} is missing image_url.url.`;
+      return BACKEND_ERROR_MESSAGES.upload.missingImageUrl(index + 1);
     }
 
     const dataUrl = parseDataUrl(rawUrl);
     if (!dataUrl) {
-      return `Image attachment ${index + 1} must be a base64 data URL.`;
+      return BACKEND_ERROR_MESSAGES.upload.dataUrlRequired(index + 1);
     }
 
     const fileName = block.fileName;
     if (!fileName) {
-      return `Image attachment ${index + 1} is missing fileName.`;
+      return BACKEND_ERROR_MESSAGES.upload.missingFileName(index + 1);
     }
 
     const extension = getFileExtension(fileName);
     const expectedMime = MIME_BY_EXTENSION.get(extension);
     if (!config.allowedExtensions.has(extension) || !expectedMime) {
-      return `Unsupported image extension for ${fileName}.`;
+      return BACKEND_ERROR_MESSAGES.upload.unsupportedExtension(fileName);
     }
 
     if (!config.allowedMimeTypes.has(dataUrl.mimeType) || dataUrl.mimeType !== expectedMime) {
-      return `Image MIME type does not match extension for ${fileName}.`;
+      return BACKEND_ERROR_MESSAGES.upload.mimeMismatch(fileName);
     }
 
     if (block.mimeType && block.mimeType.toLowerCase() !== dataUrl.mimeType) {
-      return `Image metadata MIME type does not match payload for ${fileName}.`;
+      return BACKEND_ERROR_MESSAGES.upload.metadataMimeMismatch(fileName);
     }
 
     const sizeBytes = estimateBase64Bytes(dataUrl.base64);
     if (sizeBytes <= 0 || sizeBytes > config.maxBytes) {
-      return `Image ${fileName} exceeds the allowed size.`;
+      return BACKEND_ERROR_MESSAGES.upload.sizeExceeded(fileName);
     }
 
     if (typeof block.sizeBytes === "number" && block.sizeBytes !== sizeBytes) {
-      return `Image size metadata does not match payload for ${fileName}.`;
+      return BACKEND_ERROR_MESSAGES.upload.sizeMetadataMismatch(fileName);
     }
 
     if (
@@ -171,11 +172,11 @@ export function validateImageAttachments(
       typeof block.height === "number" &&
       block.width * block.height > config.maxPixels
     ) {
-      return `Image dimensions are too large for ${fileName}.`;
+      return BACKEND_ERROR_MESSAGES.upload.dimensionsTooLarge(fileName);
     }
 
     if (!hasExpectedMagicBytes(dataUrl.mimeType, dataUrl.base64)) {
-      return `Image magic bytes do not match MIME type for ${fileName}.`;
+      return BACKEND_ERROR_MESSAGES.upload.magicBytesMismatch(fileName);
     }
   }
 

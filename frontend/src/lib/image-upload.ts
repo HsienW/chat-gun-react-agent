@@ -1,6 +1,6 @@
-export type ImageUploadStatus = 'queued' | 'processing' | 'completed' | 'failed';
-
 import { FRONTEND_ERROR_MESSAGES } from './error-messages';
+
+export type ImageUploadStatus = 'queued' | 'processing' | 'completed' | 'failed';
 
 export type ProcessedImageAttachment = {
   id: string;

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 
 import { loadConfig, type BffConfig } from "./config.js";
+import { BFF_ERROR_MESSAGES } from "./error-messages.js";
 import { createBffErrorEnvelope } from "./errors.js";
 import { InMemoryRateLimiter } from "./rate-limit.js";
 import { validateUploadPayload } from "./upload-security.js";
@@ -393,7 +394,7 @@ async function proxyLangGraph(
       const envelope = createBffErrorEnvelope(error, {
         stage: "upload_preflight",
         provider: "bff",
-        message: "Image upload rejected by BFF preflight validation",
+        message: BFF_ERROR_MESSAGES.upload.rejectedByBff,
         details: {
           method: req.method,
           path: req.url,

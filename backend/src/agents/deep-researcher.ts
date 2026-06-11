@@ -4,13 +4,20 @@ import { StructuredToolInterface } from "@langchain/core/tools";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 
 import { getBooleanEnv } from "../platform/env.js";
+import { BACKEND_ERROR_MESSAGES } from "../platform/error-messages.js";
+import { createPlannerFailureRoutingDecision } from "../platform/agent-routing-policy.js";
 import {
   createErrorEnvelope,
   formatErrorEnvelope,
   parseErrorEnvelope,
   serializeErrorEnvelope,
 } from "../platform/errors.js";
+import {
+  buildImAgentContextPack,
+  ImAgentContextPack,
+} from "../platform/im-context-pack.js";
 import { formatLlmError, llmGateway, resolveModel } from "../platform/llm-gateway.js";
+import { getAgentRuntimeConfig } from "../platform/runtime-config.js";
 import {
   extractImageAttachmentBlocks,
   getImageUrl,
@@ -24,6 +31,39 @@ import { normalizeAiMessageForStream } from "./message-normalization.js";
 const DEFAULT_RESEARCH_MODEL = "gemini-2.5-flash";
 const DEFAULT_SEARCH_QUERY_COUNT = 3;
 const DEFAULT_MAX_FETCHED_SOURCES = 5;
+
+const DEEP_RESEARCH_GRAPH_NODES = {
+  validateUploads: "validate_uploads",
+  buildContextPack: "build_context_pack",
+  analyzeImages: "analyze_images",
+  planResearch: "plan_research",
+  targetedTools: "targeted_tools",
+  searchWeb: "search_web",
+  rankSources: "rank_sources",
+  fetchSources: "fetch_sources",
+  extractEvidence: "extract_evidence",
+  verifyCitations: "verify_citations",
+  synthesizeAnswer: "synthesize_answer",
+} as const;
+
+const DEEP_RESEARCH_GRAPH_ROUTES = {
+  buildContextPack: "build_context_pack",
+  analyzeImages: "analyze_images",
+  targetedTools: "targeted_tools",
+  searchWeb: "search_web",
+  synthesize: "synthesize",
+  rank: "rank",
+  fetch: "fetch",
+  verify: "verify",
+} as const;
+
+const DEEP_RESEARCH_TOOL_NAMES = {
+  currentWeather: "current_weather",
+  calculator: "calculator_tool",
+  webSearch: "web_search",
+  webFetch: "web_fetch",
+  weatherGeocodingStage: "weather_geocoding",
+} as const;
 
 type AnswerMode = "direct" | "weather" | "calculation" | "research" | "clarify";
 type Freshness = "pd" | "pw" | "pm" | "py";
@@ -91,6 +131,10 @@ const DeepResearchState = Annotation.Root({
     reducer: (left, right) => left.concat(right),
     default: () => [],
   }),
+  contextPack: Annotation<ImAgentContextPack | undefined>({
+    reducer: (_left, right) => right,
+    default: () => undefined,
+  }),
   initial_search_query_count: Annotation<number>({
     reducer: (_left, right) => right,
     default: () => DEFAULT_SEARCH_QUERY_COUNT,
@@ -143,8 +187,9 @@ const tools = await loadAgentTools("deep_researcher", {
 const toolByName = new Map(tools.map((tool) => [tool.name, tool]));
 
 function today(): string {
+  const runtimeConfig = getAgentRuntimeConfig();
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Taipei",
+    timeZone: runtimeConfig.timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -225,22 +270,22 @@ function fallbackPlan(
   state: typeof DeepResearchState.State,
   plannerFailureReason?: string
 ): ResearchPlan {
-  void state;
-  const clarification = plannerFailureReason
-    ? `我需要先使用模型判斷你的意圖與地點，但 planner LLM 目前不可用。原因：${plannerFailureReason}`
-    : "我需要先使用模型判斷你的意圖與地點，但目前 planner LLM 不可用。請稍後重試，或先確認 backend 的模型 API / quota / proxy / network 設定。";
+  const decision = createPlannerFailureRoutingDecision(question, plannerFailureReason);
+  const maxQueries = clampInt(state.initial_search_query_count, DEFAULT_SEARCH_QUERY_COUNT, 1, 5);
 
   return {
     question,
-    answerMode: "clarify",
-    rationale:
-      "The planner LLM was unavailable, so the application did not infer intent or entities with hard-coded rules.",
-    queries: [],
+    answerMode: decision.answerMode,
+    rationale: decision.rationale,
+    queries: uniqueStrings(decision.queries, maxQueries),
     urls: [],
-    clarification,
-    requiredSourceCount: 1,
+    weather: decision.weather,
+    calculation: decision.calculation,
+    clarification: decision.clarification,
+    requiredSourceCount: decision.requiredSourceCount,
   };
 }
+
 
 function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string, state: typeof DeepResearchState.State): ResearchPlan {
   const fallback = fallbackPlan(question, state);
@@ -268,7 +313,7 @@ function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string
     return {
       ...fallback,
       rationale: "The planner classified weather intent but did not provide a geocoding-friendly location.",
-      clarification: "請提供更明確的天氣查詢地點，或稍後重試讓模型重新判斷地點。",
+      clarification: BACKEND_ERROR_MESSAGES.planner.missingWeatherLocation,
     };
   }
 
@@ -276,7 +321,7 @@ function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string
     return {
       ...fallback,
       rationale: "The planner classified calculation intent but did not provide an expression.",
-      clarification: "請提供要計算的明確算式。",
+      clarification: BACKEND_ERROR_MESSAGES.planner.missingCalculationExpression,
     };
   }
 
@@ -350,7 +395,7 @@ async function validateUploads(
         source: "backend",
         stage: "upload_preflight",
         provider: "backend",
-        message: "Image upload rejected by backend preflight validation",
+        message: BACKEND_ERROR_MESSAGES.upload.rejectedByBackend,
         details: {
           supportedExtensions: [".png", ".jpg", ".jpeg", ".webp"],
         },
@@ -360,7 +405,24 @@ async function validateUploads(
 }
 
 function routeAfterUploadValidation(state: typeof DeepResearchState.State): string {
-  return state.uploadError ? "synthesize" : "analyze_images";
+  return state.uploadError
+    ? DEEP_RESEARCH_GRAPH_ROUTES.synthesize
+    : DEEP_RESEARCH_GRAPH_ROUTES.buildContextPack;
+}
+
+async function buildContextPack(
+  state: typeof DeepResearchState.State,
+  _config: RunnableConfig
+): Promise<Partial<typeof DeepResearchState.State>> {
+  const runtimeConfig = getAgentRuntimeConfig();
+  const contextPack = buildImAgentContextPack(state.messages, {
+    maxTokens: getMaxFetchedSources(state) * runtimeConfig.contextTokensPerSource,
+    locale: runtimeConfig.locale,
+  });
+
+  return {
+    contextPack,
+  };
 }
 
 function getLatestImageUserContent(state: typeof DeepResearchState.State): unknown[] | undefined {
@@ -403,10 +465,9 @@ async function analyzeImages(
     return {};
   }
 
-  const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
-  const llm = llmGateway.createChatModel({ model, temperature: 0 });
-
   try {
+    const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
+    const llm = llmGateway.createChatModel({ model, temperature: 0 });
     const response = await llm.invoke([
       new HumanMessage({
         content: content as HumanMessage["content"],
@@ -436,8 +497,6 @@ async function repairWeatherRequest(
   state: typeof DeepResearchState.State,
   errorText: string
 ): Promise<WeatherRequest | undefined> {
-  const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
-  const llm = llmGateway.createChatModel({ model, temperature: 0 });
   const prompt = [
     "Return only one JSON object. Do not use markdown.",
     "Convert this failed weather geocoding request into a geocoding-friendly location request.",
@@ -449,6 +508,8 @@ async function repairWeatherRequest(
   ].join("\n");
 
   try {
+    const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
+    const llm = llmGateway.createChatModel({ model, temperature: 0 });
     const response = await llm.invoke(prompt);
     const parsed = parseJsonObject<Partial<WeatherRequest>>(messageContentToString(response));
     if (parsed?.location && typeof parsed.location === "string") {
@@ -468,7 +529,10 @@ async function repairWeatherRequest(
 function shouldRepairWeatherRequest(errorText: string): boolean {
   const envelope = parseErrorEnvelope(errorText);
   if (envelope) {
-    return envelope.error.stage === "current_weather" || envelope.error.stage === "weather_geocoding";
+    return (
+      envelope.error.stage === DEEP_RESEARCH_TOOL_NAMES.currentWeather ||
+      envelope.error.stage === DEEP_RESEARCH_TOOL_NAMES.weatherGeocodingStage
+    );
   }
 
   return /geocoding|location|ambiguous|country|region|not found|matched country/i.test(
@@ -495,8 +559,7 @@ async function planResearch(
     };
   }
 
-  const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
-  const llm = llmGateway.createChatModel({ model, temperature: 0 });
+  const contextPack = state.contextPack ?? buildImAgentContextPack(state.messages);
   const imageContext = state.imageObservations.length
     ? state.imageObservations.join("\n\n")
     : "No image attachments were provided.";
@@ -511,6 +574,8 @@ async function planResearch(
     "JSON schema:",
     '{"question":"string","answerMode":"direct|weather|calculation|research|clarify","rationale":"string","queries":["string"],"urls":["https://..."],"freshness":"pd|pw|pm|py optional","weather":{"location":"string","country":"string optional","region":"string optional"},"calculation":{"expression":"string"},"clarification":"string optional","requiredSourceCount":3}',
     `Today is ${today()}.`,
+    "IM Context Pack:",
+    JSON.stringify(contextPack, null, 2),
     "Image recognition context:",
     imageContext,
     "User request:",
@@ -518,26 +583,30 @@ async function planResearch(
   ].join("\n");
 
   try {
+    const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
+    const llm = llmGateway.createChatModel({ model, temperature: 0 });
     const response = await llm.invoke(prompt);
     const parsed = parseJsonObject<Partial<ResearchPlan>>(messageContentToString(response));
-    return { plan: coercePlan(parsed, question, state) };
+    const plan = coercePlan(parsed, question, state);
+    return { plan };
   } catch (error) {
-    return { plan: fallbackPlan(question, state, formatLlmError(error)) };
+    const plan = fallbackPlan(question, state, formatLlmError(error));
+    return { plan };
   }
 }
 
 function routeAfterPlan(state: typeof DeepResearchState.State): string {
   switch (state.plan?.answerMode) {
     case "clarify":
-      return "synthesize";
+      return DEEP_RESEARCH_GRAPH_ROUTES.synthesize;
     case "weather":
     case "calculation":
-      return "targeted_tools";
+      return DEEP_RESEARCH_GRAPH_ROUTES.targetedTools;
     case "research":
-      return "search_web";
+      return DEEP_RESEARCH_GRAPH_ROUTES.searchWeb;
     case "direct":
     default:
-      return "synthesize";
+      return DEEP_RESEARCH_GRAPH_ROUTES.synthesize;
   }
 }
 
@@ -550,31 +619,33 @@ async function targetedTools(
 
   if (plan?.answerMode === "weather") {
     const request = plan.weather ?? { location: plan.question };
-    let content = await invokeTool("current_weather", request as Record<string, unknown>);
+    const input = request as Record<string, unknown>;
+    let content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.currentWeather, input);
 
     if (content.startsWith("Error:") && shouldRepairWeatherRequest(content)) {
       const repairedRequest = await repairWeatherRequest(request, state, content);
       if (repairedRequest) {
         const retryContent = await invokeTool(
-          "current_weather",
+          DEEP_RESEARCH_TOOL_NAMES.currentWeather,
           repairedRequest as Record<string, unknown>
         );
         content = [
-          `Initial current_weather request failed: ${content}`,
+          `Initial ${DEEP_RESEARCH_TOOL_NAMES.currentWeather} request failed: ${content}`,
           `Retried with geocoding-friendly request: ${JSON.stringify(repairedRequest)}`,
           retryContent,
         ].join("\n\n");
       }
     }
 
-    messages.push(createToolMessage("current_weather", content));
+    messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.currentWeather, content));
   }
 
   if (plan?.answerMode === "calculation" && plan.calculation?.expression) {
-    const content = await invokeTool("calculator_tool", {
+    const input = {
       expression: plan.calculation.expression,
-    });
-    messages.push(createToolMessage("calculator_tool", content));
+    };
+    const content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.calculator, input);
+    messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.calculator, content));
   }
 
   return { messages };
@@ -620,13 +691,14 @@ async function searchWeb(
   const messages: ToolMessage[] = [];
 
   for (const [index, query] of queries.entries()) {
-    const content = await invokeTool("web_search", {
+    const input = {
       query,
       count: 8,
       freshness: plan.freshness,
       format: "json",
-    });
-    messages.push(createToolMessage("web_search", content, index));
+    };
+    const content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.webSearch, input);
+    messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.webSearch, content, index));
     allResults.push(...parseSearchToolOutput(content, query));
   }
 
@@ -718,11 +790,12 @@ async function fetchSources(
   const messages: ToolMessage[] = [];
 
   for (const [index, source] of selected.entries()) {
-    const content = await invokeTool("web_fetch", {
+    const input = {
       url: source.url,
       maxCharacters: 16_000,
-    });
-    messages.push(createToolMessage("web_fetch", content, index));
+    };
+    const content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.webFetch, input);
+    messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.webFetch, content, index));
     const parsed = parseFetchOutput(content);
     fetchedSources.push({
       ...source,
@@ -890,7 +963,7 @@ function buildWeatherFailureMessage(content: string): string {
 function buildWeatherToolAnswer(
   state: typeof DeepResearchState.State
 ): AIMessage | undefined {
-  const content = getLatestToolMessageContent(state, "current_weather");
+  const content = getLatestToolMessageContent(state, DEEP_RESEARCH_TOOL_NAMES.currentWeather);
   if (!content) {
     return undefined;
   }
@@ -935,7 +1008,7 @@ function buildWeatherToolAnswer(
 function buildCalculationToolAnswer(
   state: typeof DeepResearchState.State
 ): AIMessage | undefined {
-  const content = getLatestToolMessageContent(state, "calculator_tool");
+  const content = getLatestToolMessageContent(state, DEEP_RESEARCH_TOOL_NAMES.calculator);
   if (!content) {
     return undefined;
   }
@@ -964,9 +1037,9 @@ function buildTargetedToolErrorAnswer(
 ): AIMessage | undefined {
   const toolName =
     plan.answerMode === "weather"
-      ? "current_weather"
+      ? DEEP_RESEARCH_TOOL_NAMES.currentWeather
       : plan.answerMode === "calculation"
-        ? "calculator_tool"
+        ? DEEP_RESEARCH_TOOL_NAMES.calculator
         : undefined;
 
   if (!toolName) {
@@ -986,28 +1059,28 @@ async function synthesizeAnswer(
 
   if (state.uploadError) {
     const envelope = parseErrorEnvelope(state.uploadError);
+    const content = envelope ? formatErrorEnvelope(envelope) : state.uploadError;
     return {
-      messages: [
-        new AIMessage(envelope ? formatErrorEnvelope(envelope) : state.uploadError),
-      ],
+      messages: [new AIMessage(content)],
     };
   }
 
   if (plan.answerMode === "clarify") {
+    const content = plan.clarification ?? "Please clarify the request before I continue.";
     return {
-      messages: [new AIMessage(plan.clarification ?? "Please clarify the request before I continue.")],
+      messages: [new AIMessage(content)],
     };
   }
 
   const targetedToolErrorAnswer = buildTargetedToolErrorAnswer(plan, state);
   if (targetedToolErrorAnswer) {
-    return { messages: [targetedToolErrorAnswer] };
+    return {
+      messages: [targetedToolErrorAnswer],
+    };
   }
 
   const targetedToolFallback = buildTargetedToolAnswer(plan, state);
 
-  const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
-  const llm = llmGateway.createChatModel({ model, temperature: 0.1 });
   const evidence = formatEvidence(state);
   const prompt = [
     "You are the final synthesis node in a production-style research graph.",
@@ -1032,71 +1105,79 @@ async function synthesizeAnswer(
   ].join("\n\n");
 
   try {
+    const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
+    const llm = llmGateway.createChatModel({ model, temperature: 0.1 });
     const response = await llm.invoke(prompt);
-    return { messages: [normalizeAiMessageForStream(response)] };
+    const normalized = normalizeAiMessageForStream(response);
+    return {
+      messages: [normalized],
+    };
   } catch (error) {
     if (targetedToolFallback) {
-      return { messages: [targetedToolFallback] };
+      return {
+        messages: [targetedToolFallback],
+      };
     }
 
+    const content = `Research synthesis failed: ${formatLlmError(error)}`;
     return {
-      messages: [
-        new AIMessage(
-          `Research synthesis failed: ${formatLlmError(error)}`
-        ),
-      ],
+      messages: [new AIMessage(content)],
     };
   }
 }
 
 function routeAfterSearch(state: typeof DeepResearchState.State): string {
   if (state.searchResults.length === 0) {
-    return "verify";
+    return DEEP_RESEARCH_GRAPH_ROUTES.verify;
   }
-  return "rank";
+  return DEEP_RESEARCH_GRAPH_ROUTES.rank;
 }
 
 function routeAfterRank(state: typeof DeepResearchState.State): string {
   if (state.rankedSources.length === 0) {
-    return "verify";
+    return DEEP_RESEARCH_GRAPH_ROUTES.verify;
   }
-  return "fetch";
+  return DEEP_RESEARCH_GRAPH_ROUTES.fetch;
 }
 
 const builder = new StateGraph(DeepResearchState)
-  .addNode("validate_uploads", validateUploads)
-  .addNode("analyze_images", analyzeImages)
-  .addNode("plan_research", planResearch)
-  .addNode("targeted_tools", targetedTools)
-  .addNode("search_web", searchWeb)
-  .addNode("rank_sources", rankSources)
-  .addNode("fetch_sources", fetchSources)
-  .addNode("extract_evidence", extractEvidence)
-  .addNode("verify_citations", verifyCitations)
-  .addNode("synthesize_answer", synthesizeAnswer)
-  .addEdge(START, "validate_uploads")
-  .addConditionalEdges("validate_uploads", routeAfterUploadValidation, {
-    analyze_images: "analyze_images",
-    synthesize: "synthesize_answer",
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.validateUploads, validateUploads)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.buildContextPack, buildContextPack)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.analyzeImages, analyzeImages)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.planResearch, planResearch)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.targetedTools, targetedTools)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.searchWeb, searchWeb)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.rankSources, rankSources)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.fetchSources, fetchSources)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.extractEvidence, extractEvidence)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.verifyCitations, verifyCitations)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer, synthesizeAnswer)
+  .addEdge(START, DEEP_RESEARCH_GRAPH_NODES.validateUploads)
+  .addConditionalEdges(DEEP_RESEARCH_GRAPH_NODES.validateUploads, routeAfterUploadValidation, {
+    [DEEP_RESEARCH_GRAPH_ROUTES.buildContextPack]: DEEP_RESEARCH_GRAPH_NODES.buildContextPack,
+    [DEEP_RESEARCH_GRAPH_ROUTES.analyzeImages]: DEEP_RESEARCH_GRAPH_NODES.analyzeImages,
+    [DEEP_RESEARCH_GRAPH_ROUTES.synthesize]: DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer,
   })
-  .addEdge("analyze_images", "plan_research")
-  .addConditionalEdges("plan_research", routeAfterPlan, {
-    targeted_tools: "targeted_tools",
-    search_web: "search_web",
-    synthesize: "synthesize_answer",
+  .addEdge(DEEP_RESEARCH_GRAPH_NODES.buildContextPack, DEEP_RESEARCH_GRAPH_NODES.analyzeImages)
+  .addEdge(DEEP_RESEARCH_GRAPH_NODES.analyzeImages, DEEP_RESEARCH_GRAPH_NODES.planResearch)
+  .addConditionalEdges(DEEP_RESEARCH_GRAPH_NODES.planResearch, routeAfterPlan, {
+    [DEEP_RESEARCH_GRAPH_ROUTES.targetedTools]: DEEP_RESEARCH_GRAPH_NODES.targetedTools,
+    [DEEP_RESEARCH_GRAPH_ROUTES.searchWeb]: DEEP_RESEARCH_GRAPH_NODES.searchWeb,
+    [DEEP_RESEARCH_GRAPH_ROUTES.synthesize]: DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer,
   })
-  .addEdge("targeted_tools", "synthesize_answer")
-  .addConditionalEdges("search_web", routeAfterSearch, {
-    rank: "rank_sources",
-    verify: "verify_citations",
+  .addEdge(DEEP_RESEARCH_GRAPH_NODES.targetedTools, DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer)
+  .addConditionalEdges(DEEP_RESEARCH_GRAPH_NODES.searchWeb, routeAfterSearch, {
+    [DEEP_RESEARCH_GRAPH_ROUTES.rank]: DEEP_RESEARCH_GRAPH_NODES.rankSources,
+    [DEEP_RESEARCH_GRAPH_ROUTES.verify]: DEEP_RESEARCH_GRAPH_NODES.verifyCitations,
   })
-  .addConditionalEdges("rank_sources", routeAfterRank, {
-    fetch: "fetch_sources",
-    verify: "verify_citations",
+  .addConditionalEdges(DEEP_RESEARCH_GRAPH_NODES.rankSources, routeAfterRank, {
+    [DEEP_RESEARCH_GRAPH_ROUTES.fetch]: DEEP_RESEARCH_GRAPH_NODES.fetchSources,
+    [DEEP_RESEARCH_GRAPH_ROUTES.verify]: DEEP_RESEARCH_GRAPH_NODES.verifyCitations,
   })
-  .addEdge("fetch_sources", "extract_evidence")
-  .addEdge("extract_evidence", "verify_citations")
-  .addEdge("verify_citations", "synthesize_answer")
-  .addEdge("synthesize_answer", END);
+  .addEdge(DEEP_RESEARCH_GRAPH_NODES.fetchSources, DEEP_RESEARCH_GRAPH_NODES.extractEvidence)
+  .addEdge(DEEP_RESEARCH_GRAPH_NODES.extractEvidence, DEEP_RESEARCH_GRAPH_NODES.verifyCitations)
+  .addEdge(DEEP_RESEARCH_GRAPH_NODES.verifyCitations, DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer)
+  .addEdge(DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer, END);
 
 export const deepResearcherGraph = builder.compile();
+
