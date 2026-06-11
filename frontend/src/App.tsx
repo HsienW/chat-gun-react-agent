@@ -5,6 +5,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { ProcessedEvent } from '@/components/ActivityTimeline';
 import { WelcomeScreen } from '@/components/WelcomeScreen';
 import { ChatMessagesView } from '@/components/ChatMessagesView';
+import type { ProcessedImageAttachment } from '@/lib/image-upload';
 import { AgentId, DEFAULT_AGENT } from '@/types/agents';
 import { formatErrorEnvelope, parseErrorEnvelope } from '@/types/errors';
 import { getAgentById, isValidAgentId } from '@/lib/agents';
@@ -249,19 +250,41 @@ export default function App() {
       submittedInputValue: string,
       effort: string,
       model: string,
-      agentId: string
+      agentId: string,
+      attachments: ProcessedImageAttachment[]
     ) => {
       const validAgentId = validateAgentId(agentId);
-      if (!submittedInputValue.trim()) return;
+      if (!submittedInputValue.trim() && attachments.length === 0) return;
 
       handleAgentSwitch(validAgentId);
       setProcessedEventsTimeline([]);
       setStreamErrorMessage(null);
 
+      const messageContent: Message['content'] =
+        attachments.length > 0
+          ? [
+              ...(submittedInputValue.trim()
+                ? [{ type: 'text' as const, text: submittedInputValue.trim() }]
+                : [{ type: 'text' as const, text: 'Analyze the uploaded image attachments.' }]),
+              ...attachments.map((attachment) => ({
+                type: 'image_url' as const,
+                image_url: {
+                  url: attachment.dataUrl,
+                  detail: 'auto' as const,
+                },
+                fileName: attachment.fileName,
+                mimeType: attachment.mimeType,
+                sizeBytes: attachment.processedBytes,
+                width: attachment.width,
+                height: attachment.height,
+              })),
+            ]
+          : submittedInputValue;
+
       const newMessages: Message[] = [
         {
           type: 'human',
-          content: submittedInputValue,
+          content: messageContent,
           id: crypto.randomUUID(),
         },
       ];

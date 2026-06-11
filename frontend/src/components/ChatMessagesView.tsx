@@ -15,11 +15,13 @@ import {
 import { AVAILABLE_AGENTS } from '@/types/agents';
 import { ToolMessageDisplay } from '@/components/ToolMessageDisplay';
 import {
+  extractImageAttachments,
   extractToolCallsFromMessage,
   findToolMessageForCall,
   messageContentToDisplayText,
 } from '@/types/messages';
 import { ToolCall } from '@/types/tools';
+import type { ProcessedImageAttachment } from '@/lib/image-upload';
 
 // 將 messages 分組，合併 AI responses 與對應的 tool calls/results
 interface MessageGroup {
@@ -271,14 +273,40 @@ const HumanMessageBubble: React.FC<HumanMessageBubbleProps> = ({
   mdComponents,
 }) => {
   const message = group.primaryMessage;
+  const imageAttachments = extractImageAttachments(message.content);
+  const displayText = messageContentToDisplayText(message.content);
+
   return (
     <div
       className={cn(messageBubbleClass, 'min-h-7 rounded-br-lg')}
     >
-      <ReactMarkdown components={mdComponents}>
-        {messageContentToDisplayText(message.content) ||
-          JSON.stringify(message.content)}
-      </ReactMarkdown>
+      {displayText && (
+        <ReactMarkdown components={mdComponents}>{displayText}</ReactMarkdown>
+      )}
+      {imageAttachments.length > 0 && (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {imageAttachments.map((attachment, index) => (
+            <figure
+              key={`${attachment.fileName ?? 'image'}-${index}`}
+              className="overflow-hidden rounded-2xl border border-[#5A4036] bg-[#160F0C]"
+            >
+              <img
+                src={attachment.url}
+                alt={attachment.fileName ?? `uploaded image ${index + 1}`}
+                className="h-32 w-full object-cover"
+              />
+              <figcaption className="truncate px-2 py-1 text-[11px] text-[#E7D9C1]/70">
+                {attachment.fileName ?? attachment.mimeType ?? 'uploaded image'}
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
+      {!displayText && imageAttachments.length === 0 && (
+        <ReactMarkdown components={mdComponents}>
+          {JSON.stringify(message.content)}
+        </ReactMarkdown>
+      )}
     </div>
   );
 };
@@ -446,7 +474,8 @@ interface ChatMessagesViewProps {
     inputValue: string,
     effort: string,
     model: string,
-    agentId: string
+    agentId: string,
+    attachments: ProcessedImageAttachment[]
   ) => void;
   onCancel: () => void;
   liveActivityEvents: ProcessedEvent[];

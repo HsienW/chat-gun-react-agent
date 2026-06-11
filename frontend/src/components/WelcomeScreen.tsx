@@ -1,11 +1,13 @@
 import { InputForm } from './InputForm';
+import type { ProcessedImageAttachment } from '@/lib/image-upload';
 
 interface WelcomeScreenProps {
   handleSubmit: (
     submittedInputValue: string,
     effort: string,
     model: string,
-    agentId: string
+    agentId: string,
+    attachments: ProcessedImageAttachment[]
   ) => void;
   onCancel: () => void;
   isLoading: boolean;

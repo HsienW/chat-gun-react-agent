@@ -18,6 +18,14 @@ export interface ExtendedMessage {
   tool_name?: string;
 }
 
+export type MessageImageAttachment = {
+  url: string;
+  fileName?: string;
+  mimeType?: string;
+  width?: number;
+  height?: number;
+};
+
 function parseJsonObject(value: unknown): Record<string, unknown> {
   if (!value) {
     return {};
@@ -171,7 +179,7 @@ export function messageContentToDisplayText(content: unknown): string {
   }
 
   return content
-    .map((contentBlock) => {
+    .map((contentBlock): string => {
       if (typeof contentBlock === 'string') {
         return contentBlock;
       }
@@ -194,4 +202,45 @@ export function messageContentToDisplayText(content: unknown): string {
     })
     .filter((text) => text.trim().length > 0)
     .join('\n\n');
+}
+
+export function extractImageAttachments(content: unknown): MessageImageAttachment[] {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+
+  return content
+    .map((contentBlock): MessageImageAttachment | undefined => {
+      if (!contentBlock || typeof contentBlock !== 'object') {
+        return undefined;
+      }
+
+      const block = contentBlock as {
+        type?: string;
+        image_url?: string | { url?: string };
+        fileName?: string;
+        mimeType?: string;
+        width?: number;
+        height?: number;
+      };
+
+      if (block.type !== 'image_url') {
+        return undefined;
+      }
+
+      const url =
+        typeof block.image_url === 'string' ? block.image_url : block.image_url?.url;
+
+      if (!url) {
+        return undefined;
+      }
+
+      const attachment: MessageImageAttachment = { url };
+      if (block.fileName) attachment.fileName = block.fileName;
+      if (block.mimeType) attachment.mimeType = block.mimeType;
+      if (typeof block.width === 'number') attachment.width = block.width;
+      if (typeof block.height === 'number') attachment.height = block.height;
+      return attachment;
+    })
+    .filter((attachment): attachment is MessageImageAttachment => attachment !== undefined);
 }

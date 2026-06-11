@@ -1,4 +1,4 @@
-import { AIMessage, BaseMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, BaseMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { RunnableConfig } from "@langchain/core/runnables";
 import { StructuredToolInterface } from "@langchain/core/tools";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
@@ -11,6 +11,12 @@ import {
   serializeErrorEnvelope,
 } from "../platform/errors.js";
 import { formatLlmError, llmGateway, resolveModel } from "../platform/llm-gateway.js";
+import {
+  extractImageAttachmentBlocks,
+  getImageUrl,
+  summarizeImageAttachments,
+  validateImageAttachments,
+} from "../platform/upload-security.js";
 import { getResearchTopic, messageContentToString } from "../state.js";
 import { loadAgentTools } from "../tools/registry.js";
 import { normalizeAiMessageForStream } from "./message-normalization.js";
@@ -120,6 +126,14 @@ const DeepResearchState = Annotation.Root({
   verification: Annotation<VerificationReport | undefined>({
     reducer: (_left, right) => right,
     default: () => undefined,
+  }),
+  uploadError: Annotation<string | undefined>({
+    reducer: (_left, right) => right,
+    default: () => undefined,
+  }),
+  imageObservations: Annotation<string[]>({
+    reducer: (left, right) => left.concat(right),
+    default: () => [],
   }),
 });
 
@@ -321,6 +335,102 @@ function createToolMessage(name: string, content: string, index = 0): ToolMessag
   });
 }
 
+async function validateUploads(
+  state: typeof DeepResearchState.State,
+  _config: RunnableConfig
+): Promise<Partial<typeof DeepResearchState.State>> {
+  const validationError = validateImageAttachments(state.messages);
+  if (!validationError) {
+    return {};
+  }
+
+  return {
+    uploadError: serializeErrorEnvelope(
+      createErrorEnvelope(new Error(validationError), {
+        source: "backend",
+        stage: "upload_preflight",
+        provider: "backend",
+        message: "Image upload rejected by backend preflight validation",
+        details: {
+          supportedExtensions: [".png", ".jpg", ".jpeg", ".webp"],
+        },
+      })
+    ),
+  };
+}
+
+function routeAfterUploadValidation(state: typeof DeepResearchState.State): string {
+  return state.uploadError ? "synthesize" : "analyze_images";
+}
+
+function getLatestImageUserContent(state: typeof DeepResearchState.State): unknown[] | undefined {
+  const latestHumanMessage = [...state.messages]
+    .reverse()
+    .find((message) => message.getType?.() === "human");
+
+  if (!latestHumanMessage || !Array.isArray(latestHumanMessage.content)) {
+    return undefined;
+  }
+
+  const imageBlocks = extractImageAttachmentBlocks([latestHumanMessage]);
+  if (imageBlocks.length === 0) {
+    return undefined;
+  }
+
+  const text = [
+    "Analyze the uploaded image attachments for a deep research agent.",
+    "Describe visible objects, text, UI elements, charts, errors, locations, and any uncertainty.",
+    "Return concise observations only. Do not invent facts that are not visible.",
+    "Attachment metadata:",
+    summarizeImageAttachments([latestHumanMessage]),
+  ].join("\n");
+
+  return [
+    { type: "text", text },
+    ...imageBlocks.map((block) => ({
+      type: "image_url",
+      image_url: { url: getImageUrl(block) },
+    })),
+  ];
+}
+
+async function analyzeImages(
+  state: typeof DeepResearchState.State,
+  _config: RunnableConfig
+): Promise<Partial<typeof DeepResearchState.State>> {
+  const content = getLatestImageUserContent(state);
+  if (!content) {
+    return {};
+  }
+
+  const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
+  const llm = llmGateway.createChatModel({ model, temperature: 0 });
+
+  try {
+    const response = await llm.invoke([
+      new HumanMessage({
+        content: content as HumanMessage["content"],
+      }),
+    ]);
+
+    return {
+      imageObservations: [messageContentToString(response)],
+    };
+  } catch (error) {
+    return {
+      imageObservations: [
+        serializeErrorEnvelope(
+          createErrorEnvelope(error, {
+            source: "backend",
+            stage: "image_recognition",
+            provider: "Gemini",
+          })
+        ),
+      ],
+    };
+  }
+}
+
 async function repairWeatherRequest(
   request: WeatherRequest,
   state: typeof DeepResearchState.State,
@@ -387,6 +497,9 @@ async function planResearch(
 
   const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
   const llm = llmGateway.createChatModel({ model, temperature: 0 });
+  const imageContext = state.imageObservations.length
+    ? state.imageObservations.join("\n\n")
+    : "No image attachments were provided.";
   const prompt = [
     "You are a research pipeline planner for a LangGraph agent.",
     "Return only one JSON object. Do not use markdown.",
@@ -398,6 +511,8 @@ async function planResearch(
     "JSON schema:",
     '{"question":"string","answerMode":"direct|weather|calculation|research|clarify","rationale":"string","queries":["string"],"urls":["https://..."],"freshness":"pd|pw|pm|py optional","weather":{"location":"string","country":"string optional","region":"string optional"},"calculation":{"expression":"string"},"clarification":"string optional","requiredSourceCount":3}',
     `Today is ${today()}.`,
+    "Image recognition context:",
+    imageContext,
     "User request:",
     question,
   ].join("\n");
@@ -692,6 +807,10 @@ async function verifyCitations(
 }
 
 function formatEvidence(state: typeof DeepResearchState.State): string {
+  const imageEvidence = state.imageObservations.length
+    ? `Image recognition observations:\n${state.imageObservations.join("\n\n")}`
+    : "";
+
   const toolEvidence = state.messages
     .filter((message) => message.getType?.() === "tool")
     .map((message, index) => `Tool result ${index + 1}:\n${excerpt(messageContentToString(message), 2_000)}`)
@@ -709,7 +828,7 @@ function formatEvidence(state: typeof DeepResearchState.State): string {
     })
     .join("\n\n");
 
-  return [toolEvidence, sourceEvidence].filter(Boolean).join("\n\n");
+  return [imageEvidence, toolEvidence, sourceEvidence].filter(Boolean).join("\n\n");
 }
 
 function getLatestToolMessageContent(
@@ -865,6 +984,15 @@ async function synthesizeAnswer(
 ): Promise<Partial<typeof DeepResearchState.State>> {
   const plan = state.plan ?? fallbackPlan(getResearchTopic(state.messages), state);
 
+  if (state.uploadError) {
+    const envelope = parseErrorEnvelope(state.uploadError);
+    return {
+      messages: [
+        new AIMessage(envelope ? formatErrorEnvelope(envelope) : state.uploadError),
+      ],
+    };
+  }
+
   if (plan.answerMode === "clarify") {
     return {
       messages: [new AIMessage(plan.clarification ?? "Please clarify the request before I continue.")],
@@ -885,6 +1013,7 @@ async function synthesizeAnswer(
     "You are the final synthesis node in a production-style research graph.",
     "Answer the user in the same language as the user unless they requested otherwise.",
     "Use only the provided tool results and evidence for current or researched facts.",
+    "For uploaded images, use only the image recognition observations in evidence. Do not infer hidden context beyond visible content.",
     "If evidence contains tool/API errors or no usable sources, state the limitation clearly and do not fabricate facts.",
     "If evidence contains a JSON error envelope with source, stage, provider, code, message, rawMessage, details, or cause, preserve those fields in the final answer. Do not replace a structured error with a generic explanation unless the envelope is missing.",
     "If a tool result includes an initial error followed by a successful retry result, use the successful retry result as the answer basis and do not say the task failed.",
@@ -935,6 +1064,8 @@ function routeAfterRank(state: typeof DeepResearchState.State): string {
 }
 
 const builder = new StateGraph(DeepResearchState)
+  .addNode("validate_uploads", validateUploads)
+  .addNode("analyze_images", analyzeImages)
   .addNode("plan_research", planResearch)
   .addNode("targeted_tools", targetedTools)
   .addNode("search_web", searchWeb)
@@ -943,7 +1074,12 @@ const builder = new StateGraph(DeepResearchState)
   .addNode("extract_evidence", extractEvidence)
   .addNode("verify_citations", verifyCitations)
   .addNode("synthesize_answer", synthesizeAnswer)
-  .addEdge(START, "plan_research")
+  .addEdge(START, "validate_uploads")
+  .addConditionalEdges("validate_uploads", routeAfterUploadValidation, {
+    analyze_images: "analyze_images",
+    synthesize: "synthesize_answer",
+  })
+  .addEdge("analyze_images", "plan_research")
   .addConditionalEdges("plan_research", routeAfterPlan, {
     targeted_tools: "targeted_tools",
     search_web: "search_web",
