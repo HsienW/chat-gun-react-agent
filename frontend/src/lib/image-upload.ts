@@ -1,5 +1,7 @@
 export type ImageUploadStatus = 'queued' | 'processing' | 'completed' | 'failed';
 
+import { FRONTEND_ERROR_MESSAGES } from './error-messages';
+
 export type ProcessedImageAttachment = {
   id: string;
   fileName: string;
@@ -85,19 +87,22 @@ export function validateImageFile(file: File, config = getImageUploadConfig()): 
   const extension = getFileExtension(file.name);
 
   if (!config.allowedExtensions.has(extension)) {
-    return `Unsupported image extension: ${extension || '(none)'}`;
+    return FRONTEND_ERROR_MESSAGES.imageUpload.unsupportedExtension(extension);
   }
 
   if (!config.allowedMimeTypes.has(file.type.toLowerCase())) {
-    return `Unsupported image MIME type: ${file.type || '(unknown)'}`;
+    return FRONTEND_ERROR_MESSAGES.imageUpload.unsupportedMimeType(file.type);
   }
 
   if (file.size <= 0) {
-    return 'Image file is empty.';
+    return FRONTEND_ERROR_MESSAGES.imageUpload.emptyFile;
   }
 
   if (file.size > config.maxBytes) {
-    return `Image is too large: ${formatBytes(file.size)}. Max: ${formatBytes(config.maxBytes)}.`;
+    return FRONTEND_ERROR_MESSAGES.imageUpload.imageTooLarge(
+      formatBytes(file.size),
+      formatBytes(config.maxBytes)
+    );
   }
 
   return undefined;
@@ -107,7 +112,8 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('Failed to read processed image.'));
+    reader.onerror = () =>
+      reject(reader.error ?? new Error(FRONTEND_ERROR_MESSAGES.imageUpload.readFailed));
     reader.readAsDataURL(blob);
   });
 }
@@ -119,7 +125,7 @@ function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string): Promise<Blob
         if (blob) {
           resolve(blob);
         } else {
-          reject(new Error('Failed to encode processed image.'));
+          reject(new Error(FRONTEND_ERROR_MESSAGES.imageUpload.encodeFailed));
         }
       },
       mimeType,
@@ -150,7 +156,9 @@ export async function preprocessImageFile(
   try {
     const pixels = bitmap.width * bitmap.height;
     if (pixels > config.maxPixels) {
-      throw new Error(`Image dimensions are too large: ${bitmap.width}x${bitmap.height}.`);
+      throw new Error(
+        FRONTEND_ERROR_MESSAGES.imageUpload.dimensionsTooLarge(bitmap.width, bitmap.height)
+      );
     }
 
     const canvas = document.createElement('canvas');
@@ -161,7 +169,7 @@ export async function preprocessImageFile(
     });
 
     if (!context) {
-      throw new Error('Browser cannot create an image processing context.');
+      throw new Error(FRONTEND_ERROR_MESSAGES.imageUpload.contextUnavailable);
     }
 
     context.drawImage(bitmap, 0, 0);
@@ -169,9 +177,10 @@ export async function preprocessImageFile(
 
     if (processedBlob.size > config.maxBytes) {
       throw new Error(
-        `Processed image is too large: ${formatBytes(processedBlob.size)}. Max: ${formatBytes(
-          config.maxBytes
-        )}.`
+        FRONTEND_ERROR_MESSAGES.imageUpload.processedImageTooLarge(
+          formatBytes(processedBlob.size),
+          formatBytes(config.maxBytes)
+        )
       );
     }
 
