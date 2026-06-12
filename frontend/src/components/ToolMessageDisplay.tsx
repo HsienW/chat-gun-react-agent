@@ -10,10 +10,16 @@ import {
   Clock,
   CheckCircle,
   XCircle,
+  AlertTriangle,
 } from 'lucide-react';
 import { ToolCall, ToolMessage } from '@/types/tools';
 import { cn } from '@/lib/utils';
 import { formatErrorEnvelope, parseErrorEnvelope } from '@/types/errors';
+import { WeatherToolResultCard } from './WeatherToolResult';
+import {
+  parseWeatherToolResult,
+  getWeatherDisplayStatus,
+} from '@/types/weather';
 
 interface ToolMessageDisplayProps {
   toolCall: ToolCall;
@@ -22,7 +28,83 @@ interface ToolMessageDisplayProps {
   onToggle: () => void;
 }
 
-const getStatusBadge = (toolMessage?: ToolMessage) => {
+const getStatusBadge = (toolCall: ToolCall, toolMessage?: ToolMessage) => {
+  // Check for weather tool structured result
+  if (toolMessage && toolCall.name === 'current_weather') {
+    const weatherResult = parseWeatherToolResult(toolMessage.content);
+    if (weatherResult) {
+      const status = getWeatherDisplayStatus(weatherResult);
+
+      switch (status) {
+        case 'success':
+          return (
+            <Badge
+              variant="default"
+              className="mr-2 bg-green-500/10 text-green-500 border-green-500/20 text-xs font-medium"
+            >
+              <CheckCircle className="h-3 w-3 mr-1" />
+              完成
+            </Badge>
+          );
+        case 'needs_clarification':
+          return (
+            <Badge
+              variant="default"
+              className="mr-2 bg-blue-500/10 text-blue-400 border-blue-500/20 text-xs font-medium"
+            >
+              <AlertTriangle className="h-3 w-3 mr-1" />
+              需補充地點
+            </Badge>
+          );
+        case 'not_found':
+          return (
+            <Badge
+              variant="default"
+              className="mr-2 bg-yellow-500/10 text-yellow-400 border-yellow-500/20 text-xs font-medium"
+            >
+              找不到地點
+            </Badge>
+          );
+        case 'error':
+          return (
+            <Badge
+              variant="destructive"
+              className="bg-red-500/10 text-red-400 border-red-500/20 text-xs font-medium"
+            >
+              <XCircle className="h-3 w-3 mr-1" />
+              錯誤
+            </Badge>
+          );
+        case 'unknown':
+          return (
+            <Badge
+              variant="secondary"
+              className="mr-2 bg-gray-500/10 text-gray-400 border-gray-500/20 text-xs font-medium"
+            >
+              <AlertTriangle className="h-3 w-3 mr-1" />
+              未知結果
+            </Badge>
+          );
+        default:
+          break;
+      }
+    }
+  }
+
+  // Handle legacy/unknown weather results — Task 6.6, 6.7
+  if (toolMessage && toolCall.name === 'current_weather' && !parseWeatherToolResult(toolMessage.content)) {
+    // Legacy format — show as "完成" since the agent did get data
+    return (
+      <Badge
+        variant="default"
+        className="mr-2 bg-green-500/10 text-green-500 border-green-500/20 text-xs font-medium"
+      >
+        <CheckCircle className="h-3 w-3 mr-1" />
+        完成
+      </Badge>
+    );
+  }
+
   if (!toolMessage) {
     return (
       <Badge
@@ -82,6 +164,11 @@ export function ToolMessageDisplay({
     ? formatErrorEnvelope(errorEnvelope)
     : toolMessage?.content;
 
+  // Check if this is a weather tool result that should use the WeatherToolResultCard
+  const isWeatherTool = toolCall.name === 'current_weather' && toolMessage;
+  const weatherResult = isWeatherTool ? parseWeatherToolResult(toolMessage!.content) : undefined;
+  const isStructuredWeather = weatherResult !== undefined;
+
   return (
     <div className="border border-border bg-card/70 rounded-lg overflow-hidden mt-4 mb-2 min-w-0">
       <Collapsible open={isExpanded} onOpenChange={onToggle}>
@@ -100,7 +187,7 @@ export function ToolMessageDisplay({
                   </div>
                 </div>
                 <div className="flex-shrink-0">
-                  {getStatusBadge(toolMessage)}
+                  {getStatusBadge(toolCall, toolMessage)}
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0 ml-2">
@@ -130,26 +217,31 @@ export function ToolMessageDisplay({
                   <h4 className="text-xs font-medium text-[#E7D9C1]/70 uppercase tracking-wider">
                     輸出
                   </h4>
-                  <div
-                    className={cn(
-                      'rounded-lg p-3 text-sm border overflow-x-auto',
-                      toolMessage.is_error
-                        ? 'bg-red-900/10 border-red-500/20 text-red-200'
-                        : 'bg-[#2B1C17]/70 border-[#5A4036]/70 text-[#F8F1E7]'
-                    )}
-                  >
-                    {typeof displayContent === 'string' ? (
-                      <pre className="whitespace-pre-wrap overflow-x-auto font-mono text-xs leading-relaxed break-words min-w-0">
-                        {displayContent}
-                      </pre>
-                    ) : (
-                      <pre className="overflow-x-auto font-mono text-xs leading-relaxed min-w-0">
-                        <code className="whitespace-pre-wrap break-words">
-                          {JSON.stringify(displayContent, null, 2)}
-                        </code>
-                      </pre>
-                    )}
-                  </div>
+                  {/* Weather structured result card — Task 6.2 */}
+                  {isStructuredWeather ? (
+                    <WeatherToolResultCard content={toolMessage.content} />
+                  ) : (
+                    <div
+                      className={cn(
+                        'rounded-lg p-3 text-sm border overflow-x-auto',
+                        toolMessage.is_error
+                          ? 'bg-red-900/10 border-red-500/20 text-red-200'
+                          : 'bg-[#2B1C17]/70 border-[#5A4036]/70 text-[#F8F1E7]'
+                      )}
+                    >
+                      {typeof displayContent === 'string' ? (
+                        <pre className="whitespace-pre-wrap overflow-x-auto font-mono text-xs leading-relaxed break-words min-w-0">
+                          {displayContent}
+                        </pre>
+                      ) : (
+                        <pre className="overflow-x-auto font-mono text-xs leading-relaxed min-w-0">
+                          <code className="whitespace-pre-wrap break-words">
+                            {JSON.stringify(displayContent, null, 2)}
+                          </code>
+                        </pre>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

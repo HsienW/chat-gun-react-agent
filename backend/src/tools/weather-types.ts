@@ -1,0 +1,174 @@
+// Domain types for location resolution (Task 2.1, 4.1)
+// This file defines the core domain types for the generalized weather location resolution pipeline.
+
+export type LocationQuery = {
+  /** Original location text from user or planner, preserved as-is */
+  raw: string;
+  /** Trimmed and Unicode-normalized primary query */
+  location: string;
+  /** Optional country hint */
+  country?: string;
+  /** Optional region / administrative area hint */
+  region?: string;
+};
+
+export type LocationCandidate = {
+  provider: "open-meteo";
+  providerId?: string;
+  name: string;
+  displayName: string;
+  country?: string;
+  countryCode?: string;
+  admin1?: string;
+  admin2?: string;
+  latitude: number;
+  longitude: number;
+  timezone?: string;
+  population?: number;
+};
+
+export type LocationResolutionResult =
+  | {
+      status: "resolved";
+      query: LocationQuery;
+      candidate: LocationCandidate;
+      confidence: number;
+      strategy: ResolutionStrategy;
+      attemptedQueries: string[];
+    }
+  | {
+      status: "ambiguous";
+      query: LocationQuery;
+      candidates: LocationCandidate[];
+      reason: AmbiguityReason;
+      attemptedQueries: string[];
+    }
+  | {
+      status: "not_found";
+      query: LocationQuery;
+      attemptedQueries: string[];
+    }
+  | {
+      status: "provider_error";
+      query: LocationQuery;
+      provider: "open-meteo";
+      code: string;
+      retryable: boolean;
+    };
+
+export type ResolutionStrategy =
+  | "original"
+  | "contextual"
+  | "locale_fallback"
+  | "llm_repair";
+
+export type AmbiguityReason = "score_too_close" | "missing_country_or_region";
+
+// Weather tool structured result (Task 4.1 - 4.9)
+export type WeatherToolResult =
+  | WeatherSuccessResult
+  | WeatherClarificationResult
+  | WeatherNotFoundResult
+  | WeatherErrorResult;
+
+export type WeatherSuccessResult = {
+  schemaVersion: "1.0";
+  tool: "current_weather";
+  status: "success";
+  requestedLocation: LocationQuery;
+  resolvedLocation: LocationCandidate;
+  observedAt: string;
+  timezone: string;
+  current: WeatherCurrentData;
+  units: Record<string, string>;
+  provider: "Open-Meteo";
+  sourceUrl: string;
+  summary: string;
+};
+
+export type WeatherCurrentData = {
+  conditionCode?: number;
+  conditionText: string;
+  temperature?: number;
+  apparentTemperature?: number;
+  relativeHumidity?: number;
+  precipitation?: number;
+  rain?: number;
+  cloudCover?: number;
+  pressureMsl?: number;
+  windSpeed?: number;
+  windDirectionDegrees?: number;
+  windDirectionText?: string;
+  windGusts?: number;
+};
+
+export type WeatherClarificationResult = {
+  schemaVersion: "1.0";
+  tool: "current_weather";
+  status: "needs_clarification";
+  requestedLocation: LocationQuery;
+  candidates: Array<
+    Pick<LocationCandidate, "name" | "displayName" | "country" | "countryCode" | "admin1" | "admin2">
+  >;
+  message: string;
+  summary: string;
+};
+
+export type WeatherNotFoundResult = {
+  schemaVersion: "1.0";
+  tool: "current_weather";
+  status: "not_found";
+  requestedLocation: LocationQuery;
+  code: "weather_location_not_found";
+  message: string;
+  summary: string;
+};
+
+export type WeatherErrorResult = {
+  schemaVersion: "1.0";
+  tool: "current_weather";
+  status: "error";
+  requestedLocation: LocationQuery;
+  code: WeatherErrorCode;
+  retryable: boolean;
+  message: string;
+  summary: string;
+};
+
+export type WeatherErrorCode =
+  | "weather_invalid_input"
+  | "weather_geocoding_provider_error"
+  | "weather_forecast_provider_error"
+  | "weather_timeout"
+  | "weather_cancelled"
+  | "weather_unknown_error";
+
+// Geocoding Provider Interface (Task 3.1)
+export interface GeocodingProvider {
+  readonly name: string;
+
+  search(
+    query: GeocodingSearchQuery
+  ): Promise<LocationCandidate[]>;
+}
+
+export type GeocodingSearchQuery = {
+  text: string;
+  language?: string;
+  limit: number;
+  signal?: AbortSignal;
+};
+
+export type GeocodingQueryVariant = {
+  text: string;
+  language?: string;
+  strategy: ResolutionStrategy;
+};
+
+// Deep Research Weather Execution State (Task 5.1)
+export type WeatherExecutionState =
+  | { status: "idle" }
+  | { status: "running"; requestedLocation: LocationQuery }
+  | { status: "success"; result: WeatherToolResult }
+  | { status: "needs_clarification"; result: WeatherToolResult }
+  | { status: "failed"; result: WeatherToolResult };

@@ -17,6 +17,7 @@ import {
   ImAgentContextPack,
 } from "../platform/im-context-pack.js";
 import { formatLlmError, llmGateway, resolveModel } from "../platform/llm-gateway.js";
+import { recordMetric, recordWeatherAuditEvent } from "../platform/observability.js";
 import { getAgentRuntimeConfig } from "../platform/runtime-config.js";
 import {
   extractImageAttachmentBlocks,
@@ -27,6 +28,11 @@ import {
 import { getResearchTopic, messageContentToString } from "../state.js";
 import { loadAgentTools } from "../tools/registry.js";
 import { normalizeAiMessageForStream } from "./message-normalization.js";
+import type {
+  WeatherToolResult,
+  WeatherExecutionState,
+  LocationQuery,
+} from "../tools/weather-types.js";
 
 const DEFAULT_RESEARCH_MODEL = "gemini-2.5-flash";
 const DEFAULT_SEARCH_QUERY_COUNT = 3;
@@ -178,6 +184,10 @@ const DeepResearchState = Annotation.Root({
   imageObservations: Annotation<string[]>({
     reducer: (left, right) => left.concat(right),
     default: () => [],
+  }),
+  weatherExecution: Annotation<WeatherExecutionState | undefined>({
+    reducer: (_left, right) => right,
+    default: () => undefined,
   }),
 });
 
@@ -348,14 +358,18 @@ function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string
   };
 }
 
-async function invokeTool(toolName: string, input: Record<string, unknown>): Promise<string> {
+async function invokeTool(
+  toolName: string,
+  input: Record<string, unknown>,
+  config?: RunnableConfig
+): Promise<string> {
   const selectedTool = toolByName.get(toolName) as StructuredToolInterface | undefined;
   if (!selectedTool) {
     return `Error: tool ${toolName} is not loaded.`;
   }
 
   try {
-    const result = await selectedTool.invoke(input);
+    const result = await selectedTool.invoke(input, config);
     return typeof result === "string" ? result : JSON.stringify(result, null, 2);
   } catch (error) {
     return serializeErrorEnvelope(
@@ -492,28 +506,54 @@ async function analyzeImages(
   }
 }
 
+/**
+ * Parse a WeatherToolResult from a tool message content string.
+ * Returns undefined if the content is not a valid structured result.
+ */
+function parseWeatherToolResult(content: string): WeatherToolResult | undefined {
+  try {
+    const parsed = JSON.parse(content) as WeatherToolResult;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      parsed.schemaVersion === "1.0" &&
+      parsed.tool === "current_weather" &&
+      typeof parsed.status === "string"
+    ) {
+      return parsed;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 async function repairWeatherRequest(
-  request: WeatherRequest,
-  state: typeof DeepResearchState.State,
-  errorText: string
-): Promise<WeatherRequest | undefined> {
+  request: LocationQuery,
+  state: typeof DeepResearchState.State
+): Promise<LocationQuery | undefined> {
   const prompt = [
     "Return only one JSON object. Do not use markdown.",
-    "Convert this failed weather geocoding request into a geocoding-friendly location request.",
-    "Translate the place name to its commonly used English name when appropriate. Do not invent coordinates.",
-    "Keep country and region hints if they are correct.",
+    "The weather geocoding service could not find the location below.",
+    "Suggest an alternative location name that a geocoding API (Open-Meteo) might recognize.",
+    "Do not invent coordinates.",
+    "Keep country and region hints from the original request if they are correct.",
     'JSON schema: {"location":"string","country":"string optional","region":"string optional"}',
     `Original request: ${JSON.stringify(request)}`,
-    `Tool error: ${errorText}`,
   ].join("\n");
 
   try {
     const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
     const llm = llmGateway.createChatModel({ model, temperature: 0 });
     const response = await llm.invoke(prompt);
-    const parsed = parseJsonObject<Partial<WeatherRequest>>(messageContentToString(response));
+    const parsed = parseJsonObject<Partial<{
+      location: string;
+      country?: string;
+      region?: string;
+    }>>(messageContentToString(response));
     if (parsed?.location && typeof parsed.location === "string") {
       return {
+        raw: request.raw,
         location: parsed.location,
         country: typeof parsed.country === "string" ? parsed.country : request.country,
         region: typeof parsed.region === "string" ? parsed.region : request.region,
@@ -526,18 +566,8 @@ async function repairWeatherRequest(
   return undefined;
 }
 
-function shouldRepairWeatherRequest(errorText: string): boolean {
-  const envelope = parseErrorEnvelope(errorText);
-  if (envelope) {
-    return (
-      envelope.error.stage === DEEP_RESEARCH_TOOL_NAMES.currentWeather ||
-      envelope.error.stage === DEEP_RESEARCH_TOOL_NAMES.weatherGeocodingStage
-    );
-  }
-
-  return /geocoding|location|ambiguous|country|region|not found|matched country/i.test(
-    errorText
-  );
+function shouldRepairWeatherRequest(result: WeatherToolResult): boolean {
+  return result.status === "not_found";
 }
 
 async function planResearch(
@@ -569,7 +599,8 @@ async function planResearch(
     "Classify the user request and decide whether it needs direct answer, current weather, calculation, web research, or clarification.",
     "Use web research for current facts, news, products, prices, law, regulations, company/person changes, technical docs that may have changed, and any topic requiring external evidence.",
     "Use weather only for actual weather/temperature/rain/wind/humidity questions.",
-    "For weather, extract a clean geocoding-friendly place name. Translate common non-English place names to their widely used English form when you can infer it from the user request, and include country or region when available.",
+    "For weather, extract the place name the user provided. Keep the original text the user used — the geocoding tool handles multiple languages. Include country or region only when the user explicitly mentioned them. Do not translate place names to English.",
+    "Do not include latitude or longitude in the weather request — the geocoding tool resolves coordinates.",
     "If a location is ambiguous, include country or region when the user supplied it; otherwise leave it to the weather tool to request clarification.",
     "JSON schema:",
     '{"question":"string","answerMode":"direct|weather|calculation|research|clarify","rationale":"string","queries":["string"],"urls":["https://..."],"freshness":"pd|pw|pm|py optional","weather":{"location":"string","country":"string optional","region":"string optional"},"calculation":{"expression":"string"},"clarification":"string optional","requiredSourceCount":3}',
@@ -610,30 +641,85 @@ function routeAfterPlan(state: typeof DeepResearchState.State): string {
   }
 }
 
+/**
+ * Task 5.2 — Use structured result to update weatherExecution
+ */
 async function targetedTools(
   state: typeof DeepResearchState.State,
   _config: RunnableConfig
 ): Promise<Partial<typeof DeepResearchState.State>> {
   const plan = state.plan;
   const messages: ToolMessage[] = [];
+  let weatherExecution: WeatherExecutionState | undefined;
 
   if (plan?.answerMode === "weather") {
-    const request = plan.weather ?? { location: plan.question };
-    const input = request as Record<string, unknown>;
-    let content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.currentWeather, input);
+    const rawRequest = plan.weather ?? { location: plan.question };
+    const request: LocationQuery = {
+      raw: rawRequest.location,
+      location: rawRequest.location,
+      country: rawRequest.country,
+      region: rawRequest.region,
+    };
 
-    if (content.startsWith("Error:") && shouldRepairWeatherRequest(content)) {
-      const repairedRequest = await repairWeatherRequest(request, state, content);
+    weatherExecution = { status: "running", requestedLocation: request };
+    const input = request as Record<string, unknown>;
+    let content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.currentWeather, input, _config);
+
+    // Try to parse as structured result
+    let parsedResult = parseWeatherToolResult(content);
+
+    // LLM Repair: only for not_found, and only once — Task 5.11, 5.12, 5.13
+    if (parsedResult && shouldRepairWeatherRequest(parsedResult) && !requestWasAlreadyRepaired(request, state)) {
+      await recordWeatherAuditEvent("weather.location.repair.attempt", {
+        raw: request.raw,
+        strategy: "llm_repair",
+        resultStatus: parsedResult.status,
+        repaired: true,
+      });
+      await recordMetric("weather.location.repair.count", { count: 1 });
+      const repairedRequest = await repairWeatherRequest(request, state);
       if (repairedRequest) {
         const retryContent = await invokeTool(
           DEEP_RESEARCH_TOOL_NAMES.currentWeather,
-          repairedRequest as Record<string, unknown>
+          {
+            ...repairedRequest,
+            resolutionStrategy: "llm_repair",
+          } as Record<string, unknown>,
+          _config
         );
-        content = [
-          `Initial ${DEEP_RESEARCH_TOOL_NAMES.currentWeather} request failed: ${content}`,
-          `Retried with geocoding-friendly request: ${JSON.stringify(repairedRequest)}`,
-          retryContent,
-        ].join("\n\n");
+        const retryParsed = parseWeatherToolResult(retryContent);
+        if (retryParsed) {
+          parsedResult = retryParsed;
+          content = retryContent;
+          await recordWeatherAuditEvent("weather.location.repair.result", {
+            raw: repairedRequest.raw,
+            strategy: "llm_repair",
+            resultStatus: retryParsed.status,
+            errorCode: "code" in retryParsed ? retryParsed.code : undefined,
+            repaired: true,
+          });
+        }
+      } else {
+        await recordWeatherAuditEvent("weather.location.repair.result", {
+          raw: request.raw,
+          strategy: "llm_repair",
+          resultStatus: "not_found",
+          errorCode: "weather_location_not_found",
+          repaired: false,
+        });
+      }
+    }
+
+    // Set weatherExecution based on structured result — Task 5.2
+    if (parsedResult) {
+      if (parsedResult.status === "success") {
+        weatherExecution = { status: "success", result: parsedResult };
+      } else if (parsedResult.status === "needs_clarification") {
+        weatherExecution = { status: "needs_clarification", result: parsedResult };
+      } else if (parsedResult.status === "not_found") {
+        weatherExecution = { status: "failed", result: parsedResult };
+      } else {
+        weatherExecution = { status: "failed", result: parsedResult };
       }
     }
 
@@ -648,7 +734,33 @@ async function targetedTools(
     messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.calculator, content));
   }
 
-  return { messages };
+  return { messages, weatherExecution };
+}
+
+/**
+ * Check if the raw request was already repaired to avoid infinite loops — Task 5.11
+ */
+function requestWasAlreadyRepaired(
+  request: LocationQuery,
+  state: typeof DeepResearchState.State
+): boolean {
+  // Check messages for previous repair attempts
+  const toolMessages = state.messages.filter(
+    (msg) => msg.getType?.() === "tool" && "name" in msg && (msg as ToolMessage).name === DEEP_RESEARCH_TOOL_NAMES.currentWeather
+  );
+
+  // If there are already tool results for current_weather, we've attempted repair before
+  if (toolMessages.length >= 2) {
+    return true;
+  }
+
+  // Check if the weatherExecution state already indicates a prior attempt
+  const exec = state.weatherExecution;
+  if (exec && exec.status !== "idle" && exec.status !== "running") {
+    return true;
+  }
+
+  return false;
 }
 
 function parseSearchToolOutput(output: string, query: string): SearchResult[] {
@@ -919,90 +1031,102 @@ function getLatestToolMessageContent(
   return latest ? messageContentToString(latest) : undefined;
 }
 
-function getLastLabeledValue(content: string, label: string): string | undefined {
-  const prefix = `${label}:`;
-  return content
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith(prefix))
-    .map((line) => line.slice(prefix.length).trim())
-    .at(-1);
-}
-
-function buildWeatherFailureMessage(content: string): string {
-  const envelope = parseErrorEnvelope(content);
-  if (envelope) {
-    return formatErrorEnvelope(envelope);
-  }
-
-  const hasNetworkFailure =
-    content.includes("Weather provider network request failed") ||
-    content.includes("fetch failed");
-
-  if (hasNetworkFailure) {
-    return [
-      "I cannot retrieve live weather for that location right now.",
-      "Reason: the backend Node process cannot connect to the Open-Meteo weather provider.",
-      "Check VPN/proxy/firewall/DNS settings, or set HTTPS_PROXY/HTTP_PROXY before starting the backend if your network requires a proxy.",
-    ].join("\n");
-  }
-
-  if (shouldRepairWeatherRequest(content)) {
-    return [
-      "I could not resolve the weather location.",
-      "Please provide a more specific location, or retry so the planner model can extract a geocoding-friendly location.",
-    ].join("\n");
-  }
-
-  return [
-    "I cannot retrieve weather for that location right now.",
-    content.split("\n").find((line) => line.startsWith("Error:")) ?? content,
-  ].join("\n");
-}
-
+/**
+ * Build weather answer using structured weatherExecution — Task 5.3, 5.4, 5.5-5.8
+ * No longer parses text labels like "Provider:", "Temperature:" etc.
+ */
 function buildWeatherToolAnswer(
   state: typeof DeepResearchState.State
 ): AIMessage | undefined {
-  const content = getLatestToolMessageContent(state, DEEP_RESEARCH_TOOL_NAMES.currentWeather);
-  if (!content) {
+  const exec = state.weatherExecution;
+  if (!exec) {
     return undefined;
   }
 
-  if (!content.includes("Provider: Open-Meteo current weather API")) {
-    return new AIMessage(buildWeatherFailureMessage(content));
+  if (exec.status === "idle" || exec.status === "running") {
+    return undefined;
   }
 
-  const resolvedLocation = getLastLabeledValue(content, "Resolved location");
-  const observationTime = getLastLabeledValue(content, "Observation time");
-  const condition = getLastLabeledValue(content, "Condition");
-  const temperature = getLastLabeledValue(content, "Temperature");
-  const feelsLike = getLastLabeledValue(content, "Feels like");
-  const humidity = getLastLabeledValue(content, "Humidity");
-  const rain = getLastLabeledValue(content, "Rain");
-  const precipitation = getLastLabeledValue(content, "Precipitation");
-  const cloudCover = getLastLabeledValue(content, "Cloud cover");
-  const wind = getLastLabeledValue(content, "Wind");
-  const sourceUrl = getLastLabeledValue(content, "Source URL");
+  const result = exec.result;
 
-  return new AIMessage(
-    [
-      resolvedLocation ? `Current weather for ${resolvedLocation}:` : "Current weather:",
-      observationTime ? `Observation time: ${observationTime}` : undefined,
-      condition ? `Condition: ${condition}` : undefined,
-      temperature ? `Temperature: ${temperature}` : undefined,
-      feelsLike ? `Feels like: ${feelsLike}` : undefined,
-      humidity ? `Humidity: ${humidity}` : undefined,
-      precipitation ? `Precipitation: ${precipitation}` : undefined,
-      rain ? `Rain: ${rain}` : undefined,
-      cloudCover ? `Cloud cover: ${cloudCover}` : undefined,
-      wind ? `Wind: ${wind}` : undefined,
-      "",
-      "Provider: Open-Meteo current weather API.",
-      sourceUrl ? `Source URL: ${sourceUrl}` : undefined,
-    ]
-      .filter((line): line is string => line !== undefined)
-      .join("\n")
-  );
+  // Task 5.5 — success
+  if (exec.status === "success" && result.status === "success") {
+    const { current, resolvedLocation, observedAt, timezone, units } = result;
+    const displayName = [resolvedLocation.name, resolvedLocation.admin2, resolvedLocation.admin1, resolvedLocation.country]
+      .filter(Boolean)
+      .join(", ");
+
+    return new AIMessage(
+      [
+        `Current weather for ${displayName}:`,
+        `Observation time: ${observedAt}, timezone: ${timezone}`,
+        `Condition: ${current.conditionText} (code ${current.conditionCode ?? "unknown"})`,
+        `Temperature: ${current.temperature ?? "?"}${units.temperature_2m ?? ""}`,
+        current.apparentTemperature !== undefined
+          ? `Feels like: ${current.apparentTemperature}${units.apparent_temperature ?? ""}`
+          : undefined,
+        current.relativeHumidity !== undefined
+          ? `Humidity: ${current.relativeHumidity}${units.relative_humidity_2m ?? ""}`
+          : undefined,
+        current.precipitation !== undefined
+          ? `Precipitation: ${current.precipitation}${units.precipitation ?? ""}`
+          : undefined,
+        current.rain !== undefined
+          ? `Rain: ${current.rain}${units.rain ?? ""}`
+          : undefined,
+        current.cloudCover !== undefined
+          ? `Cloud cover: ${current.cloudCover}${units.cloud_cover ?? ""}`
+          : undefined,
+        `Wind: ${current.windSpeed ?? "?"}${units.wind_speed_10m ?? ""}, direction ${current.windDirectionText},`,
+        "",
+        "Provider: Open-Meteo current weather API.",
+        `Source URL: ${result.sourceUrl}`,
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n")
+    );
+  }
+
+  // Task 5.6 — needs_clarification
+  if (exec.status === "needs_clarification" && result.status === "needs_clarification") {
+    const candidateList = result.candidates
+      .slice(0, 5)
+      .map((c) => `  - ${c.displayName}`)
+      .join("\n");
+    return new AIMessage(
+      [
+        `The location "${result.requestedLocation.location}" matches multiple places. Please specify a country or region:`,
+        "",
+        candidateList,
+      ].join("\n")
+    );
+  }
+
+  // Task 5.7 — not_found
+  if (result.status === "not_found") {
+    return new AIMessage(
+      `Could not find "${result.requestedLocation.location}". Please provide a more specific location.`
+    );
+  }
+
+  // Task 5.8 — provider_error / timeout / error
+  if (result.status === "error") {
+    if (result.code === "weather_timeout") {
+      return new AIMessage(
+        "The weather service did not respond in time. Please try again later."
+      );
+    }
+    if (result.code === "weather_geocoding_provider_error" || result.code === "weather_forecast_provider_error") {
+      return new AIMessage(
+        "I cannot retrieve live weather right now because the weather service is temporarily unavailable. Please try again later."
+      );
+    }
+    return new AIMessage(
+      "I could not retrieve weather for that location. Please try again."
+    );
+  }
+
+  return undefined;
 }
 
 function buildCalculationToolAnswer(
@@ -1030,6 +1154,12 @@ function buildTargetedToolAnswer(
 
   return undefined;
 }
+
+export const deepResearcherWeatherTestInternals = {
+  parseWeatherToolResult,
+  buildWeatherToolAnswer,
+  targetedTools,
+};
 
 function buildTargetedToolErrorAnswer(
   plan: ResearchPlan,
