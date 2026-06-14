@@ -3,7 +3,7 @@ import "dotenv/config";
 export function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
-    throw new Error(`${name} 未設定`);
+    throw new Error(`${name} is required`);
   }
   return value;
 }

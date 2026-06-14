@@ -2,6 +2,9 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 
 import { getEnv } from "../platform/env.js";
+import { configureNetwork } from "../platform/network.js";
+
+configureNetwork();
 
 type TavilySearchDepth = "basic" | "advanced";
 type TavilyTopic = "general" | "news" | "finance";

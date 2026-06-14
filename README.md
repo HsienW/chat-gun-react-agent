@@ -356,6 +356,49 @@ Browser
 - `web_fetch` 目前只做基本 HTTP/HTTPS 檢查，不是完整 SSRF sandbox。
 - MCP tools 是選用功能，透過 backend env flags 控制。
 
+### Weather location resolution
+
+`current_weather` uses Open-Meteo geocoding plus Open-Meteo current weather. It does not require an API key.
+
+The weather flow accepts the location text from the planner, keeps the original user-provided text in `requestedLocation.raw`, normalizes the query with trim, Unicode NFKC, whitespace cleanup, and control-character removal, then resolves the place through the geocoding provider. It returns a structured `WeatherToolResult` with:
+
+- `status: "success"` for resolved current weather.
+- `status: "needs_clarification"` when a location has multiple plausible candidates.
+- `status: "not_found"` when no provider candidate can be used.
+- `status: "error"` with stable codes such as `weather_geocoding_provider_error`, `weather_forecast_provider_error`, `weather_timeout`, and `weather_cancelled`.
+
+The resolver is provider-driven. The project must not use a fixed city allowlist or manual city mapping such as mapping a few hard-coded Chinese names to English names as the primary resolution mechanism. Small closed lists are only acceptable for domain constants such as weather code labels, country-code display names, or wind direction labels.
+
+Weather-related backend settings:
+
+```env
+WEATHER_STRUCTURED_RESULT_ENABLED=true
+WEATHER_LOCATION_MAX_CHARS=160
+WEATHER_GEOCODING_MAX_QUERIES=6
+WEATHER_GEOCODING_MAX_CANDIDATES=10
+WEATHER_GEOCODING_MIN_SCORE=35
+WEATHER_GEOCODING_AMBIGUITY_DELTA=8
+WEATHER_GEOCODING_TIMEOUT_MS=5000
+WEATHER_FORECAST_TIMEOUT_MS=8000
+```
+
+Tests use mock geocoding and weather data by default and do not require Open-Meteo network access:
+
+```bash
+cd backend
+npm run test
+
+cd ../frontend
+npm run test
+```
+
+Limitations:
+
+- The tool reports the latest current observation, not a full-day forecast.
+- Ambiguous locations require the user to provide country, region, or another distinguishing hint.
+- Provider errors and timeouts are reported as service failures, not as missing locations.
+- Cancellation should terminate the weather result with `weather_cancelled` and must not leave the frontend in a running state.
+
 ## MCP
 
 相關 backend env：

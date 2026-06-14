@@ -8,7 +8,8 @@
     "dev": "langgraphjs dev",
     "build": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "start": "langgraphjs dev"
+    "start": "langgraphjs dev",
+    "test": "vitest run"
   },
   "dependencies": {
     "@langchain/core": "^0.3.55",
@@ -23,6 +24,7 @@
   "devDependencies": {
     "@langchain/langgraph-cli": "^0.0.36",
     "@types/node": "^22.15.17",
-    "typescript": "~5.7.2"
+    "typescript": "~5.7.2",
+    "vitest": "^4.1.8"
   }
 }

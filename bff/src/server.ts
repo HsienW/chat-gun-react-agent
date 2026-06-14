@@ -4,7 +4,10 @@ import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 
 import { loadConfig, type BffConfig } from "./config.js";
+import { BFF_ERROR_MESSAGES } from "./error-messages.js";
+import { createBffErrorEnvelope } from "./errors.js";
 import { InMemoryRateLimiter } from "./rate-limit.js";
+import { validateUploadPayload } from "./upload-security.js";
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -377,6 +380,31 @@ async function proxyLangGraph(
 
   try {
     const body = await readRequestBody(req, config.maxBodyBytes);
+    const uploadValidationError = validateUploadPayload(body, {
+      maxFiles: config.imageUploadMaxFiles,
+      maxBytes: config.imageUploadMaxBytes,
+      maxPixels: config.imageUploadMaxPixels,
+      allowedExtensions: config.imageUploadAllowedExtensions,
+      allowedMimeTypes: config.imageUploadAllowedMimeTypes,
+      s3BucketUrl: config.imageUploadS3BucketUrl,
+    });
+
+    if (uploadValidationError) {
+      const error = new Error(uploadValidationError);
+      const envelope = createBffErrorEnvelope(error, {
+        stage: "upload_preflight",
+        provider: "bff",
+        message: BFF_ERROR_MESSAGES.upload.rejectedByBff,
+        details: {
+          method: req.method,
+          path: req.url,
+          requestId: ctx.requestId,
+        },
+      });
+      sendJson(res, 400, envelope, ctx.requestId);
+      return;
+    }
+
     let upstreamResponse: Response | undefined;
 
     for (const upstreamUrl of upstreamUrls) {
@@ -440,10 +468,23 @@ async function proxyLangGraph(
     }
 
     const isAbort = error instanceof Error && error.name === "AbortError";
+    const envelope = createBffErrorEnvelope(error, {
+      stage: "langgraph_upstream_proxy",
+      provider: "LangGraph",
+      message: isAbort ? "LangGraph upstream timeout" : "LangGraph upstream error",
+      details: {
+        upstreamUrl: attemptedUpstreamUrl?.toString(),
+        attemptedUpstreamUrls: upstreamUrls.map((url) => url.toString()),
+        method: req.method,
+        path: req.url,
+        requestId: ctx.requestId,
+      },
+    });
+
     sendJson(
       res,
       isAbort ? 504 : 502,
-      { error: isAbort ? "LangGraph upstream timeout" : "LangGraph upstream error" },
+      envelope,
       ctx.requestId
     );
   }

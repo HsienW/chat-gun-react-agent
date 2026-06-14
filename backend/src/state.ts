@@ -72,5 +72,20 @@ export function messageContentToString(message?: BaseMessage): string {
   if (typeof message.content === "string") {
     return message.content;
   }
+
+  if (Array.isArray(message.content)) {
+    const textBlocks = message.content
+      .map((block) => {
+        if (typeof block === "string") return block;
+        if (!block || typeof block !== "object") return "";
+        const typedBlock = block as { type?: string; text?: string };
+        if (typedBlock.type === "image_url") return "[uploaded image]";
+        return typedBlock.text ?? "";
+      })
+      .filter((text) => text.trim().length > 0);
+
+    return textBlocks.join("\n\n");
+  }
+
   return JSON.stringify(message.content);
 }

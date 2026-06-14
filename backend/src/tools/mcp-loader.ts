@@ -1,6 +1,7 @@
 import { tool, type StructuredToolInterface } from "@langchain/core/tools";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import path from "node:path";
 import { z } from "zod";
 
 import { getBooleanEnv, getEnv } from "../platform/env.js";
@@ -32,19 +33,59 @@ function getNpxCommand(): string {
   return process.platform === "win32" ? "npx.cmd" : "npx";
 }
 
+function splitPathList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function normalizePathForCompare(rawPath: string): string {
+  const resolvedPath = path.resolve(rawPath);
+  return process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
+}
+
+function isPathInside(candidatePath: string, rootPath: string): boolean {
+  const candidate = normalizePathForCompare(candidatePath);
+  const root = normalizePathForCompare(rootPath);
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+}
+
+function getAllowedFilesystemRoots(): string[] {
+  const configuredRoots = splitPathList(process.env.MCP_FILESYSTEM_ALLOWED_ROOTS);
+  return configuredRoots.length > 0 ? configuredRoots : [process.cwd()];
+}
+
+function getSafeFilesystemPath(): string | undefined {
+  const filesystemPath = getEnv("MCP_FILESYSTEM_PATH", process.cwd());
+  const allowedRoots = getAllowedFilesystemRoots();
+
+  if (allowedRoots.some((rootPath) => isPathInside(filesystemPath, rootPath))) {
+    return path.resolve(filesystemPath);
+  }
+
+  console.warn(
+    JSON.stringify({
+      event: "mcp_filesystem_path_blocked",
+      filesystemPath: path.resolve(filesystemPath),
+      allowedRoots: allowedRoots.map((rootPath) => path.resolve(rootPath)),
+    })
+  );
+  return undefined;
+}
+
 function getMcpServerConfigs(): Record<string, StdioMcpServerConfig> {
   const configs: Record<string, StdioMcpServerConfig> = {};
 
   if (getBooleanEnv("MCP_FILESYSTEM_ENABLED", true)) {
-    configs.filesystem = {
-      transport: "stdio",
-      command: getNpxCommand(),
-      args: [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        getEnv("MCP_FILESYSTEM_PATH", "/tmp"),
-      ],
-    };
+    const filesystemPath = getSafeFilesystemPath();
+    if (filesystemPath) {
+      configs.filesystem = {
+        transport: "stdio",
+        command: getNpxCommand(),
+        args: ["-y", "@modelcontextprotocol/server-filesystem", filesystemPath],
+      };
+    }
   }
 
   if (getBooleanEnv("MCP_BRAVE_SEARCH_ENABLED", false)) {

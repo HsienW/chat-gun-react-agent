@@ -1,23 +1,26 @@
 import { tool } from "@langchain/core/tools";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { z } from "zod";
 
-import { getEnv } from "../platform/env.js";
+import {
+  createErrorEnvelope,
+  parseErrorEnvelope,
+  serializeErrorEnvelope,
+} from "../platform/errors.js";
+import { auditLogger, recordMetric } from "../platform/observability.js";
+import { configureNetwork } from "../platform/network.js";
 
-type GeocodingResult = {
-  name: string;
-  country?: string;
-  country_code?: string;
-  admin1?: string;
-  admin2?: string;
-  latitude: number;
-  longitude: number;
-  timezone?: string;
-  population?: number;
-};
+import { OpenMeteoGeocodingProvider } from "./geocoding/open-meteo-provider.js";
+import { resolveLocation, DEFAULT_RESOLVER_OPTIONS } from "./geocoding/location-resolver.js";
+import { buildLocationQuery, validateLocationInput } from "./geocoding/location-normalizer.js";
+import type {
+  LocationCandidate,
+  LocationQuery,
+  ResolutionStrategy,
+  WeatherToolResult,
+} from "./weather-types.js";
 
-type GeocodingResponse = {
-  results?: GeocodingResult[];
-};
+configureNetwork();
 
 type ForecastResponse = {
   latitude: number;
@@ -27,232 +30,49 @@ type ForecastResponse = {
   current_units?: Record<string, string>;
 };
 
-type LocationAlias = {
-  query: string;
-  country?: string;
-  region?: string;
+type WeatherConfig = {
+  structuredResultEnabled: boolean;
+  locationMaxChars: number;
+  geocodingMaxQueries: number;
+  geocodingMaxCandidates: number;
+  geocodingMinScore: number;
+  geocodingAmbiguityDelta: number;
+  geocodingTimeoutMs: number;
+  forecastTimeoutMs: number;
 };
 
-type LocationResolutionInput = {
-  location: string;
-  country?: string;
-  region?: string;
-};
-
-type ResolvedLocationQuery = Required<Pick<LocationResolutionInput, "location">> &
-  Pick<LocationResolutionInput, "country" | "region">;
-
-function normalizeKey(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
+function readPositiveNumberEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function normalizeComparable(value: string | undefined): string {
-  return normalizeKey(value ?? "")
-    .replaceAll("臺", "台")
-    .replaceAll("台湾", "台灣");
+export function getWeatherConfig(): WeatherConfig {
+  return {
+    structuredResultEnabled: (process.env.WEATHER_STRUCTURED_RESULT_ENABLED ?? "true") === "true",
+    locationMaxChars: readPositiveNumberEnv("WEATHER_LOCATION_MAX_CHARS", 160),
+    geocodingMaxQueries: readPositiveNumberEnv("WEATHER_GEOCODING_MAX_QUERIES", 6),
+    geocodingMaxCandidates: readPositiveNumberEnv("WEATHER_GEOCODING_MAX_CANDIDATES", 10),
+    geocodingMinScore: readPositiveNumberEnv("WEATHER_GEOCODING_MIN_SCORE", 35),
+    geocodingAmbiguityDelta: readPositiveNumberEnv("WEATHER_GEOCODING_AMBIGUITY_DELTA", 8),
+    geocodingTimeoutMs: readPositiveNumberEnv("WEATHER_GEOCODING_TIMEOUT_MS", 5_000),
+    forecastTimeoutMs: readPositiveNumberEnv("WEATHER_FORECAST_TIMEOUT_MS", 8_000),
+  };
 }
 
-function loadConfiguredAliases(): Record<string, LocationAlias> {
-  const raw = getEnv("WEATHER_LOCATION_ALIASES_JSON");
-  if (!raw.trim()) {
-    return {};
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
-    }
-
-    return Object.fromEntries(
-      Object.entries(parsed as Record<string, unknown>).flatMap(([key, value]) => {
-        if (!value || typeof value !== "object" || Array.isArray(value)) {
-          return [];
-        }
-
-        const alias = value as Partial<LocationAlias>;
-        if (typeof alias.query !== "string" || !alias.query.trim()) {
-          return [];
-        }
-
-        return [
-          [
-            normalizeKey(key),
-            {
-              query: alias.query.trim(),
-              country: typeof alias.country === "string" ? alias.country : undefined,
-              region: typeof alias.region === "string" ? alias.region : undefined,
-            },
-          ],
-        ];
-      })
-    );
-  } catch {
-    return {};
-  }
+function getRunnableSignal(config: RunnableConfig | undefined): AbortSignal | undefined {
+  const maybeSignal = (config as { signal?: unknown } | undefined)?.signal;
+  return maybeSignal instanceof AbortSignal ? maybeSignal : undefined;
 }
 
-function getConfiguredAlias(location: string): LocationAlias | undefined {
-  return loadConfiguredAliases()[normalizeKey(location)];
+function isCancelError(message: string): boolean {
+  return message === "weather_fetch_cancelled" || message === "weather_geocoding_cancelled";
 }
 
-function unique(values: string[]): string[] {
-  const seen = new Set<string>();
-  const output: string[] = [];
-  for (const value of values) {
-    const trimmed = value.trim();
-    const key = normalizeKey(trimmed);
-    if (!trimmed || seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    output.push(trimmed);
-  }
-  return output;
+function isTimeoutError(message: string): boolean {
+  return message === "weather_fetch_timeout" || message === "weather_geocoding_timeout" || message.includes("timeout");
 }
 
-function buildLocationQueries(input: LocationResolutionInput): ResolvedLocationQuery[] {
-  const configuredAlias = getConfiguredAlias(input.location);
-  const base: LocationResolutionInput = configuredAlias
-    ? {
-        location: configuredAlias.query,
-        country: input.country ?? configuredAlias.country,
-        region: input.region ?? configuredAlias.region,
-      }
-    : input;
-
-  const variants = unique([
-    base.location,
-    base.country ? `${base.location} ${base.country}` : "",
-    base.country ? `${base.location}, ${base.country}` : "",
-    base.region ? `${base.location} ${base.region}` : "",
-    base.region ? `${base.location}, ${base.region}` : "",
-    base.location.replaceAll("臺", "台"),
-    base.location.replaceAll("台", "臺"),
-    base.location.replace(/[市縣县區区]$/u, ""),
-  ]);
-
-  return variants.map((location) => ({
-    location,
-    country: base.country,
-    region: base.region,
-  }));
-}
-
-function matchesText(value: string | undefined, expected: string | undefined): boolean {
-  if (!expected) {
-    return false;
-  }
-  return normalizeComparable(value).includes(normalizeComparable(expected));
-}
-
-function countryMatches(candidate: GeocodingResult, expectedCountry: string | undefined): boolean {
-  if (!expectedCountry) {
-    return false;
-  }
-
-  const expected = normalizeComparable(expectedCountry);
-  const countryCode = normalizeComparable(candidate.country_code);
-
-  if (expected.length === 2 && expected === countryCode) {
-    return true;
-  }
-
-  if (matchesText(candidate.country, expectedCountry)) {
-    return true;
-  }
-
-  const candidateCountryCode = candidate.country_code;
-  if (!candidateCountryCode) {
-    return false;
-  }
-
-  const displayNames = ["en", "zh-Hant", "zh-Hans"].flatMap((locale) => {
-    const displayName = new Intl.DisplayNames([locale], { type: "region" });
-    const name = displayName.of(candidateCountryCode);
-    return name ? [name] : [];
-  });
-
-  return displayNames.some((name) => normalizeComparable(name) === expected);
-}
-
-function scoreCandidate(candidate: GeocodingResult, input: ResolvedLocationQuery): number {
-  const normalizedQuery = normalizeComparable(input.location);
-  let score = 0;
-
-  if (normalizeComparable(candidate.name) === normalizedQuery) {
-    score += 40;
-  } else if (matchesText(candidate.name, input.location)) {
-    score += 20;
-  }
-
-  if (countryMatches(candidate, input.country)) {
-    score += 35;
-  }
-
-  if (matchesText(candidate.admin1, input.region) || matchesText(candidate.admin2, input.region)) {
-    score += 25;
-  }
-
-  if (candidate.population !== undefined) {
-    score += Math.min(Math.log10(Math.max(candidate.population, 1)), 8);
-  }
-
-  return score;
-}
-
-function formatCandidate(candidate: GeocodingResult): string {
-  return [candidate.name, candidate.admin2, candidate.admin1, candidate.country]
-    .filter(Boolean)
-    .join(", ");
-}
-
-function chooseBestCandidate(
-  candidates: Array<{ candidate: GeocodingResult; query: ResolvedLocationQuery }>,
-  originalInput: LocationResolutionInput
-): GeocodingResult {
-  const countryFilteredCandidates = originalInput.country
-    ? candidates.filter((entry) => countryMatches(entry.candidate, originalInput.country))
-    : candidates;
-
-  if (originalInput.country && countryFilteredCandidates.length === 0) {
-    const options = candidates
-      .slice(0, 5)
-      .map((entry) => formatCandidate(entry.candidate))
-      .join("; ");
-    throw new Error(
-      `No geocoding result matched country "${originalInput.country}" for location "${originalInput.location}". Try an English place name or provide a more specific region. Candidates: ${options}`
-    );
-  }
-
-  const scored = countryFilteredCandidates
-    .map((entry) => ({
-      candidate: entry.candidate,
-      score: scoreCandidate(entry.candidate, entry.query),
-    }))
-    .sort((left, right) => right.score - left.score);
-  const best = scored[0];
-  const second = scored[1];
-  const hasContext = Boolean(originalInput.country || originalInput.region);
-
-  if (!best) {
-    throw new Error(`Location not found: ${originalInput.location}`);
-  }
-
-  if (!hasContext && second && best.score - second.score < 8) {
-    const options = scored
-      .slice(0, 5)
-      .map((entry) => formatCandidate(entry.candidate))
-      .join("; ");
-    throw new Error(
-      `Location "${originalInput.location}" is ambiguous. Please provide country or region. Candidates: ${options}`
-    );
-  }
-
-  return best.candidate;
-}
-
-function describeWeatherCode(code: number | undefined): string {
+export function describeWeatherCode(code: number | undefined): string {
   switch (code) {
     case 0:
       return "clear sky";
@@ -300,7 +120,7 @@ function describeWeatherCode(code: number | undefined): string {
   }
 }
 
-function describeWindDirection(degrees: number | undefined): string {
+export function describeWindDirection(degrees: number | undefined): string {
   if (degrees === undefined || Number.isNaN(degrees)) {
     return "unknown";
   }
@@ -310,9 +130,29 @@ function describeWindDirection(degrees: number | undefined): string {
   return directions[index];
 }
 
-async function fetchJson<T>(url: URL): Promise<T> {
+/**
+ * Fetch JSON with real AbortSignal support — Task 4.10
+ * Uses AbortController with timeout, not just Promise.race.
+ */
+async function fetchJsonWithTimeout<T>(url: URL, timeoutMs: number, externalSignal?: AbortSignal): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10_000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  // Merge external signal
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(timeoutId);
+      throw new Error("weather_fetch_cancelled");
+    }
+    externalSignal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timeoutId);
+        controller.abort();
+      },
+      { once: true }
+    );
+  }
 
   try {
     const response = await fetch(url, {
@@ -327,40 +167,73 @@ async function fetchJson<T>(url: URL): Promise<T> {
     }
 
     return (await response.json()) as T;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      if (externalSignal?.aborted) {
+        throw new Error("weather_fetch_cancelled");
+      }
+      throw new Error("weather_fetch_timeout");
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("fetch failed") || message.includes("aborted")) {
+      // Proxy hint goes only to audit log, NOT to user-facing error message — M2 fix
+      const proxyConfigured = Boolean(process.env.HTTPS_PROXY || process.env.HTTP_PROXY);
+      if (proxyConfigured) {
+        console.warn("[weather] Proxy configured but request failed for", url.hostname);
+      }
+      throw new Error(
+        `Weather provider network request failed for ${url.hostname}.`
+      );
+    }
+    throw error;
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(timeoutId);
   }
 }
 
-async function geocodeLocation(query: ResolvedLocationQuery): Promise<GeocodingResult[]> {
-  const geocodingUrl = new URL("https://geocoding-api.open-meteo.com/v1/search");
-  geocodingUrl.searchParams.set("name", query.location);
-  geocodingUrl.searchParams.set("count", "5");
-  geocodingUrl.searchParams.set("language", "zh");
-  geocodingUrl.searchParams.set("format", "json");
+/**
+ * Retry a fetch once for temporary errors — Task 4.11, 4.12
+ */
+async function fetchWithRetry<T>(url: URL, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+  const maxAttempts = 2; // Initial + 1 retry
+  let lastError: Error | undefined;
 
-  const geocoding = await fetchJson<GeocodingResponse>(geocodingUrl);
-  return geocoding.results ?? [];
-}
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fetchJsonWithTimeout<T>(url, timeoutMs, signal);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      const message = lastError.message;
 
-async function resolveLocation(input: LocationResolutionInput): Promise<GeocodingResult> {
-  const queries = buildLocationQueries(input);
-  const candidates: Array<{ candidate: GeocodingResult; query: ResolvedLocationQuery }> = [];
-  const seen = new Set<string>();
+      // Only retry temporary/provider errors — Task 4.12
+      const isRetryable =
+        message.includes("429") ||
+        message.includes("502") ||
+        message.includes("503") ||
+        message.includes("504") ||
+        message === "weather_fetch_timeout" ||
+        message === "weather_geocoding_timeout" ||
+        message.includes("fetch failed") ||
+        message.includes("econnrefused") ||
+        message.includes("econnreset");
 
-  for (const query of queries) {
-    const results = await geocodeLocation(query);
-    for (const candidate of results) {
-      const key = `${candidate.latitude}:${candidate.longitude}:${candidate.name}`;
-      if (seen.has(key)) {
-        continue;
+      if (isCancelError(message) || !isRetryable || attempt >= maxAttempts) {
+        throw lastError;
       }
-      seen.add(key);
-      candidates.push({ candidate, query });
+
+      // Bounded backoff: 250ms + jitter
+      await new Promise((resolve) =>
+        setTimeout(resolve, 250 + Math.random() * 250)
+      );
+      await recordMetric("weather.provider.retry", {
+        url: url.hostname,
+        attempt,
+        error: message,
+      });
     }
   }
 
-  return chooseBestCandidate(candidates, input);
+  throw lastError ?? new Error("Retry exhausted");
 }
 
 function numberValue(
@@ -371,66 +244,360 @@ function numberValue(
   return typeof value === "number" ? value : undefined;
 }
 
-export const weatherTool = tool(
-  async ({ location, country, region }) => {
-    try {
-      const place = await resolveLocation({ location, country, region });
-      const forecastUrl = new URL("https://api.open-meteo.com/v1/forecast");
-      forecastUrl.searchParams.set("latitude", String(place.latitude));
-      forecastUrl.searchParams.set("longitude", String(place.longitude));
-      forecastUrl.searchParams.set(
-        "current",
-        [
-          "temperature_2m",
-          "relative_humidity_2m",
-          "apparent_temperature",
-          "is_day",
-          "precipitation",
-          "rain",
-          "weather_code",
-          "cloud_cover",
-          "pressure_msl",
-          "wind_speed_10m",
-          "wind_direction_10m",
-          "wind_gusts_10m",
-        ].join(",")
-      );
-      forecastUrl.searchParams.set("timezone", place.timezone ?? "auto");
+function formatFallbackText(candidate: LocationCandidate): string {
+  return [candidate.name, candidate.admin2, candidate.admin1, candidate.country]
+    .filter(Boolean)
+    .join(", ");
+}
 
-      const forecast = await fetchJson<ForecastResponse>(forecastUrl);
+/**
+ * Build the structured WeatherToolResult for a successful forecast — Task 4.3, 4.9
+ */
+function buildSuccessResult(
+  query: LocationQuery,
+  candidate: LocationCandidate,
+  forecast: ForecastResponse,
+  sourceUrl: string
+): WeatherToolResult {
+  const current = forecast.current ?? {};
+  const units = forecast.current_units ?? {};
+  const weatherCode = numberValue(current, "weather_code");
+  const windDirection = numberValue(current, "wind_direction_10m");
+  const displayName = formatFallbackText(candidate);
+
+  return {
+    schemaVersion: "1.0",
+    tool: "current_weather",
+    status: "success",
+    requestedLocation: query,
+    resolvedLocation: candidate,
+    observedAt: String(current.time ?? ""),
+    timezone: forecast.timezone,
+    current: {
+      conditionCode: weatherCode,
+      conditionText: describeWeatherCode(weatherCode),
+      temperature: numberValue(current, "temperature_2m"),
+      apparentTemperature: numberValue(current, "apparent_temperature"),
+      relativeHumidity: numberValue(current, "relative_humidity_2m"),
+      precipitation: numberValue(current, "precipitation"),
+      rain: numberValue(current, "rain"),
+      cloudCover: numberValue(current, "cloud_cover"),
+      pressureMsl: numberValue(current, "pressure_msl"),
+      windSpeed: numberValue(current, "wind_speed_10m"),
+      windDirectionDegrees: windDirection,
+      windDirectionText: describeWindDirection(windDirection),
+      windGusts: numberValue(current, "wind_gusts_10m"),
+    },
+    units: units as Record<string, string>,
+    provider: "Open-Meteo",
+    sourceUrl,
+    summary: [
+      `Current weather for ${displayName}: ${current.temperature_2m ?? "?"}${units.temperature_2m ?? ""}, ${describeWeatherCode(weatherCode)}.`,
+      `Observed at ${String(current.time ?? "")}.`,
+    ].join(" "),
+  };
+}
+
+/**
+ * Build a legacy text output from structured result — for backward compatibility
+ * during the WEATHER_STRUCTURED_RESULT_ENABLED transition period.
+ */
+function formatLegacyText(result: WeatherToolResult): string {
+  if (result.status === "success") {
+    const { current, resolvedLocation } = result;
+    const displayName = formatFallbackText(resolvedLocation);
+    const lines = [
+      "Provider: Open-Meteo current weather API",
+      "Data scope: latest current weather observation, not a full-day forecast.",
+      `Resolved location: ${displayName} (${resolvedLocation.latitude}, ${resolvedLocation.longitude})`,
+      `Observation time: ${result.observedAt}, timezone: ${result.timezone}`,
+      `Condition: ${current.conditionText} (code ${current.conditionCode ?? "unknown"})`,
+      `Temperature: ${current.temperature ?? "?"}${result.units.temperature_2m ?? ""}`,
+    ];
+    if (current.apparentTemperature !== undefined) {
+      lines.push(`Feels like: ${current.apparentTemperature}${result.units.apparent_temperature ?? ""}`);
+    }
+    if (current.relativeHumidity !== undefined) {
+      lines.push(`Humidity: ${current.relativeHumidity}${result.units.relative_humidity_2m ?? ""}`);
+    }
+    if (current.precipitation !== undefined) {
+      lines.push(`Precipitation: ${current.precipitation}${result.units.precipitation ?? ""}`);
+    }
+    if (current.rain !== undefined) {
+      lines.push(`Rain: ${current.rain}${result.units.rain ?? ""}`);
+    }
+    if (current.cloudCover !== undefined) {
+      lines.push(`Cloud cover: ${current.cloudCover}${result.units.cloud_cover ?? ""}`);
+    }
+    lines.push(`Wind: ${current.windSpeed ?? "?"}${result.units.wind_speed_10m ?? ""}, direction ${current.windDirectionText} (${current.windDirectionDegrees ?? "unknown"}${result.units.wind_direction_10m ?? ""})`);
+    if (current.windGusts !== undefined) {
+      lines.push(`Wind gusts: ${current.windGusts}${result.units.wind_gusts_10m ?? ""}`);
+    }
+    if (current.pressureMsl !== undefined) {
+      lines.push(`Pressure: ${current.pressureMsl}${result.units.pressure_msl ?? ""}`);
+    }
+    lines.push(`Source URL: ${result.sourceUrl}`);
+    return lines.join("\n");
+  }
+
+  if (result.status === "needs_clarification") {
+    return result.summary;
+  }
+
+  if (result.status === "not_found") {
+    return result.summary;
+  }
+
+  // error
+  return result.summary;
+}
+
+export const weatherTool = tool(
+  async ({ location, country, region, resolutionStrategy }, config?: RunnableConfig) => {
+    const startTime = Date.now();
+    const weatherConfig = getWeatherConfig();
+    const runSignal = getRunnableSignal(config);
+    const geocodingProvider = new OpenMeteoGeocodingProvider(weatherConfig.geocodingTimeoutMs);
+    const strategy: ResolutionStrategy | undefined =
+      resolutionStrategy === "llm_repair" ? "llm_repair" : undefined;
+
+    // Validate input
+    const validationError = validateLocationInput(location, weatherConfig.locationMaxChars);
+    if (validationError) {
+      const result: WeatherToolResult = {
+        schemaVersion: "1.0",
+        tool: "current_weather",
+        status: "error",
+        requestedLocation: { raw: location ?? "", location: location ?? "" },
+        code: "weather_invalid_input",
+        retryable: false,
+        message: validationError,
+        summary: "Invalid location input. Please provide a valid city or place name.",
+      };
+      await auditLogger.record("weather.location.resolve.start", {
+        error: "invalid_input",
+        location,
+      });
+      return weatherConfig.structuredResultEnabled
+        ? JSON.stringify(result)
+        : formatLegacyText(result);
+    }
+
+    // Build the query
+    const query = buildLocationQuery(location, country, region);
+    await auditLogger.record("weather.location.resolve.start", {
+      raw: query.raw,
+      location: query.location,
+      country: query.country,
+    });
+
+    // Resolve location through the geocoding pipeline
+    let resolutionResult;
+    try {
+      resolutionResult = await resolveLocation(query, geocodingProvider, {
+        ...DEFAULT_RESOLVER_OPTIONS,
+        minScore: weatherConfig.geocodingMinScore,
+        ambiguityDelta: weatherConfig.geocodingAmbiguityDelta,
+        maxCandidates: weatherConfig.geocodingMaxCandidates,
+        maxQueries: weatherConfig.geocodingMaxQueries,
+        signal: runSignal,
+        strategy,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const result: WeatherToolResult = {
+        schemaVersion: "1.0",
+        tool: "current_weather",
+        status: "error",
+        requestedLocation: query,
+        code: isCancelError(errorMessage)
+          ? "weather_cancelled"
+          : isTimeoutError(errorMessage)
+            ? "weather_timeout"
+            : "weather_geocoding_provider_error",
+        retryable: !isCancelError(errorMessage) && isTimeoutError(errorMessage),
+        message: errorMessage,
+        summary: isCancelError(errorMessage)
+          ? "Weather lookup was cancelled."
+          : "Weather service temporarily unavailable. Please try again.",
+      };
+      await recordMetric("weather.location.resolve.failure.count", { count: 1 });
+      return weatherConfig.structuredResultEnabled
+        ? JSON.stringify(result)
+        : formatLegacyText(result);
+    }
+
+    // Handle non-resolved statuses
+    if (resolutionResult.status === "ambiguous") {
+      const candidates = resolutionResult.candidates.slice(0, 5).map((c) => ({
+        name: c.name,
+        displayName: c.displayName,
+        country: c.country,
+        countryCode: c.countryCode,
+        admin1: c.admin1,
+        admin2: c.admin2,
+      }));
+      const result: WeatherToolResult = {
+        schemaVersion: "1.0",
+        tool: "current_weather",
+        status: "needs_clarification",
+        requestedLocation: query,
+        candidates,
+        message: `Location "${query.location}" is ambiguous. Please provide a more specific location with country or region.`,
+        summary: `Location "${query.location}" matches multiple candidates. Please specify a country or region.`,
+      };
+      await recordMetric("weather.location.resolve.ambiguous.count", { count: 1 });
+      await auditLogger.record("weather.location.resolve.ambiguous", {
+        raw: query.raw,
+        candidateCount: candidates.length,
+        durationMs: Date.now() - startTime,
+      });
+      return weatherConfig.structuredResultEnabled
+        ? JSON.stringify(result)
+        : `Location "${query.location}" is ambiguous. Candidates: ${candidates.map((c) => c.displayName).join("; ")}`;
+    }
+
+    if (resolutionResult.status === "not_found") {
+      const result: WeatherToolResult = {
+        schemaVersion: "1.0",
+        tool: "current_weather",
+        status: "not_found",
+        requestedLocation: query,
+        code: "weather_location_not_found",
+        message: `Could not find location "${query.location}". Please provide a more specific location.`,
+        summary: `Could not find "${query.location}". Please provide a more specific location.`,
+      };
+      await recordMetric("weather.location.resolve.not_found.count", { count: 1 });
+      await auditLogger.record("weather.location.resolve.not_found", {
+        raw: query.raw,
+        attemptedQueries: resolutionResult.attemptedQueries,
+        durationMs: Date.now() - startTime,
+      });
+      return weatherConfig.structuredResultEnabled
+        ? JSON.stringify(result)
+        : `Location not found: ${query.location}. Please provide a more specific location.`;
+    }
+
+    if (resolutionResult.status === "provider_error") {
+      const result: WeatherToolResult = {
+        schemaVersion: "1.0",
+        tool: "current_weather",
+        status: "error",
+        requestedLocation: query,
+        code: resolutionResult.code === "weather_geocoding_cancelled"
+          ? "weather_cancelled"
+          : resolutionResult.code === "weather_geocoding_timeout"
+            ? "weather_timeout"
+            : "weather_geocoding_provider_error",
+        retryable: resolutionResult.retryable,
+        message: `Geocoding provider error: ${resolutionResult.code}`,
+        summary: resolutionResult.code === "weather_geocoding_cancelled"
+          ? "Weather lookup was cancelled."
+          : "Weather service temporarily unavailable. Please try again.",
+      };
+      await recordMetric("weather.location.resolve.failure.count", { count: 1 });
+      await auditLogger.record("weather.location.resolve.failure", {
+        raw: query.raw,
+        code: resolutionResult.code,
+        durationMs: Date.now() - startTime,
+      });
+      return weatherConfig.structuredResultEnabled
+        ? JSON.stringify(result)
+        : "Weather geocoding service is temporarily unavailable. Please try again later.";
+    }
+
+    // Resolved — fetch forecast
+    const place = resolutionResult.candidate;
+    const forecastUrl = new URL("https://api.open-meteo.com/v1/forecast");
+    forecastUrl.searchParams.set("latitude", String(place.latitude));
+    forecastUrl.searchParams.set("longitude", String(place.longitude));
+    forecastUrl.searchParams.set(
+      "current",
+      [
+        "temperature_2m",
+        "relative_humidity_2m",
+        "apparent_temperature",
+        "is_day",
+        "precipitation",
+        "rain",
+        "weather_code",
+        "cloud_cover",
+        "pressure_msl",
+        "wind_speed_10m",
+        "wind_direction_10m",
+        "wind_gusts_10m",
+      ].join(",")
+    );
+    forecastUrl.searchParams.set("timezone", place.timezone ?? "auto");
+
+    try {
+      const forecast = await fetchWithRetry<ForecastResponse>(
+        forecastUrl,
+        weatherConfig.forecastTimeoutMs,
+        runSignal
+      );
       const current = forecast.current;
 
       if (!current) {
-        throw new Error("Open-Meteo did not return current weather data.");
+        const result: WeatherToolResult = {
+          schemaVersion: "1.0",
+          tool: "current_weather",
+          status: "error",
+          requestedLocation: query,
+          code: "weather_forecast_provider_error",
+          retryable: false,
+          message: "Open-Meteo did not return current weather data.",
+          summary: "Weather service did not return data for this location.",
+        };
+        return weatherConfig.structuredResultEnabled
+          ? JSON.stringify(result)
+          : "Weather forecast API did not return current weather data.";
       }
 
-      const units = forecast.current_units ?? {};
-      const weatherCode = numberValue(current, "weather_code");
-      const windDirection = numberValue(current, "wind_direction_10m");
-      const sourceUrl = forecastUrl.toString();
-      const displayName = formatCandidate(place);
+      const result = buildSuccessResult(query, place, forecast, forecastUrl.toString());
 
-      return [
-        "Provider: Open-Meteo current weather API",
-        "Data scope: latest current weather observation, not a full-day forecast.",
-        `Resolved location: ${displayName} (${forecast.latitude}, ${forecast.longitude})`,
-        `Observation time: ${String(current.time)}, timezone: ${forecast.timezone}`,
-        `Condition: ${describeWeatherCode(weatherCode)} (code ${weatherCode ?? "unknown"})`,
-        `Temperature: ${current.temperature_2m}${units.temperature_2m ?? ""}`,
-        `Feels like: ${current.apparent_temperature}${units.apparent_temperature ?? ""}`,
-        `Humidity: ${current.relative_humidity_2m}${units.relative_humidity_2m ?? ""}`,
-        `Precipitation: ${current.precipitation}${units.precipitation ?? ""}`,
-        `Rain: ${current.rain}${units.rain ?? ""}`,
-        `Cloud cover: ${current.cloud_cover}${units.cloud_cover ?? ""}`,
-        `Wind: ${current.wind_speed_10m}${units.wind_speed_10m ?? ""}, direction ${describeWindDirection(windDirection)} (${windDirection ?? "unknown"}${units.wind_direction_10m ?? ""})`,
-        `Wind gusts: ${current.wind_gusts_10m}${units.wind_gusts_10m ?? ""}`,
-        `Pressure: ${current.pressure_msl}${units.pressure_msl ?? ""}`,
-        `Source URL: ${sourceUrl}`,
-      ].join("\n");
+      await recordMetric("weather.location.resolve.success.count", { count: 1 });
+      await recordMetric("weather.provider.forecast.duration_ms", {
+        durationMs: Date.now() - startTime,
+      });
+      await auditLogger.record("weather.location.resolve.success", {
+        raw: query.raw,
+        provider: place.provider,
+        strategy: resolutionResult.strategy,
+        candidateCount: 1,
+        durationMs: Date.now() - startTime,
+      });
+
+      return weatherConfig.structuredResultEnabled
+        ? JSON.stringify(result)
+        : formatLegacyText(result);
     } catch (error) {
-      return `Error: current_weather failed - ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const result: WeatherToolResult = {
+        schemaVersion: "1.0",
+        tool: "current_weather",
+        status: "error",
+        requestedLocation: query,
+        code: isCancelError(errorMessage)
+          ? "weather_cancelled"
+          : isTimeoutError(errorMessage)
+          ? "weather_timeout"
+          : "weather_forecast_provider_error",
+        retryable: !isCancelError(errorMessage) && (isTimeoutError(errorMessage) || errorMessage.includes("fetch failed")),
+        message: errorMessage,
+        summary: isCancelError(errorMessage)
+          ? "Weather lookup was cancelled."
+          : "Weather forecast service is temporarily unavailable.",
+      };
+      await recordMetric("weather.provider.forecast.failure.count", { count: 1 });
+      await auditLogger.record("weather.provider.forecast.failure", {
+        raw: query.raw,
+        error: errorMessage,
+        durationMs: Date.now() - startTime,
+      });
+      return weatherConfig.structuredResultEnabled
+        ? JSON.stringify(result)
+        : "Weather forecast service is temporarily unavailable.";
     }
   },
   {
@@ -447,6 +614,10 @@ export const weatherTool = tool(
         .string()
         .optional()
         .describe("Optional state, province, or administrative region hint, for example 'New York'."),
+      resolutionStrategy: z
+        .enum(["llm_repair"])
+        .optional()
+        .describe("Internal marker for one-time LLM repair; callers should normally omit this."),
     }),
   }
 );

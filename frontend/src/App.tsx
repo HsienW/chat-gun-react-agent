@@ -5,21 +5,16 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { ProcessedEvent } from '@/components/ActivityTimeline';
 import { WelcomeScreen } from '@/components/WelcomeScreen';
 import { ChatMessagesView } from '@/components/ChatMessagesView';
+import {
+  extractAgentRuntimeEvents,
+  runtimeEventToProcessedEvent,
+} from '@/lib/agent-runtime-events';
+import { getAgentRunConfig } from '@/lib/agent-run-config';
+import { FRONTEND_ERROR_MESSAGES } from '@/lib/error-messages';
+import type { ProcessedImageAttachment } from '@/lib/image-upload';
 import { AgentId, DEFAULT_AGENT } from '@/types/agents';
+import { formatErrorEnvelope, parseErrorEnvelope } from '@/types/errors';
 import { getAgentById, isValidAgentId } from '@/lib/agents';
-
-function stringifyEventData(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map(stringifyEventData).join(', ');
-  if (value && typeof value === 'object') return JSON.stringify(value);
-  return String(value ?? '');
-}
-
-function getNodeMessages(nodeValue: unknown): unknown[] {
-  if (!nodeValue || typeof nodeValue !== 'object') return [];
-  const messages = (nodeValue as { messages?: unknown }).messages;
-  return Array.isArray(messages) ? messages : [];
-}
 
 function isAbortError(error: unknown): boolean {
   if (!error) return false;
@@ -30,88 +25,30 @@ function isAbortError(error: unknown): boolean {
   return /abort|aborted/i.test(String(error));
 }
 
+function formatStreamError(error: unknown): string {
+  const envelope =
+    parseErrorEnvelope(error) ||
+    parseErrorEnvelope(error instanceof Error ? error.message : String(error));
+
+  if (envelope) {
+    return formatErrorEnvelope(envelope);
+  }
+
+  return [
+    `${FRONTEND_ERROR_MESSAGES.errorEnvelope.source}: ${FRONTEND_ERROR_MESSAGES.stream.source}`,
+    `${FRONTEND_ERROR_MESSAGES.errorEnvelope.stage}: ${FRONTEND_ERROR_MESSAGES.stream.stage}`,
+    `${FRONTEND_ERROR_MESSAGES.errorEnvelope.code}: ${FRONTEND_ERROR_MESSAGES.stream.unknownCode}`,
+    `${FRONTEND_ERROR_MESSAGES.errorEnvelope.message}: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+  ].join('\n');
+}
+
 function getLangGraphApiUrl(): string {
   const configuredUrl = import.meta.env.VITE_LANGGRAPH_API_URL;
   if (configuredUrl) return configuredUrl;
 
   return new URL('/api/langgraph', window.location.origin).toString();
-}
-
-function processDeepResearchEvent(
-  event: Record<string, unknown>
-): ProcessedEvent | null {
-  if ('plan_research' in event) {
-    return {
-      title: 'Research Plan',
-      data: 'Planned route and selected tools.',
-    };
-  }
-
-  if ('targeted_tools' in event) {
-    const messages = getNodeMessages(event.targeted_tools);
-    const toolNames = messages
-      .map((message) => {
-        if (!message || typeof message !== 'object') return undefined;
-        return (message as { name?: string }).name;
-      })
-      .filter(Boolean);
-    return {
-      title: 'Targeted Tool Results',
-      data: toolNames.length ? toolNames.join(', ') : stringifyEventData(event.targeted_tools),
-    };
-  }
-
-  if ('search_web' in event) {
-    const messages = getNodeMessages(event.search_web);
-    const toolNames = messages
-      .map((message) => {
-        if (!message || typeof message !== 'object') return undefined;
-        return (message as { name?: string }).name;
-      })
-      .filter(Boolean);
-
-    return {
-      title: 'Web Search Results',
-      data: toolNames.length ? toolNames.join(', ') : stringifyEventData(event.search_web),
-    };
-  }
-
-  if ('rank_sources' in event) {
-    return {
-      title: 'Source Ranking',
-      data: 'Deduplicated and ranked candidate sources.',
-    };
-  }
-
-  if ('fetch_sources' in event) {
-    return {
-      title: 'Source Fetching',
-      data: 'Fetched selected source pages.',
-    };
-  }
-
-  if ('extract_evidence' in event) {
-    return {
-      title: 'Evidence Extraction',
-      data: 'Extracted source summaries and key claims.',
-    };
-  }
-
-  if ('verify_citations' in event) {
-    return {
-      title: 'Citation Verification',
-      data: 'Checked usable sources and warnings.',
-    };
-  }
-
-  if ('synthesize_answer' in event) {
-    return {
-      title: 'Final Answer',
-      data: 'Generated final answer from accumulated conversation and tool results.',
-    };
-  }
-
-  return null;
 }
 
 export default function App() {
@@ -122,6 +59,7 @@ export default function App() {
     Record<string, ProcessedEvent[]>
   >({});
   const [selectedAgentId, setSelectedAgentId] = useState(DEFAULT_AGENT);
+  const [streamErrorMessage, setStreamErrorMessage] = useState<string | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   const validateAgentId = useCallback((agentId: string): string => {
@@ -166,6 +104,7 @@ export default function App() {
         console.debug('Stream aborted by client action.');
         return;
       }
+      setStreamErrorMessage(formatStreamError(error));
       console.error('LangGraph stream error:', error);
     },
     onFinish: (event: unknown) => {
@@ -175,24 +114,14 @@ export default function App() {
       const currentAgent = getAgentById(selectedAgentId);
       if (!currentAgent?.showActivityTimeline) return;
 
-      let processedEvent: ProcessedEvent | null = null;
+      const processedEvents = extractAgentRuntimeEvents(event).map(
+        runtimeEventToProcessedEvent
+      );
 
-      if (selectedAgentId === AgentId.DEEP_RESEARCHER) {
-        processedEvent = processDeepResearchEvent(event);
-      }
-
-      if ('tool_call_chunks' in event && Array.isArray(event.tool_call_chunks)) {
-        const toolChunks = event.tool_call_chunks as Array<{ name?: string }>;
-        processedEvent = {
-          title: 'Tool Call Streaming',
-          data: toolChunks.map((chunk) => chunk.name || 'tool').join(', '),
-        };
-      }
-
-      if (processedEvent) {
+      if (processedEvents.length > 0) {
         setProcessedEventsTimeline((prevEvents) => [
           ...prevEvents,
-          processedEvent!,
+          ...processedEvents,
         ]);
       }
     },
@@ -229,54 +158,56 @@ export default function App() {
       submittedInputValue: string,
       effort: string,
       model: string,
-      agentId: string
+      agentId: string,
+      attachments: ProcessedImageAttachment[]
     ) => {
       const validAgentId = validateAgentId(agentId);
-      if (!submittedInputValue.trim()) return;
+      if (!submittedInputValue.trim() && attachments.length === 0) return;
 
       handleAgentSwitch(validAgentId);
       setProcessedEventsTimeline([]);
+      setStreamErrorMessage(null);
+
+      const messageContent: Message['content'] =
+        attachments.length > 0
+          ? [
+              ...(submittedInputValue.trim()
+                ? [{ type: 'text' as const, text: submittedInputValue.trim() }]
+                : [{ type: 'text' as const, text: 'Analyze the uploaded image attachments.' }]),
+              ...attachments.map((attachment) => ({
+                type: 'image_url' as const,
+                image_url: {
+                  url: attachment.dataUrl,
+                  detail: 'auto' as const,
+                },
+                fileName: attachment.fileName,
+                mimeType: attachment.mimeType,
+                sizeBytes: attachment.processedBytes,
+                width: attachment.width,
+                height: attachment.height,
+              })),
+            ]
+          : submittedInputValue;
 
       const newMessages: Message[] = [
         {
           type: 'human',
-          content: submittedInputValue,
+          content: messageContent,
           id: crypto.randomUUID(),
         },
       ];
 
       if (validAgentId === AgentId.DEEP_RESEARCHER) {
-        let max_research_loops = 3;
-        let initial_search_query_count = 3;
-
-        switch (effort) {
-          case 'low':
-            max_research_loops = 2;
-            initial_search_query_count = 1;
-            break;
-          case 'medium':
-            max_research_loops = 6;
-            initial_search_query_count = 3;
-            break;
-          case 'high':
-            max_research_loops = 12;
-            initial_search_query_count = 5;
-            break;
-        }
+        const runConfig = getAgentRunConfig(validAgentId, effort);
 
         thread.submit({
           messages: newMessages,
-          initial_search_query_count,
-          max_research_loops,
+          ...runConfig,
           reasoning_model: model,
-        }, {
-          onDisconnect: 'continue',
         });
       } else {
         thread.submit({
           messages: newMessages,
-        }, {
-          onDisconnect: 'continue',
         });
       }
     },
@@ -305,7 +236,18 @@ export default function App() {
             />
           ) : (
             <ChatMessagesView
-              messages={thread.messages}
+              messages={
+                streamErrorMessage
+                  ? [
+                      ...thread.messages,
+                      {
+                        type: 'ai',
+                        content: streamErrorMessage,
+                        id: 'stream-error',
+                      } as Message,
+                    ]
+                  : thread.messages
+              }
               isLoading={thread.isLoading}
               scrollAreaRef={scrollAreaRef}
               onSubmit={handleSubmit}

@@ -1,0 +1,30 @@
+schema: spec-driven
+
+context: |
+  專案名稱：chat-gun-react-agent
+
+  系統架構：
+  - frontend 使用 Vite、React 與 TypeScript。
+  - bff 負責 API Gateway、認證、限流與逾時控制。
+  - backend 使用 LangGraph JS Runtime。
+  - 瀏覽器 MUST 透過 BFF 呼叫 LangGraph。
+  - frontend MUST NOT 直接取得模型 API Key 或 MCP 憑證。
+
+rules:
+  proposal:
+    - 必須先描述問題，再描述解決方案。
+    - 必須列出受影響的套件與能力域。
+    - 必須包含目標、非目標、風險與回滾策略。
+
+  specs:
+    - 每項 Requirement 必須至少包含一個 Scenario。
+    - 必須涵蓋成功、失敗、逾時與取消情境。
+    - 不得在行為規格中混入具體檔案名稱或程式實作。
+
+  design:
+    - 必須分別說明 frontend、bff 與 backend 的變更。
+    - Tool 或 MCP 變更必須包含安全與權限分析。
+
+  tasks:
+    - 每個 Task 必須可獨立驗證。
+    - 必須包含明確的驗證命令。
