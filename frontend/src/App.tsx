@@ -51,6 +51,14 @@ function getLangGraphApiUrl(): string {
   return new URL('/api/langgraph', window.location.origin).toString();
 }
 
+function createCancelledAssistantMessage(): Message {
+  return {
+    type: 'ai',
+    content: '已取消本次回覆。',
+    id: `local-cancelled-${crypto.randomUUID()}`,
+  } as Message;
+}
+
 export default function App() {
   const [processedEventsTimeline, setProcessedEventsTimeline] = useState<
     ProcessedEvent[]
@@ -60,6 +68,7 @@ export default function App() {
   >({});
   const [selectedAgentId, setSelectedAgentId] = useState(DEFAULT_AGENT);
   const [streamErrorMessage, setStreamErrorMessage] = useState<string | null>(null);
+  const [cancelledMessage, setCancelledMessage] = useState<Message | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   const validateAgentId = useCallback((agentId: string): string => {
@@ -77,6 +86,7 @@ export default function App() {
         setSelectedAgentId(validAgentId as AgentId);
         setProcessedEventsTimeline([]);
         setHistoricalActivities({});
+        setCancelledMessage(null);
       }
     },
     [selectedAgentId, validateAgentId]
@@ -128,17 +138,6 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (scrollAreaRef.current) {
-      const scrollViewport = scrollAreaRef.current.querySelector(
-        '[data-radix-scroll-area-viewport]'
-      );
-      if (scrollViewport) {
-        scrollViewport.scrollTop = scrollViewport.scrollHeight;
-      }
-    }
-  }, [thread.messages]);
-
-  useEffect(() => {
     if (thread.isLoading || processedEventsTimeline.length === 0) return;
 
     const lastMessage = thread.messages[thread.messages.length - 1];
@@ -167,6 +166,7 @@ export default function App() {
       handleAgentSwitch(validAgentId);
       setProcessedEventsTimeline([]);
       setStreamErrorMessage(null);
+      setCancelledMessage(null);
 
       const messageContent: Message['content'] =
         attachments.length > 0
@@ -216,17 +216,43 @@ export default function App() {
 
   const handleCancel = useCallback(() => {
     thread.stop();
+    setCancelledMessage(createCancelledAssistantMessage());
   }, [thread]);
+
+  const messagesWithStreamError = streamErrorMessage
+    ? [
+        ...thread.messages,
+        {
+          type: 'ai',
+          content: streamErrorMessage,
+          id: 'stream-error',
+        } as Message,
+      ]
+    : thread.messages;
+  const displayMessages = cancelledMessage
+    ? [...messagesWithStreamError, cancelledMessage]
+    : messagesWithStreamError;
+
+  useEffect(() => {
+    if (scrollAreaRef.current) {
+      const scrollViewport = scrollAreaRef.current.querySelector(
+        '[data-radix-scroll-area-viewport]'
+      );
+      if (scrollViewport) {
+        scrollViewport.scrollTop = scrollViewport.scrollHeight;
+      }
+    }
+  }, [displayMessages.length]);
 
   return (
     <div className="flex h-screen bg-background text-foreground font-sans antialiased">
       <main className="flex-1 flex flex-col max-w-4xl mx-auto w-full min-h-0">
         <div
           className={`flex-1 min-h-0 ${
-            thread.messages.length === 0 ? 'flex' : ''
+            displayMessages.length === 0 ? 'flex' : ''
           }`}
         >
-          {thread.messages.length === 0 ? (
+          {displayMessages.length === 0 ? (
             <WelcomeScreen
               handleSubmit={handleSubmit}
               isLoading={thread.isLoading}
@@ -236,18 +262,7 @@ export default function App() {
             />
           ) : (
             <ChatMessagesView
-              messages={
-                streamErrorMessage
-                  ? [
-                      ...thread.messages,
-                      {
-                        type: 'ai',
-                        content: streamErrorMessage,
-                        id: 'stream-error',
-                      } as Message,
-                    ]
-                  : thread.messages
-              }
+              messages={displayMessages}
               isLoading={thread.isLoading}
               scrollAreaRef={scrollAreaRef}
               onSubmit={handleSubmit}

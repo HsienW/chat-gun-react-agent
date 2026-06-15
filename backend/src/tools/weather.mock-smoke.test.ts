@@ -96,6 +96,23 @@ const candidates: Record<string, OpenMeteoResult[]> = {
       timezone: "Asia/Singapore",
       population: 5_600_000,
     },
+    {
+      name: SINGAPORE_ZH,
+      latitude: 1.3521,
+      longitude: 103.8201,
+      country: "Singapore",
+      country_code: "SG",
+      timezone: "Asia/Singapore",
+      population: 5_600_000,
+    },
+    {
+      name: "\u65b0\u52a0\u5761\u6a1f\u5b9c\u6a5f\u5834",
+      latitude: 1.364,
+      longitude: 103.991,
+      country: "Singapore",
+      country_code: "SG",
+      timezone: "Asia/Singapore",
+    },
   ],
   tokyo: [
     {
@@ -107,6 +124,24 @@ const candidates: Record<string, OpenMeteoResult[]> = {
       admin1: "Tokyo",
       timezone: "Asia/Tokyo",
       population: 14_000_000,
+    },
+    {
+      name: "Tokyo",
+      latitude: -6.2,
+      longitude: 146.6,
+      country: "Papua New Guinea",
+      country_code: "PG",
+      timezone: "Pacific/Port_Moresby",
+      population: 20_000,
+    },
+    {
+      name: "Tokyo",
+      latitude: 28.2,
+      longitude: 84.0,
+      country: "Nepal",
+      country_code: "NP",
+      timezone: "Asia/Kathmandu",
+      population: 5_000,
     },
   ],
   [SAO_PAULO.toLowerCase()]: [
@@ -120,6 +155,24 @@ const candidates: Record<string, OpenMeteoResult[]> = {
       timezone: "America/Sao_Paulo",
       population: 12_000_000,
     },
+    {
+      name: SAO_PAULO,
+      latitude: 38.7,
+      longitude: -9.1,
+      country: "Portugal",
+      country_code: "PT",
+      timezone: "Europe/Lisbon",
+      population: 12_000,
+    },
+    {
+      name: SAO_PAULO,
+      latitude: 0.3,
+      longitude: 6.7,
+      country: "São Tomé and Príncipe",
+      country_code: "ST",
+      timezone: "Africa/Sao_Tome",
+      population: 7_000,
+    },
   ],
   [MUNCHEN.toLowerCase()]: [
     {
@@ -131,6 +184,34 @@ const candidates: Record<string, OpenMeteoResult[]> = {
       admin1: "Bavaria",
       timezone: "Europe/Berlin",
       population: 1_500_000,
+    },
+    {
+      name: MUNCHEN,
+      latitude: 52.1,
+      longitude: 13.4,
+      country: "Germany",
+      country_code: "DE",
+      admin1: "Brandenburg",
+      timezone: "Europe/Berlin",
+      population: 3_000,
+    },
+    {
+      name: MUNCHEN,
+      latitude: 47.3,
+      longitude: 8.3,
+      country: "Switzerland",
+      country_code: "CH",
+      timezone: "Europe/Zurich",
+      population: 1_500,
+    },
+    {
+      name: MUNCHEN,
+      latitude: 48.0,
+      longitude: 14.0,
+      country: "Austria",
+      country_code: "AT",
+      timezone: "Europe/Vienna",
+      population: 1_000,
     },
   ],
   springfield: [
@@ -200,7 +281,7 @@ function installMockOpenMeteoFetch(scenario: Scenario = { kind: "normal" }): voi
         }
 
         const name = (url.searchParams.get("name") ?? "").toLowerCase();
-        const results = Object.entries(candidates).find(([key]) => name.includes(key.toLowerCase()))?.[1] ?? [];
+        const results = candidates[name] ?? [];
         return jsonResponse({ results });
       }
 
@@ -259,6 +340,7 @@ async function invokeWeather(input: {
 describe("mock smoke acceptance for weather manual matrix", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it.each([
@@ -280,6 +362,22 @@ describe("mock smoke acceptance for weather manual matrix", () => {
       expect(result.resolvedLocation.name).toBe(expectedName);
       expect(result.current.temperature).toBe(24);
       expect(result.sourceUrl).toContain("api.open-meteo.com");
+    }
+  });
+
+  it("11.6 does not strip a full weather question before geocoding", async () => {
+    installMockOpenMeteoFetch();
+
+    const result = await invokeWeather({
+      location: `${TAIPEI_SIMPLIFIED}\u73fe\u5728\u5929\u6c23\u5982\u4f55\uFF1F`,
+    });
+
+    expect(result.requestedLocation.raw).toBe(`${TAIPEI_SIMPLIFIED}\u73fe\u5728\u5929\u6c23\u5982\u4f55\uFF1F`);
+    expect(result.requestedLocation.location).toBe(`${TAIPEI_SIMPLIFIED}\u73fe\u5728\u5929\u6c23\u5982\u4f55?`);
+    expect(result.requestedLocation.location).not.toBe(TAIPEI_SIMPLIFIED);
+    expect(result.status).toBe("not_found");
+    if (result.status === "not_found") {
+      expect(result.code).toBe("weather_location_not_found");
     }
   });
 
@@ -342,5 +440,44 @@ describe("mock smoke acceptance for weather manual matrix", () => {
       expect(result.code).toBe("weather_forecast_provider_error");
       expect(result.summary).toBeTruthy();
     }
+  });
+
+  it("9.12 supports non-production forced geocoding provider failure for manual verification", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("WEATHER_TEST_FORCE_GEOCODING_ERROR", "true");
+    installMockOpenMeteoFetch();
+
+    const result = await invokeWeather({ location: "Tokyo" });
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.code).toBe("weather_geocoding_provider_error");
+      expect(result.code).not.toBe("weather_location_not_found");
+    }
+  });
+
+  it("9.13 supports non-production forced forecast provider failure after geocoding resolves", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("WEATHER_TEST_FORCE_FORECAST_ERROR", "true");
+    installMockOpenMeteoFetch();
+
+    const result = await invokeWeather({ location: "Tokyo" });
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.code).toBe("weather_forecast_provider_error");
+      expect(result.summary).toBeTruthy();
+    }
+  });
+
+  it("does not enable weather fault injection in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("WEATHER_TEST_FORCE_GEOCODING_ERROR", "true");
+    vi.stubEnv("WEATHER_TEST_FORCE_FORECAST_ERROR", "true");
+    installMockOpenMeteoFetch();
+
+    const result = await invokeWeather({ location: "Tokyo" });
+
+    expect(result.status).toBe("success");
   });
 });

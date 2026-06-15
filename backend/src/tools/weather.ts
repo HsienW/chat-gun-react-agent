@@ -39,11 +39,22 @@ type WeatherConfig = {
   geocodingAmbiguityDelta: number;
   geocodingTimeoutMs: number;
   forecastTimeoutMs: number;
+  forceGeocodingError: boolean;
+  forceForecastError: boolean;
 };
 
 function readPositiveNumberEnv(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function isProductionRuntime(): boolean {
+  const values = [process.env.NODE_ENV, process.env.APP_ENV].filter(Boolean);
+  return values.some((value) => /^(production|prod)$/i.test(String(value)));
+}
+
+function readNonProductionBooleanEnv(name: string): boolean {
+  return !isProductionRuntime() && (process.env[name] ?? "").toLowerCase() === "true";
 }
 
 export function getWeatherConfig(): WeatherConfig {
@@ -56,6 +67,8 @@ export function getWeatherConfig(): WeatherConfig {
     geocodingAmbiguityDelta: readPositiveNumberEnv("WEATHER_GEOCODING_AMBIGUITY_DELTA", 8),
     geocodingTimeoutMs: readPositiveNumberEnv("WEATHER_GEOCODING_TIMEOUT_MS", 5_000),
     forecastTimeoutMs: readPositiveNumberEnv("WEATHER_FORECAST_TIMEOUT_MS", 8_000),
+    forceGeocodingError: readNonProductionBooleanEnv("WEATHER_TEST_FORCE_GEOCODING_ERROR"),
+    forceForecastError: readNonProductionBooleanEnv("WEATHER_TEST_FORCE_FORECAST_ERROR"),
   };
 }
 
@@ -353,7 +366,7 @@ function formatLegacyText(result: WeatherToolResult): string {
 }
 
 export const weatherTool = tool(
-  async ({ location, country, region, resolutionStrategy }, config?: RunnableConfig) => {
+  async ({ location, country, region, resolutionStrategy, raw }, config?: RunnableConfig) => {
     const startTime = Date.now();
     const weatherConfig = getWeatherConfig();
     const runSignal = getRunnableSignal(config);
@@ -384,12 +397,38 @@ export const weatherTool = tool(
     }
 
     // Build the query
-    const query = buildLocationQuery(location, country, region);
+    const query = {
+      ...buildLocationQuery(location, country, region),
+      raw: typeof raw === "string" && raw.trim() ? raw : location,
+    };
     await auditLogger.record("weather.location.resolve.start", {
       raw: query.raw,
       location: query.location,
       country: query.country,
     });
+
+    if (weatherConfig.forceGeocodingError) {
+      const result: WeatherToolResult = {
+        schemaVersion: "1.0",
+        tool: "current_weather",
+        status: "error",
+        requestedLocation: query,
+        code: "weather_geocoding_provider_error",
+        retryable: true,
+        message: "Forced geocoding provider error for non-production manual verification.",
+        summary: "Weather geocoding service is temporarily unavailable.",
+      };
+      await recordMetric("weather.location.resolve.failure.count", { count: 1 });
+      await auditLogger.record("weather.location.resolve.failure", {
+        raw: query.raw,
+        code: "weather_geocoding_provider_error",
+        forced: true,
+        durationMs: Date.now() - startTime,
+      });
+      return weatherConfig.structuredResultEnabled
+        ? JSON.stringify(result)
+        : formatLegacyText(result);
+    }
 
     // Resolve location through the geocoding pipeline
     let resolutionResult;
@@ -508,6 +547,29 @@ export const weatherTool = tool(
 
     // Resolved — fetch forecast
     const place = resolutionResult.candidate;
+    if (weatherConfig.forceForecastError) {
+      const result: WeatherToolResult = {
+        schemaVersion: "1.0",
+        tool: "current_weather",
+        status: "error",
+        requestedLocation: query,
+        code: "weather_forecast_provider_error",
+        retryable: true,
+        message: "Forced forecast provider error for non-production manual verification.",
+        summary: "Weather forecast service is temporarily unavailable.",
+      };
+      await recordMetric("weather.provider.forecast.failure.count", { count: 1 });
+      await auditLogger.record("weather.provider.forecast.failure", {
+        raw: query.raw,
+        error: "weather_forecast_provider_error",
+        forced: true,
+        durationMs: Date.now() - startTime,
+      });
+      return weatherConfig.structuredResultEnabled
+        ? JSON.stringify(result)
+        : formatLegacyText(result);
+    }
+
     const forecastUrl = new URL("https://api.open-meteo.com/v1/forecast");
     forecastUrl.searchParams.set("latitude", String(place.latitude));
     forecastUrl.searchParams.set("longitude", String(place.longitude));
@@ -618,6 +680,10 @@ export const weatherTool = tool(
         .enum(["llm_repair"])
         .optional()
         .describe("Internal marker for one-time LLM repair; callers should normally omit this."),
+      raw: z
+        .string()
+        .optional()
+        .describe("Internal original user location text preserved across one-time repair."),
     }),
   }
 );

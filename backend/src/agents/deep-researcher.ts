@@ -16,7 +16,12 @@ import {
   buildImAgentContextPack,
   ImAgentContextPack,
 } from "../platform/im-context-pack.js";
-import { formatLlmError, llmGateway, resolveModel } from "../platform/llm-gateway.js";
+import {
+  describeLlmGatewayConfig,
+  formatLlmError,
+  llmGateway,
+  resolveModel,
+} from "../platform/llm-gateway.js";
 import { recordMetric, recordWeatherAuditEvent } from "../platform/observability.js";
 import { getAgentRuntimeConfig } from "../platform/runtime-config.js";
 import {
@@ -26,6 +31,7 @@ import {
   validateImageAttachments,
 } from "../platform/upload-security.js";
 import { getResearchTopic, messageContentToString } from "../state.js";
+import { validateLocationInput } from "../tools/geocoding/location-normalizer.js";
 import { loadAgentTools } from "../tools/registry.js";
 import { normalizeAiMessageForStream } from "./message-normalization.js";
 import type {
@@ -536,7 +542,11 @@ async function repairWeatherRequest(
     "Return only one JSON object. Do not use markdown.",
     "The weather geocoding service could not find the location below.",
     "Suggest an alternative location name that a geocoding API (Open-Meteo) might recognize.",
+    "You may use a standard local-language name, romanization, or administrative context when the original place is an administrative district or city suffix form.",
+    "Preserve the original raw request; only propose provider-facing location, country, and region fields.",
     "Do not invent coordinates.",
+    "Do not return latitude, longitude, providerId, candidates, URLs, source names, or tool calls.",
+    "Do not invent a place that is not implied by the original request.",
     "Keep country and region hints from the original request if they are correct.",
     'JSON schema: {"location":"string","country":"string optional","region":"string optional"}',
     `Original request: ${JSON.stringify(request)}`,
@@ -550,15 +560,34 @@ async function repairWeatherRequest(
       location: string;
       country?: string;
       region?: string;
-    }>>(messageContentToString(response));
-    if (parsed?.location && typeof parsed.location === "string") {
-      return {
-        raw: request.raw,
-        location: parsed.location,
-        country: typeof parsed.country === "string" ? parsed.country : request.country,
-        region: typeof parsed.region === "string" ? parsed.region : request.region,
-      };
+    }> & Record<string, unknown>>(messageContentToString(response));
+    if (!parsed || typeof parsed.location !== "string") {
+      return undefined;
     }
+
+    const forbiddenFields = ["latitude", "longitude", "providerId", "candidates", "sourceUrl"];
+    if (forbiddenFields.some((field) => field in parsed)) {
+      return undefined;
+    }
+
+    const location = parsed.location.trim();
+    if (validateLocationInput(location, 160)) {
+      return undefined;
+    }
+
+    const country = typeof parsed.country === "string" && parsed.country.trim()
+      ? parsed.country.trim()
+      : request.country;
+    const region = typeof parsed.region === "string" && parsed.region.trim()
+      ? parsed.region.trim()
+      : request.region;
+
+    return {
+      raw: request.raw,
+      location,
+      country,
+      region,
+    };
   } catch {
     return undefined;
   }
@@ -621,6 +650,11 @@ async function planResearch(
     const plan = coercePlan(parsed, question, state);
     return { plan };
   } catch (error) {
+    const llmDiagnostics = describeLlmGatewayConfig();
+    await recordMetric("planner.llm.failure.count", {
+      count: 1,
+      ...llmDiagnostics,
+    });
     const plan = fallbackPlan(question, state, formatLlmError(error));
     return { plan };
   }
@@ -1156,7 +1190,9 @@ function buildTargetedToolAnswer(
 }
 
 export const deepResearcherWeatherTestInternals = {
+  planResearch,
   parseWeatherToolResult,
+  repairWeatherRequest,
   buildWeatherToolAnswer,
   targetedTools,
 };

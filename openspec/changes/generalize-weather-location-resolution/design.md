@@ -33,6 +33,7 @@ buildWeatherToolAnswer
 5. `ambiguous` 被當成 Error，而不是可讓使用者補充資訊的業務狀態。
 6. Tool Governance 的 Timeout 使用 Promise Race，但底層 Provider Request 需要自己的 AbortSignal 才能真正停止。
 7. 專案目前沒有正式 Test Script，無法鎖定多語言與歧義行為。
+8. 實測失敗顯示，使用固定天氣問句詞表、CJK phrase stripping 或固定標點清除來萃取地點，會把自然語言理解退化成刪字猜測，且容易刪掉行政區、同名地點 context 或非中文語言線索。
 
 ---
 
@@ -93,6 +94,32 @@ const CITY_MAP = {
 - Compass Wind Direction。
 
 這些不是城市覆蓋 allowlist。
+
+### 2.5 不以固定自然語言刪字規則抽取地點
+
+不新增以下類型的主要流程：
+
+```ts
+const WEATHER_QUERY_WORDS = ["weather", "天氣", "氣溫", "幾度"];
+const CJK_WEATHER_QUERY_PARTS = ["現在", "今天", "如何", "會下雨嗎"];
+const QUESTION_PUNCTUATION = /[?？。嗎呢]/g;
+
+const guessedLocation = userText
+  .replace(QUESTION_PUNCTUATION, "")
+  .replace(new RegExp(WEATHER_QUERY_WORDS.join("|"), "g"), "")
+  .replace(new RegExp(CJK_WEATHER_QUERY_PARTS.join("|"), "g"), "")
+  .trim();
+```
+
+原因：
+
+- 不同語言與語序無法靠固定詞表穩定覆蓋。
+- CJK 片段可能同時是地名、行政區、路名或上下文的一部分。
+- 固定標點與助詞清除容易產生空字串或語意殘缺字串。
+- 該策略會繞過 Planner schema、Runtime Validation、LLM Repair 與 Provider Resolver 的責任邊界。
+- 測試通常只能覆蓋已知詞表，無法證明全球地點泛化能力。
+
+允許的低風險文字清理僅限於不改變地點語意的 normalization，例如 trim、Unicode NFKC、多空白合併與控制字元移除。任何可能改寫、刪除或猜測地點核心內容的策略，都必須改由 Planner schema/prompt 改善、Runtime Validation、受限制 LLM Repair 或 Provider-driven resolver 承擔。
 
 ---
 
@@ -293,6 +320,8 @@ WEATHER_LOCATION_MAX_CHARS=160
 - 直接翻譯地名。
 - 手動把某城市換成另一個字串。
 - 移除可能影響辨識的行政區名稱。
+- 透過 hard-coded 自然語言 keyword regex、CJK phrase stripping 或固定問題標點刪除來推測地點。
+- 使用 `WEATHER_QUERY_WORDS`、`CJK_WEATHER_QUERY_PARTS`、`QUESTION_PUNCTUATION` 或等價固定詞表作為主要 location extraction。
 - 產生座標。
 
 ### 4.3 Query Variants
@@ -784,7 +813,19 @@ WEATHER_STRUCTURED_RESULT_ENABLED=true
 - 先建立 Provider Adapter 與契約，再評估第二 Provider。
 - 本 Change 的第一目標是解析責任與狀態清楚，不是堆疊更多 API。
 
-### D. 保持文字 Tool Result
+### D. 固定問句詞表與 CJK phrase stripping
+
+不採用。
+
+原因：
+
+- 實測已證明這類策略會把地點抽取變成 hard-coded 刪字猜測。
+- `WEATHER_QUERY_WORDS`、`CJK_WEATHER_QUERY_PARTS`、`QUESTION_PUNCTUATION` 這類詞表需要持續補洞，與本 Change 的泛化目標衝突。
+- CJK phrase stripping 可能刪掉行政區、城市別名或 Provider 需要的查詢線索。
+- 固定 regex 難以正確處理多語言、混合語言、重音字元與自然語序。
+- 該方案會繞過 Planner schema/prompt、Runtime Validation、受限制 LLM Repair 與 Provider-driven resolver。
+
+### E. 保持文字 Tool Result
 
 不採用。
 
@@ -811,6 +852,7 @@ WEATHER_STRUCTURED_RESULT_ENABLED=true
 - Provider error。
 - Structured Result Parser。
 - Frontend unknown schema fallback。
+- 禁止固定自然語言 keyword regex、CJK phrase stripping 或固定問題標點刪除成為主要 location extraction 的規格檢查。
 
 ### Integration Test
 

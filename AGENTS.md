@@ -429,3 +429,28 @@ MCP Tool 必須經過 Allowlist 才能被 Agent 使用。
 * 任何規格與程式碼之間仍存在的差異。
 
 不得在驗證失敗時宣稱變更已完成。
+
+---
+
+## 12. 天氣地點解析修復策略限制
+
+針對天氣地點解析問題，禁止將 hard-coded 自然語言 keyword regex、CJK phrase stripping 或固定標點刪除作為主要地點抽取或修復策略。
+
+明確禁止以類似下列固定詞表或規則刪字後猜測地點：
+
+```text
+WEATHER_QUERY_WORDS
+CJK_WEATHER_QUERY_PARTS
+QUESTION_PUNCTUATION
+```
+
+不得透過「刪除天氣、現在、如何、今天、幾度、會下雨嗎、？、嗎」等固定自然語言片段來推測剩餘文字就是地點。這類策略只能作為非核心、可證明不改變語意的輸入清理輔助，且不得覆蓋使用者原文、不得繞過 Runtime Validation，也不得取代 Planner 或 Provider Resolver。
+
+天氣地點解析修復應優先採用：
+
+* Planner schema 與 prompt 改善，讓模型明確輸出 `location`、`country`、`region`。
+* Runtime Validation，拒絕空值、過長輸入與控制字元。
+* 受限制的 LLM Repair，只能在 `not_found` 後產生新的文字查詢並重新通過 Resolver。
+* Provider-driven resolver，以 Geocoding Provider 候選、context 與可測試評分規則決定 `resolved`、`ambiguous`、`not_found` 或 `provider_error`。
+
+Code Review 時若發現以固定 keyword regex 或 CJK phrase stripping 作為主要修復策略，應至少列為 Major；若會造成錯誤地點、契約破壞或繞過 Provider Resolver，應列為 Blocker。

@@ -128,12 +128,25 @@ Copy-Item .env.example .env
 Gemini 相關設定：
 
 ```env
+LLM_PROVIDER=gemini
 GEMINI_API_KEY=your_gemini_api_key
 DEFAULT_MODEL=gemini-2.5-flash
 CHAT_MODEL=gemini-2.5-flash
 MATH_MODEL=gemini-2.5-flash
 MCP_AGENT_MODEL=gemini-2.5-flash
 ```
+
+如果要讓 backend planner / synthesis 走 CCR，必須設定 backend 的 `.env`，只設定 Codex/CCR 編排層不會自動影響 LangGraph backend：
+
+```env
+LLM_PROVIDER=ccr
+CCR_BASE_URL=http://127.0.0.1:3456/v1
+CCR_API_KEY=
+CCR_PROVIDER=deepseek
+CCR_MODEL=your_ccr_model
+```
+
+`CCR_BASE_URL` 會呼叫 CCR 的 Anthropic-compatible `<base>/messages?beta=true`。`CCR_MODEL` 可使用 `deepseek-v4-flash` 這類模型名；backend 會用 `CCR_PROVIDER` 組成 CCR 需要的 `provider,model` 格式。真正的 OpenAI-compatible endpoint 請使用 `LLM_PROVIDER=openai-compatible` 搭配 `OPENAI_COMPATIBLE_BASE_URL` / `OPENAI_BASE_URL`。
 
 `deep_researcher` 使用原生 `web_search` 時需要：
 
@@ -380,7 +393,17 @@ WEATHER_GEOCODING_MIN_SCORE=35
 WEATHER_GEOCODING_AMBIGUITY_DELTA=8
 WEATHER_GEOCODING_TIMEOUT_MS=5000
 WEATHER_FORECAST_TIMEOUT_MS=8000
+# Dev/test-only; ignored when NODE_ENV or APP_ENV is production.
+WEATHER_TEST_FORCE_GEOCODING_ERROR=false
+WEATHER_TEST_FORCE_FORECAST_ERROR=false
 ```
+
+Manual provider-failure checks for OpenSpec 9.12/9.13 can be run by setting only one dev/test fault switch before restarting the backend:
+
+- `WEATHER_TEST_FORCE_GEOCODING_ERROR=true` must return `status: "error"` with `code: "weather_geocoding_provider_error"`, not `weather_location_not_found`.
+- `WEATHER_TEST_FORCE_FORECAST_ERROR=true` must resolve geocoding first, then return `status: "error"` with `code: "weather_forecast_provider_error"` and a terminal frontend tool panel.
+
+These switches are ignored when `NODE_ENV=production` or `APP_ENV=production`.
 
 Tests use mock geocoding and weather data by default and do not require Open-Meteo network access:
 
@@ -459,6 +482,26 @@ Test-NetConnection generativelanguage.googleapis.com -Port 443
 ```
 
 如果你的網路需要 proxy，請在啟動 `backend` 前設定 `HTTPS_PROXY` / `HTTP_PROXY`。
+
+### Deep Research 回覆「請提供要查詢天氣的城市或地區」
+
+如果 history 裡的 `plan.rationale` 顯示 `Planner unavailable; weather intent detected...`，表示 backend planner LLM 沒有成功執行。天氣地點抽取必須由 planner 輸出 `weather.location`，系統不會用固定 keyword 或標點刪字把完整問句猜成地點。
+
+檢查：
+
+```env
+# Gemini path
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=...
+
+# or CCR path
+LLM_PROVIDER=ccr
+CCR_BASE_URL=http://127.0.0.1:3456/v1
+CCR_PROVIDER=deepseek
+CCR_MODEL=...
+```
+
+調整 `.env` 後需要重啟 backend。
 
 ## 更多文件
 

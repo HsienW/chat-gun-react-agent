@@ -72,6 +72,23 @@ describe("buildLocationQuery", () => {
     // normalizeLocation does not lowercase country codes
     expect(query.country).toBe("TW");
   });
+  it("should preserve generic weather-query text in provider-facing location", () => {
+    const query = buildLocationQuery("\u53f0\u5317\u73fe\u5728 \u5982\u4f55");
+    expect(query.raw).toBe("\u53f0\u5317\u73fe\u5728 \u5982\u4f55");
+    expect(query.location).toBe("\u53f0\u5317\u73fe\u5728 \u5982\u4f55");
+  });
+
+  it("should not strip a full Chinese weather question into a guessed city", () => {
+    const query = buildLocationQuery("\u53f0\u5317\u73fe\u5728\u5929\u6c23\u5982\u4f55\uFF1F");
+    expect(query.raw).toBe("\u53f0\u5317\u73fe\u5728\u5929\u6c23\u5982\u4f55\uFF1F");
+    expect(query.location).toBe("\u53f0\u5317\u73fe\u5728\u5929\u6c23\u5982\u4f55?");
+    expect(query.location).not.toBe("\u53f0\u5317");
+  });
+
+  it("should preserve English weather residue for planner or repair handling", () => {
+    const query = buildLocationQuery("Tokyo weather now");
+    expect(query.location).toBe("Tokyo weather now");
+  });
 });
 
 describe("buildQueryVariants (Task 2.5, 2.6)", () => {
@@ -163,6 +180,15 @@ describe("scoreCandidate", () => {
 
 describe("resolveLocation", () => {
   const mockProvider = new MockGeocodingProvider();
+
+  function providerFor(candidates: LocationCandidate[]): GeocodingProvider {
+    return {
+      name: "live-derived-mock",
+      async search() {
+        return candidates;
+      },
+    };
+  }
 
   it("should resolve a well-known city (Task 3.7: resolved)", async () => {
     const query: LocationQuery = { raw: "Tokyo", location: "Tokyo" };
@@ -369,6 +395,275 @@ describe("resolveLocation", () => {
     if (result.status === "resolved") {
       expect(result.candidate.admin1).toBe("Missouri");
     }
+  });
+
+  it("resolves Tokyo Japan from live-derived homonyms by provider prominence", async () => {
+    const result = await resolveLocation(
+      { raw: "Tokyo", location: "Tokyo" },
+      providerFor([
+        {
+          provider: "open-meteo",
+          name: "Tokyo",
+          displayName: "Tokyo, Japan",
+          country: "Japan",
+          countryCode: "JP",
+          admin1: "Tokyo",
+          latitude: 35.676,
+          longitude: 139.65,
+          timezone: "Asia/Tokyo",
+          population: 14_000_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "Tokyo",
+          displayName: "Tokyo, Papua New Guinea",
+          country: "Papua New Guinea",
+          countryCode: "PG",
+          latitude: -6.2,
+          longitude: 146.6,
+          population: 20_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "Tokyo",
+          displayName: "Tokyo, Nepal",
+          country: "Nepal",
+          countryCode: "NP",
+          latitude: 28.2,
+          longitude: 84.0,
+          population: 5_000,
+        },
+      ])
+    );
+
+    expect(result.status).toBe("resolved");
+    if (result.status === "resolved") {
+      expect(result.candidate.countryCode).toBe("JP");
+    }
+  });
+
+  it("resolves Sao Paulo Brazil from live-derived homonyms by provider prominence", async () => {
+    const result = await resolveLocation(
+      { raw: "São Paulo", location: "São Paulo" },
+      providerFor([
+        {
+          provider: "open-meteo",
+          name: "São Paulo",
+          displayName: "São Paulo, Brazil",
+          country: "Brazil",
+          countryCode: "BR",
+          admin1: "São Paulo",
+          latitude: -23.55,
+          longitude: -46.633,
+          timezone: "America/Sao_Paulo",
+          population: 12_000_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "São Paulo",
+          displayName: "São Paulo, Portugal",
+          country: "Portugal",
+          countryCode: "PT",
+          latitude: 38.7,
+          longitude: -9.1,
+          population: 12_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "São Paulo",
+          displayName: "São Paulo, São Tomé and Príncipe",
+          country: "São Tomé and Príncipe",
+          countryCode: "ST",
+          latitude: 0.3,
+          longitude: 6.7,
+          population: 7_000,
+        },
+      ])
+    );
+
+    expect(result.status).toBe("resolved");
+    if (result.status === "resolved") {
+      expect(result.candidate.countryCode).toBe("BR");
+    }
+  });
+
+  it("resolves Munchen Bavaria Germany from live-derived homonyms by provider prominence", async () => {
+    const result = await resolveLocation(
+      { raw: "München", location: "München" },
+      providerFor([
+        {
+          provider: "open-meteo",
+          name: "München",
+          displayName: "München, Bavaria, Germany",
+          country: "Germany",
+          countryCode: "DE",
+          admin1: "Bavaria",
+          latitude: 48.137,
+          longitude: 11.575,
+          timezone: "Europe/Berlin",
+          population: 1_500_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "München",
+          displayName: "München, Brandenburg, Germany",
+          country: "Germany",
+          countryCode: "DE",
+          admin1: "Brandenburg",
+          latitude: 52.1,
+          longitude: 13.4,
+          population: 3_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "München",
+          displayName: "München, Switzerland",
+          country: "Switzerland",
+          countryCode: "CH",
+          latitude: 47.3,
+          longitude: 8.3,
+          population: 1_500,
+        },
+        {
+          provider: "open-meteo",
+          name: "München",
+          displayName: "München, Austria",
+          country: "Austria",
+          countryCode: "AT",
+          latitude: 48.0,
+          longitude: 14.0,
+          population: 1_000,
+        },
+      ])
+    );
+
+    expect(result.status).toBe("resolved");
+    if (result.status === "resolved") {
+      expect(result.candidate.countryCode).toBe("DE");
+      expect(result.candidate.admin1).toBe("Bavaria");
+    }
+  });
+
+  it("resolves Singapore city-state while deduplicating duplicate city candidates and not choosing airport", async () => {
+    const result = await resolveLocation(
+      { raw: "Singapore", location: "Singapore" },
+      providerFor([
+        {
+          provider: "open-meteo",
+          name: "Singapore",
+          displayName: "Singapore, Singapore",
+          country: "Singapore",
+          countryCode: "SG",
+          latitude: 1.352,
+          longitude: 103.82,
+          timezone: "Asia/Singapore",
+          population: 5_600_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "Singapore",
+          displayName: "Singapore, Singapore",
+          country: "Singapore",
+          countryCode: "SG",
+          latitude: 1.3521,
+          longitude: 103.8201,
+          timezone: "Asia/Singapore",
+          population: 5_600_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "Singapore Changi Airport",
+          displayName: "Singapore Changi Airport, Singapore",
+          country: "Singapore",
+          countryCode: "SG",
+          latitude: 1.364,
+          longitude: 103.991,
+          timezone: "Asia/Singapore",
+        },
+      ])
+    );
+
+    expect(result.status).toBe("resolved");
+    if (result.status === "resolved") {
+      expect(result.candidate.name).toBe("Singapore");
+      expect(result.candidate.displayName).toBe("Singapore, Singapore");
+    }
+  });
+
+  it("keeps Springfield ambiguous across multiple US states", async () => {
+    const result = await resolveLocation(
+      { raw: "Springfield", location: "Springfield" },
+      providerFor([
+        {
+          provider: "open-meteo",
+          name: "Springfield",
+          displayName: "Springfield, Illinois, United States",
+          country: "United States",
+          countryCode: "US",
+          admin1: "Illinois",
+          latitude: 39.781,
+          longitude: -89.65,
+          population: 114_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "Springfield",
+          displayName: "Springfield, Missouri, United States",
+          country: "United States",
+          countryCode: "US",
+          admin1: "Missouri",
+          latitude: 37.215,
+          longitude: -93.298,
+          population: 168_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "Springfield",
+          displayName: "Springfield, Massachusetts, United States",
+          country: "United States",
+          countryCode: "US",
+          admin1: "Massachusetts",
+          latitude: 42.101,
+          longitude: -72.59,
+          population: 155_000,
+        },
+      ])
+    );
+
+    expect(result.status).toBe("ambiguous");
+  });
+
+  it("keeps short CJK Zhongshan ambiguous without country or region context", async () => {
+    const result = await resolveLocation(
+      { raw: "\u4e2d\u5c71", location: "\u4e2d\u5c71" },
+      providerFor([
+        {
+          provider: "open-meteo",
+          name: "\u4e2d\u5c71",
+          displayName: "\u4e2d\u5c71, Guangdong, China",
+          country: "China",
+          countryCode: "CN",
+          admin1: "Guangdong",
+          latitude: 22.521,
+          longitude: 113.378,
+          population: 4_400_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "\u4e2d\u5c71",
+          displayName: "\u4e2d\u5c71, Taipei, Taiwan",
+          country: "Taiwan",
+          countryCode: "TW",
+          admin1: "Taipei City",
+          admin2: "Zhongshan District",
+          latitude: 25.064,
+          longitude: 121.533,
+          population: 220_000,
+        },
+      ])
+    );
+
+    expect(result.status).toBe("ambiguous");
   });
 });
 

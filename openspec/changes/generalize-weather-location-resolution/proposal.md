@@ -12,6 +12,7 @@
 - Tool 主要回傳標籤文字，Deep Research 再透過字串查找解析欄位。
 - `not_found`、`ambiguous`、`provider_error` 與 `timeout` 的語意尚未形成一致的跨層契約。
 - 如果以人工城市表或固定地區 mapping 補洞，會持續增加維護成本，且無法覆蓋全球地點。
+- 目前實測已證明，以固定自然語言 keyword regex、CJK phrase stripping 或固定標點刪除來「刪掉問題詞後猜剩餘文字是地點」會破壞多語言、行政區與自然語序，不能作為主要修復策略。
 
 本 Change 將天氣地點處理改造成「Provider 驅動、結構化、可版本化、可要求澄清」的解析流程，而不是持續擴充人工地名映射。
 
@@ -23,16 +24,17 @@
 2. 系統不得以固定城市 allowlist 或人工城市 mapping 作為主要地點解析方式。
 3. 地點解析以 Geocoding Provider 回傳資料作為最終地理事實來源。
 4. Planner LLM 只負責意圖與實體抽取，不得直接決定座標或在歧義時自行選擇城市。
-5. 地點解析必須區分：
+5. 系統不得以 hard-coded 自然語言 keyword regex、CJK phrase stripping 或固定標點刪除作為主要地點抽取修復策略。
+6. 地點解析必須區分：
    - `resolved`
    - `ambiguous`
    - `not_found`
    - `provider_error`
-6. `current_weather` 必須回傳具備版本號的結構化結果，不再要求下游以標籤文字解析。
-7. Deep Research 遇到歧義地點時，必須要求使用者補充國家或行政區，並提供候選。
-8. 前端必須正確顯示成功、需補充地點、失敗與逾時狀態。
-9. 地點解析與天氣 Provider 呼叫必須具備 timeout、受限制的 retry、audit 與 metric。
-10. 保持既有 `deep_researcher` Graph ID、BFF Route 與一般聊天訊息格式相容。
+7. `current_weather` 必須回傳具備版本號的結構化結果，不再要求下游以標籤文字解析。
+8. Deep Research 遇到歧義地點時，必須要求使用者補充國家或行政區，並提供候選。
+9. 前端必須正確顯示成功、需補充地點、失敗與逾時狀態。
+10. 地點解析與天氣 Provider 呼叫必須具備 timeout、受限制的 retry、audit 與 metric。
+11. 保持既有 `deep_researcher` Graph ID、BFF Route 與一般聊天訊息格式相容。
 
 ---
 
@@ -49,6 +51,8 @@
 - 全面重構所有 Tool 的輸出格式。
 - 全面重構 BFF Stream Protocol。
 - 以人工維護所有城市別名、行政區別名或國家名稱。
+- 以 `WEATHER_QUERY_WORDS`、`CJK_WEATHER_QUERY_PARTS`、`QUESTION_PUNCTUATION` 這類固定詞表或 regex 刪除自然語言片段後猜測地點。
+- 以 CJK phrase stripping 作為 Planner 或 Provider Resolver 的替代品。
 - 修改既有 Graph ID。
 - 修改公開 `/api/langgraph/*` Route。
 
@@ -145,6 +149,7 @@ Frontend Presentation
 6. 所有結果使用結構化狀態，不使用錯誤字串 Regex 作為主要分流依據。
 7. Provider Adapter 先支援 Open-Meteo，但保留替換能力。
 8. 優先最小修改，不擴大為所有 Tool 的平台級重構。
+9. 不以 hard-coded weather keyword、CJK query phrase 或 question punctuation 的固定刪除規則作為主要地點抽取策略；地點抽取應由 Planner schema/prompt、Runtime Validation、受限制 LLM Repair 或 Provider-driven Resolver 承擔。
 
 ---
 
@@ -225,6 +230,7 @@ WEATHER_STRUCTURED_RESULT_ENABLED=true
 4. Provider 網路錯誤會回傳 `provider_error`，不會誤判為地點不存在。
 5. Deep Research 不再以 Weather Tool 的人類可讀標籤文字作為主要資料解析方式。
 6. 前端不會在 ambiguous、timeout 或 provider error 後永久顯示 Tool 執行中。
-7. Backend、BFF、Frontend Build 全部通過。
-8. 新增的 Backend 與 Frontend Test 全部通過。
-9. `openspec validate generalize-weather-location-resolution` 通過。
+7. Codebase 不包含以 `WEATHER_QUERY_WORDS`、`CJK_WEATHER_QUERY_PARTS`、`QUESTION_PUNCTUATION` 或等價固定自然語言詞表作為主要地點抽取修復策略的新增實作。
+8. Backend、BFF、Frontend Build 全部通過。
+9. 新增的 Backend 與 Frontend Test 全部通過。
+10. `openspec validate generalize-weather-location-resolution` 通過。

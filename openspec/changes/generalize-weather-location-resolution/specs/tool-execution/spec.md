@@ -4,7 +4,7 @@
 
 ### Requirement: 天氣地點解析不得依賴固定地區清單
 
-`current_weather` Tool MUST 接受通用自然語言地點輸入，且 MUST NOT 以固定城市 allowlist 或人工城市 mapping 作為主要解析方式。
+`current_weather` Tool MUST 接受通用自然語言地點輸入，且 MUST NOT 以固定城市 allowlist、人工城市 mapping、hard-coded 自然語言 keyword regex、CJK phrase stripping 或固定問題標點刪除作為主要解析方式。
 
 #### Scenario: 查詢未預先配置的城市
 
@@ -20,6 +20,22 @@
 - THEN 系統 MUST 保留原始地點文字
 - AND 系統 MUST 透過正規化與 Provider 查詢變體嘗試解析
 - AND 系統 MUST NOT 要求該地點必須先存在於人工繁中對照表
+
+#### Scenario: 查詢包含自然語言問句詞
+
+- GIVEN 使用者輸入包含天氣、現在、今天、幾度、會下雨嗎、嗎、？或其他自然語言問句片段
+- WHEN `current_weather` 或其上游 Runtime 需要取得地點
+- THEN 系統 MUST 使用 Planner schema/prompt、Runtime Validation、受限制 LLM Repair 或 Provider-driven Resolver
+- AND 系統 MUST NOT 以 `WEATHER_QUERY_WORDS`、`CJK_WEATHER_QUERY_PARTS`、`QUESTION_PUNCTUATION` 或等價固定詞表刪字後將剩餘文字視為地點
+- AND 系統 MUST NOT 讓該刪字結果覆蓋 `raw`
+
+#### Scenario: CJK 片段可能是地點上下文
+
+- GIVEN 使用者輸入包含市、區、縣、州、省、台、臺、中山、新城或其他可能同時是地名與自然語言片段的 CJK 文字
+- WHEN 系統執行正規化或查詢變體建立
+- THEN 系統 MUST 保留可能影響 Geocoding 的地點上下文
+- AND MUST NOT 以 CJK phrase stripping 作為主要 location extraction
+- AND 若地點不明確，系統 MUST 回傳 `ambiguous` 或要求補充，而不是刪字猜測
 
 #### Scenario: 地點使用重音字元
 
@@ -48,6 +64,13 @@
 - WHEN 系統正規化地點
 - THEN 系統 MUST 保留可能影響 Geocoding 的行政區資訊
 - AND 系統 MUST NOT 無條件移除行政區後綴
+
+#### Scenario: 固定問句詞表清理會改變語意
+
+- GIVEN 一個候選實作使用固定 regex 或固定詞表刪除自然語言片段來產生 location
+- WHEN 該清理可能移除行政區、地名別名、語言上下文或產生空字串
+- THEN 該實作 MUST NOT 被視為合格的主要地點解析策略
+- AND 必須改用 Planner schema/prompt、Runtime Validation、受限制 LLM Repair 或 Provider-driven Resolver
 
 ---
 

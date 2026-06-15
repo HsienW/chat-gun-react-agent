@@ -140,20 +140,20 @@
 
 ## 9. Manual acceptance matrix
 
-- [ ] 9.1 `台北現在天氣如何？` 可解析。
-- [ ] 9.2 `臺北現在天氣如何？` 可解析。
+- [x] 9.1 `台北現在天氣如何？` 可解析。
+- [x] 9.2 `臺北現在天氣如何？` 可解析。
 - [ ] 9.3 `高雄鳳山今天會下雨嗎？` 可解析或要求合理補充。
 - [ ] 9.4 `北京市現在幾度？` 可解析。
-- [ ] 9.5 `新加坡現在的濕度？` 可解析。
-- [ ] 9.6 `Tokyo weather now` 可解析。
-- [ ] 9.7 `São Paulo weather` 可解析。
+- [x] 9.5 `新加坡現在的濕度？` 可解析。
+- [x] 9.6 `Tokyo weather now` 可解析。
+- [x] 9.7 `São Paulo weather` 可解析。
 - [ ] 9.8 `München weather` 可解析。
-- [ ] 9.9 `Springfield weather` 回傳歧義候選，不自動選擇。
-- [ ] 9.10 `中山現在天氣如何？` 在缺少 context 時要求補充。
-- [ ] 9.11 不存在的地點回傳 `not_found`，不捏造座標。
+- [x] 9.9 `Springfield weather` 回傳歧義候選，不自動選擇。
+- [x] 9.10 `中山現在天氣如何？` 在缺少 context 時要求補充。
+- [x] 9.11 不存在的地點回傳 `not_found`，不捏造座標。
 - [ ] 9.12 Geocoding Provider 失敗回傳 Provider Error，不誤判為 `not_found`。
 - [ ] 9.13 Forecast Provider 失敗不會讓 Tool 永久顯示執行中。
-- [ ] 9.14 使用者取消後，Frontend 停止 Loading。
+- [x] 9.14 使用者取消後，Frontend 停止 Loading。
 - [ ] 9.15 所有顯示內容不包含 Stack Trace、API Key 或 Proxy Credential。
 
 ## 10. Archive
@@ -162,3 +162,12 @@
 - [ ] 10.2 確認全部必要 Task 已完成且有證據。
 - [ ] 10.3 執行 `/opsx:archive generalize-weather-location-resolution`。
 - [ ] 10.4 確認 Delta Specs 已合併至 `openspec/specs/`。
+
+## 11. 實測失敗後的策略修正
+
+- [x] 11.1 更新 Proposal，明確禁止 hard-coded 自然語言 keyword regex、CJK phrase stripping 與固定問題標點刪除作為主要地點抽取修復策略。
+- [x] 11.2 更新 Design，記錄 `WEATHER_QUERY_WORDS`、`CJK_WEATHER_QUERY_PARTS`、`QUESTION_PUNCTUATION` 類方案不採用，並要求改用 Planner schema/prompt、Runtime Validation、受限制 LLM Repair 或 Provider-driven Resolver。
+- [x] 11.3 更新 Delta Specs，新增禁止固定詞表刪字猜地點的 Requirement/Scenario。
+- [x] 11.4 更新專案規則 `AGENTS.md` 與 `CLAUDE.md`，讓後續實作與 Review 將此類方案視為 Major 或 Blocker。
+- [x] 11.5 後續 source code 修正時，移除或降級任何以 `WEATHER_QUERY_WORDS`、`CJK_WEATHER_QUERY_PARTS`、`QUESTION_PUNCTUATION` 或等價固定詞表作為主要地點抽取流程的實作。
+- [x] 11.6 後續驗證時，新增或調整測試以證明地點抽取不依賴固定自然語言刪字詞表，且 `台北現在天氣如何？`、`高雄鳳山今天會下雨嗎？`、`Springfield weather` 等案例走 Planner/Resolver 契約。

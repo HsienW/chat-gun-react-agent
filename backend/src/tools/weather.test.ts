@@ -207,6 +207,8 @@ describe("Weather env config", () => {
       geocodingAmbiguityDelta: 3,
       geocodingTimeoutMs: 1234,
       forecastTimeoutMs: 2345,
+      forceGeocodingError: false,
+      forceForecastError: false,
     });
   });
 

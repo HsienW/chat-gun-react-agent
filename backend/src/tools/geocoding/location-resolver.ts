@@ -60,11 +60,13 @@ export async function resolveLocation(
       });
 
       for (const candidate of results) {
-        const key = dedupKey(candidate);
-        if (seenKeys.has(key)) {
+        const keys = dedupKeys(candidate);
+        if (keys.some((key) => seenKeys.has(key))) {
           continue;
         }
-        seenKeys.add(key);
+        for (const key of keys) {
+          seenKeys.add(key);
+        }
         allCandidates.push({
           candidate,
           queryText: variant.text,
@@ -167,7 +169,8 @@ function scoreAndResolve(
   if (
     !hasContext &&
     second &&
-    best.score - second.score < options.ambiguityDelta
+    best.score - second.score < options.ambiguityDelta &&
+    !hasDominantProminence(query, best.candidate, second.candidate)
   ) {
     // Check if the top candidates are in different countries (indicating ambiguity)
     const differentCountries = scored
@@ -200,11 +203,14 @@ function scoreAndResolve(
  * Generate a dedup key for a candidate — Task 3.4
  * Uses provider + rounded coordinates + normalized name.
  */
-function dedupKey(candidate: LocationCandidate): string {
+function dedupKeys(candidate: LocationCandidate): string[] {
   const lat = Math.round(candidate.latitude * 100) / 100;
   const lng = Math.round(candidate.longitude * 100) / 100;
-  const name = candidate.name.normalize("NFKC").toLowerCase().trim();
-  return `${candidate.provider}:${lat}:${lng}:${name}`;
+  const displayName = normalizeComparable(candidate.displayName);
+  return [
+    `${candidate.provider}:coords:${lat}:${lng}`,
+    `${candidate.provider}:display:${displayName}`,
+  ];
 }
 
 /**
@@ -223,11 +229,11 @@ export function scoreCandidate(
   candidate: LocationCandidate,
   query: LocationQuery
 ): number {
-  const normalizedLocation = query.location.normalize("NFKC").toLowerCase().trim();
+  const normalizedLocation = normalizeComparable(query.location);
   let score = 0;
 
   // Name matching
-  const candidateName = candidate.name.normalize("NFKC").toLowerCase().trim();
+  const candidateName = normalizeComparable(candidate.name);
   if (candidateName === normalizedLocation) {
     score += 40;
   } else if (candidateName.includes(normalizedLocation) || normalizedLocation.includes(candidateName)) {
@@ -250,6 +256,47 @@ export function scoreCandidate(
   }
 
   return score;
+}
+
+function normalizeComparable(value: string): string {
+  return value.normalize("NFKC").toLowerCase().trim();
+}
+
+function isExactNameMatch(candidate: LocationCandidate, query: LocationQuery): boolean {
+  return normalizeComparable(candidate.name) === normalizeComparable(query.location);
+}
+
+function isShortCjkQuery(value: string): boolean {
+  const normalized = value.normalize("NFKC").trim();
+  return normalized.length <= 2 && /^[\p{Script=Han}]+$/u.test(normalized);
+}
+
+function hasDominantProminence(
+  query: LocationQuery,
+  best: LocationCandidate,
+  second: LocationCandidate
+): boolean {
+  if (!isExactNameMatch(best, query)) {
+    return false;
+  }
+
+  if (isShortCjkQuery(query.location) && isExactNameMatch(second, query)) {
+    return false;
+  }
+
+  const bestPopulation = best.population ?? 0;
+  const secondPopulation = second.population ?? 0;
+  if (bestPopulation < 500_000) {
+    return false;
+  }
+
+  if (secondPopulation <= 0) {
+    return bestPopulation >= 1_000_000;
+  }
+
+  const ratio = bestPopulation / secondPopulation;
+  const difference = bestPopulation - secondPopulation;
+  return ratio >= 8 || (ratio >= 4 && difference >= 1_000_000);
 }
 
 /**

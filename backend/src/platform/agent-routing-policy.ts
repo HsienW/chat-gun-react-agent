@@ -82,14 +82,6 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function normalizeLocationCandidate(question: string, weatherKeywords: string[]): string {
-  const withoutKeywords = stripConfiguredKeywords(question, weatherKeywords);
-  return withoutKeywords
-    .replace(/[?\uFF1F!\uFF01\u3002,.\uFF0C\u3001]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function normalizeCalculationExpression(question: string, calculationKeywords: string[]): string {
   const withoutKeywords = stripConfiguredKeywords(question, calculationKeywords);
   return withoutKeywords
@@ -111,20 +103,9 @@ export function createPlannerFailureRoutingDecision(
     : "";
 
   if (includesAnyKeyword(question, keywords.weather)) {
-    const location = normalizeLocationCandidate(question, keywords.weather);
-    if (location) {
-      return {
-        answerMode: "weather",
-        rationale: `Planner unavailable; routing by configured weather intent policy.${rationaleSuffix}`,
-        queries: [],
-        weather: { location },
-        requiredSourceCount: 1,
-      };
-    }
-
     return {
       answerMode: "clarify",
-      rationale: `Planner unavailable; weather intent detected but no location was found.${rationaleSuffix}`,
+      rationale: `Planner unavailable; weather intent detected but location extraction requires planner or user clarification.${rationaleSuffix}`,
       queries: [],
       clarification:
         "\u8acb\u63d0\u4f9b\u8981\u67e5\u8a62\u5929\u6c23\u7684\u57ce\u5e02\u6216\u5730\u5340\u3002",

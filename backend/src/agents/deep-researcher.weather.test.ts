@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deepResearcherWeatherTestInternals } from "./deep-researcher.js";
+import { llmGateway } from "../platform/llm-gateway.js";
 import type { WeatherToolResult } from "../tools/weather-types.js";
 
 type WeatherState = Parameters<
@@ -18,7 +20,153 @@ function stateWithWeather(result: WeatherToolResult): WeatherState {
   } as WeatherState;
 }
 
+function jsonResponse(body: unknown, init?: ResponseInit): Response {
+  return new Response(JSON.stringify(body), {
+    status: init?.status ?? 200,
+    statusText: init?.statusText,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function installTaipeiWeatherFetchMock(): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+      );
+
+      if (url.hostname === "geocoding-api.open-meteo.com") {
+        const name = url.searchParams.get("name");
+        return jsonResponse({
+          results:
+            name === "\u53f0\u5317"
+              ? [
+                  {
+                    name: "\u53f0\u5317",
+                    latitude: 25.033,
+                    longitude: 121.565,
+                    country: "Taiwan",
+                    country_code: "TW",
+                    admin1: "Taipei City",
+                    timezone: "Asia/Taipei",
+                    population: 7_000_000,
+                  },
+                ]
+              : [],
+        });
+      }
+
+      if (url.hostname === "api.open-meteo.com") {
+        return jsonResponse({
+          latitude: 25.033,
+          longitude: 121.565,
+          timezone: "Asia/Taipei",
+          current: {
+            time: "2026-06-14T12:00",
+            temperature_2m: 24,
+            relative_humidity_2m: 70,
+            weather_code: 1,
+            wind_speed_10m: 8,
+            wind_direction_10m: 90,
+          },
+          current_units: {
+            temperature_2m: "\u00b0C",
+            relative_humidity_2m: "%",
+            wind_speed_10m: "km/h",
+            wind_direction_10m: "\u00b0",
+          },
+        });
+      }
+
+      throw new Error(`Unexpected network call: ${url.toString()}`);
+    })
+  );
+}
+
+function installRepairWeatherFetchMock(): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+      );
+
+      if (url.hostname === "geocoding-api.open-meteo.com") {
+        const name = url.searchParams.get("name");
+        const results =
+          name === "Beijing"
+            ? [
+                {
+                  name: "Beijing",
+                  latitude: 39.904,
+                  longitude: 116.407,
+                  country: "China",
+                  country_code: "CN",
+                  admin1: "Beijing",
+                  timezone: "Asia/Shanghai",
+                  population: 21_000_000,
+                },
+              ]
+            : name === "Fengshan"
+              ? [
+                  {
+                    name: "Fengshan",
+                    latitude: 22.624,
+                    longitude: 120.355,
+                    country: "Taiwan",
+                    country_code: "TW",
+                    admin1: "Kaohsiung City",
+                    admin2: "Fengshan District",
+                    timezone: "Asia/Taipei",
+                    population: 350_000,
+                  },
+                ]
+              : [];
+        return jsonResponse({ results });
+      }
+
+      if (url.hostname === "api.open-meteo.com") {
+        return jsonResponse({
+          latitude: Number(url.searchParams.get("latitude")),
+          longitude: Number(url.searchParams.get("longitude")),
+          timezone: "UTC",
+          current: {
+            time: "2026-06-14T12:00",
+            temperature_2m: 24,
+            relative_humidity_2m: 70,
+            weather_code: 1,
+            wind_speed_10m: 8,
+            wind_direction_10m: 90,
+          },
+          current_units: {
+            temperature_2m: "\u00b0C",
+            relative_humidity_2m: "%",
+            wind_speed_10m: "km/h",
+            wind_direction_10m: "\u00b0",
+          },
+        });
+      }
+
+      throw new Error(`Unexpected network call: ${url.toString()}`);
+    })
+  );
+}
+
 describe("Deep Research weather structured result integration", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it("builds a final weather answer from structured success state", () => {
     const result: WeatherToolResult = {
       schemaVersion: "1.0",
@@ -134,5 +282,196 @@ describe("Deep Research weather structured result integration", () => {
       expect(weatherResult.code).toBe("weather_cancelled");
       expect(weatherResult.retryable).toBe(false);
     }
+  });
+
+  it("plans a full Taipei weather question into a location request before invoking current_weather", async () => {
+    installTaipeiWeatherFetchMock();
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(
+          JSON.stringify({
+            question: "\u53f0\u5317\u73fe\u5728\u5929\u6c23\u5982\u4f55\uFF1F",
+            answerMode: "weather",
+            rationale: "Weather intent with user-provided location.",
+            queries: [],
+            urls: [],
+            weather: {
+              location: "\u53f0\u5317",
+            },
+            requiredSourceCount: 1,
+          })
+        )
+      ),
+    });
+
+    const state = ({
+      messages: [
+        new HumanMessage("\u53f0\u5317\u73fe\u5728\u5929\u6c23\u5982\u4f55\uFF1F"),
+      ],
+      imageObservations: [],
+      initial_search_query_count: 3,
+      max_research_loops: 5,
+      reasoning_model: "gemini-2.5-flash",
+    } as unknown) as Parameters<typeof deepResearcherWeatherTestInternals.planResearch>[0];
+
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+
+    expect(planned.plan?.answerMode).toBe("weather");
+    expect(planned.plan?.weather?.location).toBe("\u53f0\u5317");
+
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+
+    expect(toolResult.weatherExecution?.status).toBe("success");
+    const weatherResult =
+      toolResult.weatherExecution?.status === "success"
+        ? toolResult.weatherExecution.result
+        : undefined;
+    expect(weatherResult?.status).toBe("success");
+    if (weatherResult?.status === "success") {
+      expect(weatherResult.requestedLocation.raw).toBe("\u53f0\u5317");
+      expect(weatherResult.resolvedLocation.name).toBe("\u53f0\u5317");
+      expect(weatherResult.current.temperature).toBe(24);
+    }
+  });
+
+  it("repairs Beijing city suffix after not_found while preserving the original raw request", async () => {
+    installRepairWeatherFetchMock();
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi
+        .fn()
+        .mockResolvedValueOnce(
+          new AIMessage(
+            JSON.stringify({
+              question: "\u5317\u4eac\u5e02\u73fe\u5728\u5e7e\u5ea6\uFF1F",
+              answerMode: "weather",
+              rationale: "Weather request for Beijing.",
+              queries: [],
+              urls: [],
+              weather: {
+                location: "\u5317\u4eac\u5e02",
+              },
+              requiredSourceCount: 1,
+            })
+          )
+        )
+        .mockResolvedValueOnce(
+          new AIMessage(
+            JSON.stringify({
+              location: "Beijing",
+              country: "China",
+            })
+          )
+        ),
+    });
+
+    const state = ({
+      messages: [new HumanMessage("\u5317\u4eac\u5e02\u73fe\u5728\u5e7e\u5ea6\uFF1F")],
+      imageObservations: [],
+      initial_search_query_count: 3,
+      max_research_loops: 5,
+      reasoning_model: "gemini-2.5-flash",
+    } as unknown) as Parameters<typeof deepResearcherWeatherTestInternals.planResearch>[0];
+
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+    expect(planned.plan?.weather?.location).toBe("\u5317\u4eac\u5e02");
+
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+
+    expect(toolResult.weatherExecution?.status).toBe("success");
+    const weatherResult =
+      toolResult.weatherExecution?.status === "success"
+        ? toolResult.weatherExecution.result
+        : undefined;
+    expect(weatherResult?.status).toBe("success");
+    if (weatherResult?.status === "success") {
+      expect(weatherResult.requestedLocation.raw).toBe("\u5317\u4eac\u5e02");
+      expect(weatherResult.requestedLocation.location).toBe("Beijing");
+      expect(weatherResult.requestedLocation.country).toBe("China");
+      expect(weatherResult.resolvedLocation.name).toBe("Beijing");
+    }
+  });
+
+  it("repairs Kaohsiung Fengshan not_found into structured provider-friendly context and reruns resolver", async () => {
+    installRepairWeatherFetchMock();
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(
+          JSON.stringify({
+            location: "Fengshan",
+            country: "Taiwan",
+            region: "Kaohsiung",
+          })
+        )
+      ),
+    });
+
+    const state = ({
+      plan: {
+        question: "\u9ad8\u96c4\u9cf3\u5c71\u4eca\u5929\u6703\u4e0b\u96e8\u55ce\uFF1F",
+        answerMode: "weather",
+        rationale: "Weather request for Fengshan in Kaohsiung.",
+        queries: [],
+        urls: [],
+        weather: { location: "\u9ad8\u96c4\u9cf3\u5c71" },
+        requiredSourceCount: 1,
+      },
+      messages: [new HumanMessage("\u9ad8\u96c4\u9cf3\u5c71\u4eca\u5929\u6703\u4e0b\u96e8\u55ce\uFF1F")],
+      imageObservations: [],
+      initial_search_query_count: 3,
+      max_research_loops: 5,
+      reasoning_model: "gemini-2.5-flash",
+    } as unknown) as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0];
+
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(state, {});
+
+    expect(toolResult.weatherExecution?.status).toBe("success");
+    const weatherResult =
+      toolResult.weatherExecution?.status === "success"
+        ? toolResult.weatherExecution.result
+        : undefined;
+    expect(weatherResult?.status).toBe("success");
+    if (weatherResult?.status === "success") {
+      expect(weatherResult.requestedLocation.raw).toBe("\u9ad8\u96c4\u9cf3\u5c71");
+      expect(weatherResult.requestedLocation.location).toBe("Fengshan");
+      expect(weatherResult.requestedLocation.country).toBe("Taiwan");
+      expect(weatherResult.requestedLocation.region).toBe("Kaohsiung");
+      expect(weatherResult.resolvedLocation.admin2).toBe("Fengshan District");
+    }
+  });
+
+  it("rejects LLM repair output that includes coordinates instead of a provider-facing query", async () => {
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(
+          JSON.stringify({
+            location: "Beijing",
+            country: "China",
+            latitude: 39.904,
+            longitude: 116.407,
+          })
+        )
+      ),
+    });
+
+    const repaired = await deepResearcherWeatherTestInternals.repairWeatherRequest(
+      { raw: "\u5317\u4eac\u5e02", location: "\u5317\u4eac\u5e02" },
+      ({ reasoning_model: "gemini-2.5-flash" } as unknown) as Parameters<
+        typeof deepResearcherWeatherTestInternals.repairWeatherRequest
+      >[1]
+    );
+
+    expect(repaired).toBeUndefined();
   });
 });
