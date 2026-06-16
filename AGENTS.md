@@ -1,28 +1,44 @@
-# Chat Gun React Agent：Codex 實作規則
+# Chat Gun React Agent：全域 AI 編程規則
 
-## 1. 角色定位
+## 1. 適用範圍
 
-Codex 是本專案的主要實作者與程式碼審查者，負責：
+本文件適用於整個 `chat-gun-react-agent` 程式庫，定義所有 AI Coding Agent 與人工開發者共同遵守的全域規則。
 
-* 分析 OpenSpec 對現有程式碼的影響。
-* 將規格映射到具體模組與檔案。
-* 產生最小且可驗證的修改。
-* 補充單元測試、整合測試與契約測試。
-* 執行 Code Review。
-* 回報規格與現況之間的矛盾。
-* 在驗證成功後更新 `tasks.md`。
+專案主要資料流：
 
-Codex 不負責自行改變產品需求，也不得以「目前程式較方便」為理由偏離已核准的 OpenSpec。
+```text
+Browser
+  → frontend：Vite + React + TypeScript
+  → bff：Node.js + TypeScript
+  → backend：LangGraph JS + TypeScript
+  → Model Provider / Native Tools / MCP Tools
+```
+
+本文件只保留跨套件共同規則。目錄內的具體實作要求由最近的子目錄 `AGENTS.md` 補充：
+
+```text
+frontend/AGENTS.md
+bff/AGENTS.md
+backend/AGENTS.md
+```
+
+涉及特定能力域時，還必須讀取對應的專項規則，例如：
+
+```text
+docs/agent-rules/weather.md
+```
 
 ---
 
-## 2. 必須先讀取的內容
+## 2. 指令與規格優先順序
 
-處理非簡單變更前，依序讀取：
+處理任務時，必須區分「產品行為規格」與「實作規則」。
+
+### 產品行為事實來源
+
+非簡單變更以已核准的 OpenSpec 為唯一產品行為事實來源：
 
 ```text
-CLAUDE.md
-AGENTS.md
 openspec/config.yaml
 openspec/changes/<change-name>/proposal.md
 openspec/changes/<change-name>/design.md
@@ -30,362 +46,384 @@ openspec/changes/<change-name>/tasks.md
 openspec/changes/<change-name>/specs/
 ```
 
-接著檢查受影響的程式碼：
+聊天紀錄、臨時 Prompt、README 範例與既有程式行為，不得自行覆蓋已核准的 OpenSpec。
+
+### 實作規則作用域
+
+實作規則依目錄逐層收斂：
 
 ```text
-frontend/
-bff/
-backend/
+根目錄 AGENTS.md
+  → 套件目錄 AGENTS.md
+  → 更接近修改檔案的專項規則
 ```
 
-不得只讀取 `tasks.md` 就開始修改程式。
+較接近修改位置的規則可以細化上層規則，但不得降低：
 
-若規格文件不存在、內容矛盾或驗收條件不可測試，先停止實作並回報問題。
+- 安全要求。
+- 相容性要求。
+- Runtime Validation。
+- 測試與驗證門檻。
+- 權限、逾時、取消與審計要求。
+
+工具專屬橋接文件與 Project Rules（例如 `CLAUDE.md`、`GEMINI.md` 或其他宿主規則）只負責角色、載入與工具操作補充，不得重複、覆蓋或降低本文件與已核准 OpenSpec。
+
+若規則、規格或現有契約互相矛盾，必須停止修改並明確回報，不得自行選擇較方便的版本。
 
 ---
 
-## 3. 實作前輸出
+## 3. 必須先讀取的內容
 
-修改程式前，先輸出一份實作分析，至少包含：
+處理非簡單變更前，依序完成：
+
+1. 讀取根目錄 `AGENTS.md`。
+2. 讀取受影響套件的 `AGENTS.md`。
+3. 讀取 `openspec/config.yaml`。
+4. 讀取本次 Change 的 Proposal、Specs、Design 與 Tasks。
+5. 讀取受影響程式碼、測試與公開契約。
+6. 檢查是否存在專項規則。
+
+下列情況屬於非簡單變更：
+
+- 同時影響兩個以上套件。
+- 修改公開 API、事件、錯誤碼或資料格式。
+- 修改 LangGraph State、Node、Edge 或 Checkpoint。
+- 新增或修改 Prompt、Planner、Workflow、Tool 或 MCP。
+- 修改認證、CORS、限流、逾時、取消或安全策略。
+- 修改模型供應商、結構化輸出或 Tool Calling 契約。
+- 可能破壞既有相容性或造成資料遷移。
+
+不得只讀取 `tasks.md` 就開始修改。
+
+---
+
+## 4. 實作前分析
+
+修改程式前，先輸出或記錄以下內容：
 
 ```text
-1. 本次需求理解
-2. 受影響的能力域
-3. 受影響的套件
-4. 預計修改的檔案
-5. 每個 Task 對應的程式位置
-6. API 或事件契約變化
-7. 相容性風險
-8. 測試計畫
+1. 需求理解
+2. 目前可重現的問題
+3. 問題所屬層級
+4. 受影響能力域
+5. 受影響套件與檔案
+6. API、事件、狀態或 Schema 變化
+7. 相容性與安全風險
+8. 測試與回歸計畫
 9. 尚未解決的規格問題
 ```
 
-不要在未說明影響範圍前進行大規模重構。
+問題層級至少應從下列範圍判定：
+
+```text
+Frontend Rendering
+Frontend State / Stream Parser
+BFF Validation / Proxy / Error Mapping
+Backend Intent / Planner / Structured Output
+LangGraph State / Node / Edge
+Resolver / Provider Adapter
+Tool Execution
+Synthesis
+Model Provider
+```
+
+不得在尚未定位失敗層級前，直接跨層修改多個模組。
 
 ---
 
-## 4. 實作原則
+## 5. 實作原則
 
-### 最小變更
+### 最小且完整的修改
 
-只修改完成目前 OpenSpec 所必要的程式碼。
+只修改完成目前規格所必要的程式碼，同時確保修改形成可驗證的完整閉環。
 
-避免：
+禁止混入：
 
-* 無關重構。
-* 無關重新命名。
-* 無關格式化。
-* 未要求的套件升級。
-* 大範圍調整目錄。
-* 同時處理其他技術債。
+- 無關重構。
+- 無關重新命名或格式化。
+- 未核准的套件升級。
+- 未要求的目錄重組。
+- 與本次需求無關的技術債處理。
 
-若發現技術債，記錄為後續建議，不要混入本次變更。
+發現額外技術債時，應記錄為後續建議，不得偷偷擴大本次變更。
 
-### 相容性
+### 先證明問題，再修改
+
+Bug 修復必須先具備至少一種可重現證據：
+
+- 失敗測試。
+- 固定輸入與實際輸出。
+- 可重播事件。
+- 明確的 Log 或 Trace。
+- 可重現操作步驟。
+
+修改後必須用同一份證據證明問題消失，並執行相鄰能力回歸。
+
+### 不得捏造驗證結果
+
+未實際執行的命令、未取得的模型輸出、未連線的 Provider 與未完成的 E2E，不得宣稱已通過。
+
+---
+
+## 6. 禁止硬編碼與硬映射
+
+不得以硬編碼或硬映射取代可擴充的契約、Provider、Schema、設定或 Resolver。
+
+明確禁止：
+
+- 以固定自然語言關鍵字、刪字、標點移除或語系詞表作為主要意圖判斷。
+- 以固定城市、國家、模型、供應商或使用者輸入白名單作為主要解析策略。
+- 在業務邏輯中以模型名稱判斷回傳格式。
+- 將環境 URL、Port、API Key、Token 或允許來源直接寫死在程式碼。
+- 以顯示文案或錯誤文字反向推測狀態。
+- 將多個錯誤硬映射為同一個無法辨識的錯誤。
+- 為通過單一測試新增只服務該案例的分支。
+
+允許使用封閉清單的範圍僅限於穩定且有明確所有權的 Domain Constant，例如：
+
+- Protocol Enum。
+- Event Type。
+- Error Code。
+- Feature Flag。
+- MIME Type Allowlist。
+- Tool Permission。
+- 天氣代碼、風向或國碼等顯示映射。
+- 測試 Fixture。
+
+任何封閉清單都必須：
+
+1. 有明確型別或 Schema。
+2. 有單一來源。
+3. 有預設或未知值處理。
+4. 有測試。
+5. 不得承擔自然語言理解或地理解析的主要責任。
+
+---
+
+## 7. TypeScript 與契約規則
+
+TypeScript 程式碼必須：
+
+- 避免不必要的 `any`。
+- 對外部輸入執行 Runtime Validation。
+- 區分 Domain Type 與 Transport Type。
+- 使用 Discriminated Union 表達狀態與事件。
+- 明確處理 `unknown` 與未來新增欄位。
+- 不使用 Type Assertion 掩蓋資料不一致。
+- 不以 Optional 欄位逃避必要狀態建模。
+
+跨層契約變更必須同步檢查：
+
+```text
+Request Schema
+Response Schema
+Event Schema
+Graph Input / Output
+Tool Input / Output
+Error Code
+Terminal State
+requestId / threadId / runId / toolCallId
+```
 
 除非 OpenSpec 明確核准破壞性修改，否則：
 
-* 既有 Graph ID 必須保持相容。
-* 既有 BFF Route 必須保持相容。
-* 既有 Event Consumer 必須能處理新增欄位。
-* 新欄位優先設計為可選或提供預設值。
-* 移除欄位前必須具備遷移方案。
-* 錯誤碼不得無故改變語意。
-
-### 類型安全
-
-TypeScript 程式碼應：
-
-* 避免不必要的 `any`。
-* 對外部輸入執行 Runtime Validation。
-* 區分 Domain Type 與 Transport Type。
-* 使用 Discriminated Union 表達事件與狀態。
-* 明確處理未知事件。
-* 不使用 Type Assertion 掩蓋資料不一致。
-
-範例：
-
-```ts
-type ToolEvent =
-  | {
-      type: "tool_started";
-      runId: string;
-      toolCallId: string;
-      toolName: string;
-    }
-  | {
-      type: "tool_completed";
-      runId: string;
-      toolCallId: string;
-      result: unknown;
-    }
-  | {
-      type: "tool_failed";
-      runId: string;
-      toolCallId: string;
-      errorCode: string;
-      message: string;
-    };
-```
+- 既有 Graph ID 必須保持相容。
+- 既有 BFF Route 必須保持相容。
+- 新欄位優先採向後相容設計。
+- 移除或改名必須有 Migration。
+- 錯誤碼不得改變既有語意。
 
 ---
 
-## 5. 各層修改邊界
+## 8. 跨層責任邊界
 
 ### frontend
 
-frontend 修改時，重點檢查：
+負責使用者互動、串流承接、狀態展示與結構化結果渲染。
 
-* Stream Event Parser。
-* Chat State。
-* Reducer 或狀態管理。
-* Tool 狀態展示。
-* Error Boundary。
-* Retry、Cancel 與 Timeout UI。
-* 未知事件降級。
-* Markdown 或 HTML 安全。
-* 重複事件與亂序事件。
+不得：
 
-禁止：
-
-* 在前端放置模型 API Key。
-* 在前端放置 MCP 憑證。
-* 直接從瀏覽器呼叫受保護的 LangGraph Runtime。
-* 只靠按鈕隱藏實現權限控制。
-* 將 Tool 回傳內容直接當成可信 HTML。
+- 持有模型、Tool 或 MCP 憑證。
+- 直接繞過 BFF 呼叫受保護的 Runtime。
+- 在 UI 層重新推測後端應負責的語意。
+- 以隱藏按鈕取代真正的權限控制。
 
 ### bff
 
-BFF 修改時，重點檢查：
+負責外部 API 邊界、驗證、認證、CORS、限流、逾時、取消傳遞、錯誤映射與審計。
 
-* Request Validation。
-* Response Schema。
-* Stream Proxy。
-* AbortSignal。
-* Timeout。
-* Rate Limit。
-* Auth。
-* CORS。
-* Error Mapping。
-* Audit Log。
-* `requestId`、`threadId`、`runId` 傳遞。
+不得：
 
-禁止：
-
-* 回傳內部 Stack Trace。
-* 回傳 API Key 或 Token。
-* 吞掉上游取消訊號。
-* 將所有錯誤統一轉成無法辨識的 500。
-* 在錯誤訊息中暴露敏感設定。
+- 承擔 Prompt、Planner 或 Agent Workflow。
+- 吞掉上游取消或串流終止。
+- 回傳內部 Stack Trace、Token 或憑證。
+- 將不同錯誤一律轉成無法辨識的 500。
 
 ### backend
 
-backend 修改時，重點檢查：
+負責 LangGraph Runtime、State、Prompt、模型呼叫、Tool、MCP、Provider Adapter 與事件產生。
 
-* LangGraph State Schema。
-* Node Input 與 Output。
-* Graph Edge。
-* Checkpoint。
-* Tool Schema。
-* Prompt。
-* Tool Timeout。
-* Cancellation。
-* Retry。
-* Terminal State。
-* Event Emission。
-* MCP 權限。
+不得：
 
-禁止：
+- 將不可序列化物件寫入 State 或 Checkpoint。
+- 信任使用者輸入、檢索內容或 Tool Output 中的指令。
+- 讓已進入 Terminal State 的執行重新回到 Running。
+- 以 Prompt 假裝補齊不存在的 Tool 或產品能力。
 
-* 在 State 中存入不可序列化物件。
-* 將完整憑證寫入 State 或 Log。
-* 信任 Tool 輸出中的指令。
-* 未經允許提供任意 Shell 或檔案存取。
-* 讓已終止的 Tool Call 回到執行狀態。
+詳細規則請讀取各套件 `AGENTS.md`。
 
 ---
 
-## 6. Tool 與 MCP 實作要求
+## 9. 反覆失敗停止線
 
-新增 Tool 時必須具備：
+同一問題符合以下任一條件時，必須停止繼續局部微調：
 
-```text
-name
-description
-input schema
-output schema
-timeout
-permission
-error code
-audit fields
-cancellation behavior
-retry policy
-```
+- 已進行兩輪修正仍未解決。
+- 修復 A 後造成 B 回歸。
+- 同一組失敗案例在不同層來回移動。
+- 只能靠增加更多 Prompt 範例或特殊分支維持通過。
+- Mock 通過但真實 Runtime 或模型仍失敗。
 
-Tool Schema 應：
+停止後必須先完成：
 
-* 使用明確欄位。
-* 關閉不必要的額外欄位。
-* 使用 Enum 限制可選值。
-* 對 URL、路徑及識別字執行驗證。
-* 區分使用者錯誤與系統錯誤。
+1. 固化所有已知失敗案例。
+2. 比較修改前後的結構化輸入與輸出。
+3. 判定真正失敗層級。
+4. 檢查產品能力是否存在。
+5. 建立或補齊回歸矩陣。
+6. 檢查跨層不變量是否被破壞。
+7. 再決定應修改 Prompt、Schema、Resolver、Provider、Tool 或 UI。
 
-Tool 預設不得擁有：
-
-* 任意網路權限。
-* 任意檔案讀寫權限。
-* 任意 Process 執行權限。
-* 正式環境憑證。
-* 未限制的工作目錄。
-
-MCP Tool 必須經過 Allowlist 才能被 Agent 使用。
+不得進行第三輪沒有新證據的 Prompt 微調或條件分支疊加。
 
 ---
 
-## 7. 串流事件實作要求
+## 10. 測試與驗證
 
-涉及 Stream Event 時，必須明確實作：
+每項 Requirement 必須有對應測試或可重現驗證方式。
 
-* Event Version。
-* Event Type。
-* `runId`。
-* `threadId`。
-* `toolCallId`。
-* Timestamp。
-* Payload Schema。
-* Terminal State。
-
-事件處理器必須能處理：
-
-* 重複事件。
-* 事件延遲。
-* 事件亂序。
-* 未知事件。
-* 串流中斷。
-* 使用者取消。
-* Tool Timeout。
-* Backend Error。
-
-不得依靠「事件永遠只出現一次」或「網路永遠有序」這類假設。
-
----
-
-## 8. 測試要求
-
-每項 Requirement 至少要有對應測試或明確驗證方式。
-
-測試分層：
-
-### 單元測試
-
-驗證：
-
-* Parser。
-* Reducer。
-* State Transition。
-* Validation。
-* Error Mapping。
-* Tool Schema。
-* Permission Rule。
-
-### 整合測試
-
-驗證：
-
-* frontend 到 BFF。
-* BFF 到 backend。
-* Agent 到 Tool。
-* Stream Event 順序。
-* Cancel 與 Timeout 傳遞。
-* 錯誤碼與 Terminal Event。
-
-### 契約測試
-
-驗證：
-
-* Request Schema。
-* Response Schema。
-* Event Schema。
-* Graph Input。
-* Graph Output。
-* Tool Input 與 Output。
-
-至少覆蓋：
+至少考慮：
 
 ```text
 正常成功
 輸入不合法
-權限拒絕
+未知欄位或未知事件
 上游失敗
+權限拒絕
 逾時
 取消
+重試
 重複事件
-未知事件
+亂序事件
+斷線或中斷恢復
+降級
 ```
 
 不得為了讓測試通過而：
 
-* 刪除失敗測試。
-* 放寬正確的 Assertion。
-* 使用固定延遲掩蓋 Race Condition。
-* Mock 掉本應驗證的核心邏輯。
-* 將錯誤直接捕獲後忽略。
+- 刪除失敗測試。
+- 放寬正確的 Assertion。
+- 使用固定延遲掩蓋 Race Condition。
+- Mock 掉本應驗證的核心邏輯。
+- 捕獲錯誤後直接忽略。
+- 只執行新增案例而跳過既有回歸。
+
+目前套件驗證命令：
+
+### frontend
+
+```bash
+cd frontend
+npm run lint
+npm run test
+npm run build
+```
+
+### bff
+
+```bash
+cd bff
+npm run build
+```
+
+BFF 目前沒有既有 `test` script。新增或修改可觀察行為時，必須補充可自動執行的測試入口，或在完成回報中明確列出尚未自動化的驗證，不得假稱測試已通過。
+
+### backend
+
+```bash
+cd backend
+npm run lint
+npm run test
+npm run build
+```
+
+只修改單一套件時，至少執行該套件全部既有驗證。跨層契約變更必須執行所有受影響套件的驗證。
 
 ---
 
-## 9. tasks.md 更新規則
+## 11. Prompt、模型與 Tool 變更的額外門檻
 
-只有在以下條件滿足時，才能將 Task 標記為完成：
+Prompt、Planner、結構化輸出、模型 Provider 或 Tool Schema 的變更，視同程式碼變更。
 
-* 程式碼已修改。
-* 對應測試已新增或更新。
-* 測試已執行並通過。
-* Build 或 Type Check 已通過。
-* 沒有未處理的規格衝突。
-* Git Diff 中不存在無關修改。
+必須：
 
-禁止先勾選 Task，再補實作。
+- 先建立失敗案例或 Golden Case。
+- 固定或記錄模型、參數與結構化輸出模式。
+- 對模型輸出執行 Schema Validation。
+- 保留 Provider Adapter 邊界。
+- 驗證成功、無 Tool、錯誤 Tool、格式錯誤、逾時與取消。
+- 執行既有 Prompt／Tool 回歸，而非只測新增句型。
+- 區分 deterministic test、mock integration 與 live smoke test。
 
-若 Task 只完成部分，應保留未勾選，並附註目前完成範圍。
+Mock 測試通過不得等同於真實模型驗收完成。
 
 ---
 
-## 10. Code Review 輸出格式
+## 12. tasks.md 更新規則
 
-審查其他 Agent 的修改時，使用以下級別：
+只有在以下條件全部滿足時，才能將 Task 標記為完成：
+
+- 程式碼已完成。
+- 對應測試已新增或更新。
+- 必要驗證已實際執行並通過。
+- Build 或 Type Check 已通過。
+- OpenSpec Requirement 與 Scenario 已被覆蓋。
+- 沒有未處理的規格衝突。
+- Git Diff 不包含無關修改。
+- 已如實記錄無法驗證的部分。
+
+禁止先勾選 Task 再補實作。
+
+---
+
+## 13. Code Review 規則
+
+審查結果分為：
 
 ### Blocker
 
-可能導致：
-
-* 安全漏洞。
-* 資料損壞。
-* 契約破壞。
-* 無法建置。
-* 核心流程失效。
-* 與 OpenSpec 直接衝突。
+- 安全漏洞。
+- 資料損壞。
+- 契約破壞。
+- 無法建置。
+- 核心流程失效。
+- 與 OpenSpec 直接衝突。
+- 以硬編碼或硬映射繞過核心 Resolver、Schema 或權限邊界。
 
 ### Major
 
-可能導致：
-
-* 邊界場景錯誤。
-* 錯誤處理不完整。
-* 事件狀態不一致。
-* 測試覆蓋不足。
-* 相容性風險。
-* 可觀測性不足。
+- 邊界場景錯誤。
+- 錯誤、逾時或取消處理不完整。
+- 狀態或事件不一致。
+- 回歸測試不足。
+- 可觀測性不足。
+- 跨層責任漂移。
 
 ### Minor
 
-包含：
+- 命名、可讀性、重複程式碼與非阻斷維護問題。
 
-* 可讀性。
-* 命名。
-* 重複程式碼。
-* 非阻斷性維護問題。
-
-每一項問題必須包含：
+每項問題必須包含：
 
 ```text
 嚴重程度
@@ -393,64 +431,31 @@ MCP Tool 必須經過 Allowlist 才能被 Agent 使用。
 問題說明
 觸發情境
 可能後果
-建議修正方式
-對應的 OpenSpec Requirement
+建議修正
+對應 Requirement 或契約
 ```
-
-不得只說「這裡可以優化」。
 
 ---
 
-## 11. 完成回報格式
+## 14. 完成回報格式
 
-完成實作後，輸出：
+完成後輸出：
 
 ```text
 ## 完成內容
-
 ## 修改檔案
-
 ## 對應 OpenSpec Tasks
-
 ## 測試與驗證結果
-
 ## 尚未處理事項
-
 ## 相容性與風險
-
 ## 建議下一步
 ```
 
 必須如實列出：
 
-* 未執行的測試。
-* 因環境限制無法驗證的項目。
-* 尚未完成的 Task。
-* 任何規格與程式碼之間仍存在的差異。
+- 未執行的測試。
+- 因環境限制無法完成的 live 驗證。
+- 尚未完成的 Task。
+- 仍存在的規格與程式差異。
 
-不得在驗證失敗時宣稱變更已完成。
-
----
-
-## 12. 天氣地點解析修復策略限制
-
-針對天氣地點解析問題，禁止將 hard-coded 自然語言 keyword regex、CJK phrase stripping 或固定標點刪除作為主要地點抽取或修復策略。
-
-明確禁止以類似下列固定詞表或規則刪字後猜測地點：
-
-```text
-WEATHER_QUERY_WORDS
-CJK_WEATHER_QUERY_PARTS
-QUESTION_PUNCTUATION
-```
-
-不得透過「刪除天氣、現在、如何、今天、幾度、會下雨嗎、？、嗎」等固定自然語言片段來推測剩餘文字就是地點。這類策略只能作為非核心、可證明不改變語意的輸入清理輔助，且不得覆蓋使用者原文、不得繞過 Runtime Validation，也不得取代 Planner 或 Provider Resolver。
-
-天氣地點解析修復應優先採用：
-
-* Planner schema 與 prompt 改善，讓模型明確輸出 `location`、`country`、`region`。
-* Runtime Validation，拒絕空值、過長輸入與控制字元。
-* 受限制的 LLM Repair，只能在 `not_found` 後產生新的文字查詢並重新通過 Resolver。
-* Provider-driven resolver，以 Geocoding Provider 候選、context 與可測試評分規則決定 `resolved`、`ambiguous`、`not_found` 或 `provider_error`。
-
-Code Review 時若發現以固定 keyword regex 或 CJK phrase stripping 作為主要修復策略，應至少列為 Major；若會造成錯誤地點、契約破壞或繞過 Provider Resolver，應列為 Blocker。
+不得在驗證失敗或證據不足時宣稱完成。

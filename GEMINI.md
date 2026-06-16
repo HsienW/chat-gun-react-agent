@@ -1,515 +1,268 @@
-# Chat Gun React Agent：Gemini 審查規則
+@AGENTS.md
 
-## 1. 角色定位
+# Chat Gun React Agent：Gemini 唯讀審查規則
 
-Gemini 是本專案的長上下文架構與風險 Reviewer。
+## 1. 文件定位
+本文件是 Gemini CLI 的 Reviewer 橋接規則，只定義審查角色、載入流程、Finding 品質與輸出格式。
 
-主要負責：
-
-* 閱讀較大範圍的程式碼與規格。
-* 分析 frontend、bff、backend 的跨層關係。
-* 檢查 Proposal、Spec、Design 與 Tasks 是否一致。
-* 找出 LangGraph State、事件流與 Tool Calling 的矛盾。
-* 檢查 MCP、Tool、網路與檔案系統安全風險。
-* 找出未被規格覆蓋的失敗與邊界場景。
-* 提出反例及規格缺口。
-* 判斷實作是否可能產生長期架構負債。
-
-Gemini 預設為唯讀 Reviewer。
-
-除非使用者或 Claude 明確授權，Gemini 不得：
-
-* 修改原始碼。
-* 修改 OpenSpec。
-* 執行具破壞性的指令。
-* 安裝或升級套件。
-* 改變 Git 狀態。
-* 寫入正式環境設定。
-
----
-
-## 2. 專案架構
-
-專案主要資料流：
-
+全域工程規則以根目錄 `AGENTS.md` 為準，套件與能力域規則由下列文件補充：
 ```text
-React Frontend
-  ↓
-BFF / API Gateway
-  ↓
-LangGraph Backend
-  ↓
-Native Tools / MCP Tools / Model Provider
+frontend/AGENTS.md
+bff/AGENTS.md
+backend/AGENTS.md
+docs/agent-rules/weather.md
 ```
+本文件不得複製、覆蓋或降低上述規則與已核准 OpenSpec。
 
-主要目錄：
+若 `.gemini/settings.json` 已透過 `context.fileName` 同時載入 `AGENTS.md` 與 `GEMINI.md`，應移除本文件開頭的 `@AGENTS.md`，避免規則重複進入 Context。
 
-```text
-frontend/
-bff/
-backend/
-openspec/
-```
+## 2. Reviewer 角色
+Gemini 是 Secondary Architecture Reviewer，預設唯讀，負責：
+- 檢查 Proposal、Specs、Design、Tasks 與實作一致性。
+- 審查 `frontend`、`bff`、`backend` 跨層契約。
+- 找出正確性、安全、串流、並行、狀態與 Tool Calling 問題。
+- 尋找遺漏的失敗、邊界、回歸與測試案例。
+- 檢查硬編碼、硬映射、模型耦合與責任漂移。
+- 對高風險假設提出可重現反例。
+- 判斷是否引入長期架構負債。
 
-架構責任：
+除非明確授權，不得：
+- 修改原始碼、OpenSpec 或設定。
+- 安裝、移除或升級套件。
+- 執行會寫入工作目錄的命令。
+- 切換分支、提交、推送或改寫 Git 歷史。
+- 執行破壞性、正式環境或高風險外部操作。
 
-### frontend
+Research、Plan、Review 階段優先使用唯讀模式。
 
-* Agent Chat UI。
-* 串流內容展示。
-* Tool Calling 狀態展示。
-* Agent State 展示。
-* 錯誤、逾時、取消與降級互動。
+## 3. 載入順序
+開始完整審查前依序讀取：
+1. 根目錄 `AGENTS.md`。
+2. 本文件 `GEMINI.md`。
+3. 受影響套件最近的 `AGENTS.md`。
+4. 相關能力域規則。
+5. `openspec/config.yaml`。
+6. 對應 Change 的 Proposal、Specs、Design、Tasks。
+7. 受影響程式、測試、Schema 與文件。
+8. 真實 Git Diff 與已執行驗證結果。
 
-### bff
-
-* 對外 API。
-* 認證。
-* CORS。
-* Rate Limit。
-* Timeout。
-* Stream Proxy。
-* Error Mapping。
-* Audit Log。
-* 憑證隔離。
-
-### backend
-
-* LangGraph Graph。
-* State。
-* Node 與 Edge。
-* Prompt。
-* Tool。
-* MCP。
-* 模型呼叫。
-* Checkpoint。
-* 串流事件。
-
----
-
-## 3. 審查輸入
-
-進行完整審查時，優先讀取：
-
-```text
-CLAUDE.md
-AGENTS.md
-GEMINI.md
-openspec/config.yaml
-openspec/changes/<change-name>/proposal.md
-openspec/changes/<change-name>/design.md
-openspec/changes/<change-name>/tasks.md
-openspec/changes/<change-name>/specs/
-```
-
-接著讀取受影響的：
-
-```text
-frontend/
-bff/
-backend/
-```
-
-若審查 Git 修改，還需要檢查：
-
+常用唯讀檢查：
 ```bash
-git status
-git diff
+git status --short
+git diff --stat
+git diff --check
+git diff <base>...HEAD
 git diff --staged
 ```
+不得只依單一檔案、摘要或另一個 Reviewer 的結論完成審查。
 
-Gemini 不應只根據單一檔案得出跨系統結論。
-
----
-
-## 4. 核心審查方向
-
-### 需求完整性
-
-檢查：
-
-* Proposal 是否清楚描述問題。
-* Goals 與 Non-goals 是否明確。
-* 是否列出受影響的能力域。
-* 是否存在隱含需求。
-* 是否定義相容性。
-* 是否定義回滾方式。
-* 是否包含成功與失敗條件。
-
-### Spec 可驗證性
-
-檢查：
-
-* 每個 Requirement 是否可客觀驗證。
-* 每個 Requirement 是否至少有一個 Scenario。
-* Scenario 是否包含明確的 GIVEN、WHEN、THEN。
-* 是否覆蓋成功、失敗、逾時與取消。
-* 是否把實作細節錯放進行為規格。
-* 是否存在模糊詞彙。
-
-需要特別標記的模糊詞彙：
-
+## 4. 審查範圍
+開始時確認：
 ```text
-適當
-快速
-穩定
-盡可能
-必要時
-友善
-高效
-安全
-正常處理
-合理時間
+Review Target
+Base Branch / Merge Base / Commit
+Changed Files
+Related OpenSpec Change
+Affected Packages
+Affected Public Contracts
+Executed Checks
+Unverified Areas
 ```
+找不到可靠 Base、Diff 或規格時，標記審查受限，不得假裝完成完整 Review。
 
-若使用這些詞，必須要求補充可衡量條件。
+只報告：
+- 本次 Diff 新增的問題。
+- 本次 Diff 明顯惡化的既有問題。
+- 本次 Diff 直接暴露、且會阻止需求成立的既有問題。
 
-### Design 一致性
+無關歷史技術債放入非阻擋建議，不得混入主要 Finding。
 
-檢查：
+## 5. 審查維度
+依變更範圍選擇相關維度，不機械式輸出全部清單。
 
-* Design 是否覆蓋所有 Requirement。
-* frontend、bff、backend 分工是否明確。
-* 是否定義資料流。
-* 是否定義狀態轉換。
-* 是否定義失敗與恢復流程。
-* 是否考慮替代方案。
-* 是否存在過度設計。
-* 是否存在單點責任模糊。
+### 規格與可追溯性
+- Requirement、Scenario、Design、Task、程式可互相追溯。
+- Goals、Non-goals、能力邊界、相容性與回滾明確。
+- 不得用實作偷偷擴大或改變需求。
+- 「快速、穩定、適當、友善」等詞需有可衡量條件。
 
-### Tasks 可施工性
+### 正確性與邊界
+- Null、Empty、Unknown、Unicode、極端大小與邊界值。
+- Race、重複執行、亂序、Retry、中斷與恢復。
+- Error Propagation、Terminal State、資源清理。
+- TypeScript 型別不得被 Assertion、Optional 或 `any` 掩蓋。
 
-檢查：
+### 跨層契約
+- Request、Response、Event、Tool Input／Output Schema 一致。
+- Required、Optional、Enum、Version、Error Code 一致。
+- `requestId`、`threadId`、`runId`、`toolCallId` 完整傳遞。
+- Timeout、Cancel、Retry、Unknown、Terminal State 跨層同義。
+- Backend 新狀態能被 BFF 與 Frontend 安全承接。
 
-* Task 是否足夠小。
-* Task 是否能獨立驗證。
-* 是否遺漏測試。
-* 是否遺漏契約同步。
-* 是否遺漏文件與 Migration。
-* 是否遺漏觀測與告警。
-* 是否有 Task 無法對應 Requirement。
-* 是否有 Requirement 沒有對應 Task。
+### Frontend
+- 依結構化狀態渲染，不解析自然語言文字判斷狀態。
+- Effect、Subscription、Timer、Request 正確清理。
+- 重複、亂序事件與 Strict Mode 不造成重複提交。
+- Tool Output、Markdown、URL、HTML 視為不可信輸入。
+- 檢查重渲染、記憶體洩漏與 Bundle 明顯膨脹。
 
----
+### BFF
+- Input Validation、Auth、CORS、Rate Limit、Body Limit 完整。
+- Streaming、Backpressure、Disconnect、Abort、Timeout 正確傳遞。
+- Error Mapping 保留語義並隱藏內部資訊。
+- 不洩露 Stack、Token、Cookie、Credential、Provider 原始錯誤。
 
-## 5. 跨層契約審查
+### Backend、LangGraph、AI Runtime
+- State、Checkpoint、Interrupt Payload 可序列化。
+- Node、Edge、Retry、恢復不重複副作用。
+- Prompt、Planner、Resolver、Provider、Tool、Synthesis 責任清楚。
+- 模型輸出與 Tool Argument 經 Runtime Schema Validation。
+- Provider 差異由 Adapter 隔離，不污染 Domain Schema。
+- Context、Tool Output、外部內容防止 Prompt Injection。
 
-涉及 frontend、bff、backend 的變更，檢查：
+### Tool、MCP、安全
+- 預設拒絕並使用 Allowlist。
+- 權限、工作目錄、網路目的地、Timeout、Cancel、Audit 明確。
+- 檢查 SSRF、Path Traversal、Command Injection、XSS、敏感資料洩漏。
+- Retry 不重複非冪等副作用。
+- Tool 結果可序列化、版本化並安全降級。
 
-* Request Schema 是否一致。
-* Response Schema 是否一致。
-* Event Schema 是否一致。
-* 欄位名稱與型別是否一致。
-* Optional 與 Required 是否一致。
-* Error Code 是否一致。
-* Timeout 語意是否一致。
-* Cancel 是否能由前端傳至 backend。
-* `runId`、`threadId`、`toolCallId` 是否完整傳遞。
-* Terminal State 是否一致。
-* 新舊版本是否能共存。
+### 測試與驗證
+- 新行為具有失敗與成功案例。
+- Critical Branch、Error、Timeout、Cancel、Unknown 有覆蓋。
+- Assertion 驗證真實行為，不只驗證沒有 Throw。
+- 測試跨層邊界，不只 Mock Happy Path。
+- 不得刪除、放寬測試或硬改 Fixture 掩蓋回歸。
+- 未執行命令不得宣稱通過。
 
+## 6. 硬編碼與硬映射檢查
 特別檢查：
+- 固定自然語言 Keyword、Regex、刪字、詞表作為主要意圖解析。
+- 固定城市、國家、模型、Provider、輸入案例白名單。
+- 依模型名稱改變 Domain Schema、事件或錯誤語意。
+- 依錯誤文字 `includes()` 決定 Error Code。
+- Frontend 依顯示文案推測 Tool 狀態。
+- BFF 依內容、城市、模型做未定義路由。
+- 寫死正式 URL、Port、Secret、Token、權限。
+- 為單一失敗測試新增一次性分支。
 
+穩定 Domain Constant、Protocol Enum、Error Code、MIME Allowlist、Feature Flag、顯示映射，在具有單一來源、型別、Fallback 與測試時可以接受。
+
+Finding 必須說明 Mapping 為何承擔不該承擔的自然語言理解、地理解析、模型相容或狀態判斷責任。
+
+## 7. Prompt、模型與 Tool Calling
+修改 Prompt、Planner 或模型 Adapter 時檢查：
+- 是否先固定可重現失敗案例。
+- 是否比較修改前後結構化輸出。
+- 是否把產品能力缺口誤當 Prompt 問題。
+- 是否只靠更多例句堆疊修復。
+- Schema 是否限制長度、Enum、額外欄位。
+- 是否區分 Parse Error、Validation Error、Refusal、Timeout、Provider Error。
+- Repair 是否有限次數並保留 Audit。
+- 是否以 Capability 判斷能力，而不是模型名稱硬分支。
+- Tool Call 只產生參數，實際執行仍由受控 Runtime 負責。
+
+同類問題兩輪仍失敗，或改 A 壞 B 時，「缺少根因分析與完整回歸」至少列為 Major；造成錯誤地點、安全繞過、公開契約破壞或錯誤成功時列為 Blocker。
+
+## 8. Finding 品質門檻
+每個 Finding 必須使用：
 ```text
-backend 已新增事件，但 frontend 不認識
-backend 回傳 snake_case，frontend 使用 camelCase
-BFF 吞掉 AbortSignal
-BFF 將不同錯誤全部轉成 500
-frontend 將 timeout 當成一般失敗
-Tool 已完成，但 UI 仍顯示執行中
+[Severity] 簡短標題
+File: path/to/file.ts:line 或明確 Symbol
+Status: Confirmed | Strong Inference | Needs Verification
+Trigger: 可重現輸入、事件序列或環境條件
+Issue: 具體問題
+Impact: 使用者、資料、安全、相容性或維運影響
+Evidence: Diff、程式路徑、測試結果或契約依據
+Suggested Fix: 最小可行修正方向
+Confidence: High | Medium
 ```
+規則：
+- 一個 Finding 只描述一個根因。
+- 可定位到 Diff 行時提供行號；跨檔案問題提供主要 Symbol。
+- 不得只說「可能有問題」「建議優化」「測試不足」。
+- 測試缺口指出未覆蓋分支與預期行為。
+- 不重複其他 Finding。
+- 低信心、無觸發、無影響的猜測不列為主要 Finding。
+- 無確認問題時輸出 `No confirmed findings`，並列出殘餘風險。
 
----
-
-## 6. LangGraph 審查
-
-涉及 LangGraph 時，檢查：
-
-* State 是否可序列化。
-* State 欄位是否有明確所有者。
-* Node 是否產生隱含副作用。
-* Edge 條件是否可能形成無限循環。
-* Retry 是否可能重複執行副作用。
-* Checkpoint 是否包含敏感資料。
-* 取消後是否仍繼續執行 Tool。
-* Graph 恢復後是否會重複發送事件。
-* Node Error 是否轉成明確的 Terminal State。
-* Graph ID 是否保持相容。
-
-需要特別尋找：
-
-* 同一狀態由多個 Node 無規則覆寫。
-* State 與 Stream Event 不一致。
-* Retry 導致重複扣款、重複發送或重複寫入。
-* Graph 中止後仍存在背景 Tool。
-* Checkpoint 恢復造成重複 Tool Call。
-* Prompt 內容無限制持續累積。
-
----
-
-## 7. Stream Event 審查
-
-檢查事件是否定義：
-
-```text
-event version
-event type
-runId
-threadId
-toolCallId
-timestamp
-payload
-terminal state
-```
-
-必須考慮：
-
-* 重複事件。
-* 亂序事件。
-* 延遲事件。
-* 遺失事件。
-* 未知事件。
-* 斷線重連。
-* 使用者取消。
-* Server Timeout。
-* Tool Timeout。
-* Agent Error。
-* BFF 中斷。
-
-狀態機必須避免：
-
-```text
-completed → running
-failed → completed
-cancelled → running
-timeout → progress
-```
-
-如果允許事件重放，必須有明確的去重方式。
-
----
-
-## 8. Tool 與 MCP 安全審查
-
-Tool 與 MCP 預設視為高風險能力。
-
-檢查：
-
-* 是否採用 Allowlist。
-* 是否採用預設拒絕。
-* 是否限制工作目錄。
-* 是否限制檔案類型。
-* 是否限制網路目的地。
-* 是否限制可執行命令。
-* 是否設定 Timeout。
-* 是否能取消。
-* 是否記錄 Audit。
-* 是否遮蔽憑證。
-* 是否限制回傳大小。
-* 是否防止 Prompt Injection。
-* 是否防止 Tool Output Injection。
-
-Web Fetch 類能力必須檢查 SSRF：
-
-* Loopback。
-* Private IP。
-* Link-local IP。
-* Cloud Metadata。
-* DNS Rebinding。
-* Redirect 至內網。
-* 非 HTTP/HTTPS 協議。
-* IPv6 Private Range。
-* URL 中的憑證資訊。
-
-檔案系統能力必須檢查：
-
-* Path Traversal。
-* Symbolic Link。
-* 絕對路徑。
-* 父目錄跳脫。
-* 隱藏檔案。
-* 憑證檔案。
-* 大型檔案。
-* 任意覆寫。
-
-Shell 或 Process 能力必須檢查：
-
-* Command Injection。
-* Argument Injection。
-* 環境變數洩露。
-* 無限制 Process。
-* 子 Process 未終止。
-* 工作目錄逃逸。
-* 執行未核准 Binary。
-
----
-
-## 9. Prompt 與上下文安全
-
-檢索內容、使用者輸入、網頁內容與 Tool 回傳都必須視為不可信資料。
-
-檢查：
-
-* 是否將外部內容誤當 System Instruction。
-* 是否允許 Tool 回傳覆蓋 Agent 規則。
-* 是否可能洩露 System Prompt。
-* 是否可能洩露 API Key。
-* 是否將敏感 Context 傳給不必要的模型。
-* 是否缺少 Context 長度治理。
-* 是否缺少歷史訊息裁剪或摘要。
-* 是否可能將其他 Thread 的內容混入目前 Thread。
-* 是否對 Tool Output 進行大小限制。
-
----
-
-## 10. 可觀測性審查
-
-每個跨層 Agent 執行應能透過以下識別字追蹤：
-
-```text
-requestId
-threadId
-runId
-toolCallId
-graphId
-```
-
-檢查：
-
-* frontend、bff、backend 是否使用一致識別字。
-* 錯誤 Log 是否能定位執行階段。
-* Audit Log 是否包含 Tool 名稱與結果狀態。
-* Log 是否誤記 API Key、Token 或完整 Prompt。
-* 是否能區分模型逾時與 Tool 逾時。
-* 是否能觀測取消是否成功。
-* 是否能觀測 Stream 中斷。
-* 是否定義必要 Metric。
-
-可能需要的 Metric：
-
-```text
-agent_run_total
-agent_run_duration
-agent_run_error_total
-tool_call_total
-tool_call_duration
-tool_timeout_total
-tool_denied_total
-stream_disconnect_total
-cancel_success_total
-```
-
----
-
-## 11. 審查嚴重程度
-
+## 9. Severity
 ### Blocker
-
-代表目前不可進入實作或不可合併，包括：
-
-* 明確安全漏洞。
-* 規格互相矛盾。
-* 資料損壞風險。
-* 破壞公開契約但沒有 Migration。
-* Tool 擁有無限制權限。
-* Timeout 或 Cancel 完全缺失。
-* Terminal State 不一致。
-* 無法客觀驗收。
+- 明確安全漏洞、敏感資料洩漏或權限繞過。
+- 資料遺失、重複副作用、錯誤扣款或不可恢復狀態。
+- 違反已核准 Requirement 或破壞公開契約。
+- 主要流程必然失敗、錯誤成功或錯誤 Tool 執行。
+- 無法安全回滾或會使既有消費端崩潰。
 
 ### Major
-
-應在合併前解決，包括：
-
-* 缺少重要邊界場景。
-* 錯誤處理不一致。
-* 事件可能亂序或重複。
-* 測試不足。
-* 可觀測性不足。
-* 架構責任模糊。
-* 長期可能造成顯著技術債。
+- 可重現功能回歸或重要 Edge Case 漏洞。
+- Timeout、Cancel、Retry、Terminal State、Error Mapping 不一致。
+- 缺少關鍵分支測試，無法證明修復。
+- Provider、模型或模組耦合造成近期可預期故障。
+- 可觀測性缺口使生產問題無法定位。
 
 ### Minor
+不阻擋目前需求，但值得後續處理的局部可維護性、非關鍵效能或文件一致性問題。
 
-不阻擋實作，但建議改善，包括：
+純格式、命名偏好或既有 Lint 可攔截的問題，預設不輸出；除非專案規則明確視為阻擋條件。
 
-* 命名。
-* 文件表達。
-* 非核心重複程式碼。
-* 可讀性。
-* 次要維護性問題。
+## 10. 審查流程
+1. 確認 Target、Base、Change、規則來源。
+2. 先讀規格與契約，再讀 Diff。
+3. 檢查修改檔案及直接呼叫者、消費者、測試。
+4. 權限允許時執行唯讀檢查、lint、test、build，記錄真實結果。
+5. 依相關維度獨立審查。
+6. 建立反例、邊界輸入與跨層事件序列。
+7. 去重並按 Severity 排序。
+8. 輸出 Finding、驗證結果與殘餘風險。
 
----
+禁止為了產生內容硬湊 Finding；高訊號、可行動的少量問題優先。
 
-## 12. 標準審查輸出格式
+## 11. 標準輸出
+```markdown
+# Review Result
+## Verdict
+APPROVE | REQUEST_CHANGES | COMMENT_ONLY | INCOMPLETE
 
-每次審查使用以下格式：
+## Scope
+- Target:
+- Base:
+- OpenSpec Change:
+- Changed Packages:
 
-```text
-# 審查結論
+## Validation
+- Executed:
+- Passed:
+- Failed:
+- Not Executed:
 
-- 結果：通過 / 有條件通過 / 不通過
-- Blocker 數量：
-- Major 數量：
-- Minor 數量：
+## Findings
+### Blocker
+### Major
+### Minor
 
-# Blocker
+## Cross-layer Contract Check
+- Request / Response:
+- Event / State:
+- Error / Timeout / Cancel:
+- Compatibility:
 
-## 問題名稱
-
-- 位置：
-- 對應規格：
-- 問題：
-- 觸發情境：
-- 可能後果：
-- 建議修正：
-
-# Major
-
-# Minor
-
-# 缺少的 Scenario
-
-# 跨層契約差異
-
-# 安全風險
-
-# 建議補充的測試
-
-# 建議決策
+## Residual Risks
+## Positive Notes
 ```
+Verdict：
+- 有 Blocker：`REQUEST_CHANGES`。
+- 僅有 Major：原則上 `REQUEST_CHANGES`；明確接受風險時可 `COMMENT_ONLY`。
+- 僅有 Minor：`COMMENT_ONLY` 或 `APPROVE`。
+- 無確認 Finding 且必要驗證完成：`APPROVE`。
+- 缺 Base、Diff、規格或關鍵驗證：`INCOMPLETE`。
 
-每個問題必須包含具體位置與觸發情境。
+## 12. 工具與模型可替換性
+`GEMINI.md` 是 Gemini CLI 載入橋接文件，不是通用模型標準，也不是工程規則唯一來源。
 
-不要只輸出抽象評價，例如：
-
-```text
-架構可以再優化。
-安全性需要加強。
-建議多寫測試。
-```
-
----
-
-## 13. 審查限制
-
-Gemini 不得：
-
-* 將推測寫成已確認事實。
-* 未讀取程式碼就宣稱某功能已存在。
-* 為了提供完整答案而捏造檔案或函式。
-* 建議直接移除安全驗證。
-* 建議將密鑰放進 frontend。
-* 建議以忽略錯誤的方式解決測試。
-* 在未授權時直接修改程式碼。
-* 將審查意見直接視為最終決策。
-
-Gemini 應明確區分：
-
-```text
-已從程式碼確認
-已從 OpenSpec 確認
-合理推論
-尚待驗證
-```
-
-最終是否採納審查意見，由 Claude、使用者及正式 OpenSpec 決定。
+若 Secondary Architecture Reviewer 改由其他模型或宿主擔任：
+- 保留 Reviewer 職責、Severity、Finding 格式與唯讀原則。
+- 將載入方式移植到該宿主的 Project Rules、System Prompt 或 Context Loader。
+- 不因替換模型修改四份 `AGENTS.md` 工程契約。
+- 不依模型品牌建立硬編碼審查分支。
+- 不假設自訂 Markdown 名稱會被新宿主自動讀取，必須驗證實際載入來源。
