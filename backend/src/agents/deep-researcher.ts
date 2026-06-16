@@ -22,7 +22,7 @@ import {
   llmGateway,
   resolveModel,
 } from "../platform/llm-gateway.js";
-import { recordMetric, recordWeatherAuditEvent } from "../platform/observability.js";
+import { auditLogger, recordMetric, recordWeatherAuditEvent } from "../platform/observability.js";
 import { getAgentRuntimeConfig } from "../platform/runtime-config.js";
 import {
   extractImageAttachmentBlocks,
@@ -30,7 +30,7 @@ import {
   summarizeImageAttachments,
   validateImageAttachments,
 } from "../platform/upload-security.js";
-import { getResearchTopic, messageContentToString } from "../state.js";
+import { getLatestUserMessage, getResearchTopic, messageContentToString } from "../state.js";
 import { validateLocationInput } from "../tools/geocoding/location-normalizer.js";
 import { loadAgentTools } from "../tools/registry.js";
 import { normalizeAiMessageForStream } from "./message-normalization.js";
@@ -102,6 +102,12 @@ type ResearchPlan = {
   clarification?: string;
   requiredSourceCount: number;
 };
+
+type WeatherPlannerExtractionResponse = {
+  answerMode?: unknown;
+  weather?: unknown;
+  clarification?: unknown;
+} & Record<string, unknown>;
 
 type SearchResult = {
   title: string;
@@ -250,14 +256,31 @@ function extractJsonObject(raw: string): string | undefined {
 }
 
 function parseJsonObject<T>(raw: string): T | undefined {
+  return parseJsonObjectWithDiagnostics<T>(raw).parsed;
+}
+
+function parseJsonObjectWithDiagnostics<T>(raw: string): {
+  parsed?: T;
+  failureCode?: "parse_failed";
+  responseContentLength: number;
+} {
   const json = extractJsonObject(raw);
   if (!json) {
-    return undefined;
+    return {
+      failureCode: "parse_failed",
+      responseContentLength: raw.length,
+    };
   }
   try {
-    return JSON.parse(json) as T;
+    return {
+      parsed: JSON.parse(json) as T,
+      responseContentLength: raw.length,
+    };
   } catch {
-    return undefined;
+    return {
+      failureCode: "parse_failed",
+      responseContentLength: raw.length,
+    };
   }
 }
 
@@ -302,6 +325,53 @@ function fallbackPlan(
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function coerceLocationHint(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized && !validateLocationInput(normalized, 160) ? normalized : undefined;
+}
+
+function coerceWeatherRequest(value: unknown): WeatherRequest | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const location = coerceLocationHint(value.location);
+  if (!location) {
+    return undefined;
+  }
+
+  const country = coerceLocationHint(value.country);
+  const region = coerceLocationHint(value.region);
+  return {
+    location,
+    ...(country ? { country } : {}),
+    ...(region ? { region } : {}),
+  };
+}
+
+function missingWeatherLocationPlan(question: string, rationale: string): ResearchPlan {
+  return {
+    question,
+    answerMode: "clarify",
+    rationale,
+    queries: [],
+    urls: [],
+    clarification: BACKEND_ERROR_MESSAGES.planner.missingWeatherLocation,
+    requiredSourceCount: 1,
+  };
+}
+
+function isMissingWeatherLocationClarification(value: string | undefined): boolean {
+  return value?.trim() === BACKEND_ERROR_MESSAGES.planner.missingWeatherLocation;
+}
 
 function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string, state: typeof DeepResearchState.State): ResearchPlan {
   const fallback = fallbackPlan(question, state);
@@ -310,14 +380,7 @@ function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string
     ? (rawPlan?.answerMode as AnswerMode)
     : fallback.answerMode;
   const maxQueries = clampInt(state.initial_search_query_count, DEFAULT_SEARCH_QUERY_COUNT, 1, 5);
-  const weather =
-    rawPlan?.weather && typeof rawPlan.weather.location === "string"
-      ? {
-          location: rawPlan.weather.location,
-          country: rawPlan.weather.country,
-          region: rawPlan.weather.region,
-        }
-      : undefined;
+  const weather = coerceWeatherRequest(rawPlan?.weather);
   const calculation =
     rawPlan?.calculation && typeof rawPlan.calculation.expression === "string"
       ? { expression: rawPlan.calculation.expression }
@@ -326,11 +389,10 @@ function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string
     typeof rawPlan?.clarification === "string" ? rawPlan.clarification : undefined;
 
   if (answerMode === "weather" && !weather?.location.trim()) {
-    return {
-      ...fallback,
-      rationale: "The planner classified weather intent but did not provide a geocoding-friendly location.",
-      clarification: BACKEND_ERROR_MESSAGES.planner.missingWeatherLocation,
-    };
+    return missingWeatherLocationPlan(
+      question,
+      "The planner classified weather intent but did not provide a geocoding-friendly location."
+    );
   }
 
   if (answerMode === "calculation" && !calculation?.expression.trim()) {
@@ -342,7 +404,7 @@ function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string
   }
 
   return {
-    question: typeof rawPlan?.question === "string" && rawPlan.question.trim() ? rawPlan.question.trim() : question,
+    question,
     answerMode,
     rationale: typeof rawPlan?.rationale === "string" ? rawPlan.rationale : fallback.rationale,
     queries: uniqueStrings(
@@ -534,76 +596,428 @@ function parseWeatherToolResult(content: string): WeatherToolResult | undefined 
   return undefined;
 }
 
+type WeatherRepairCandidate = {
+  location: string;
+  country?: string;
+  region?: string;
+  reason?: string;
+};
+
+type WeatherRepairResponse = {
+  candidates?: unknown;
+  location?: unknown;
+  country?: unknown;
+  region?: unknown;
+  reason?: unknown;
+} & Record<string, unknown>;
+
+const MAX_WEATHER_REPAIR_CANDIDATES = 3;
+const FORBIDDEN_WEATHER_REPAIR_FIELDS = [
+  "latitude",
+  "longitude",
+  "coordinates",
+  "coordinate",
+  "coords",
+  "providerId",
+  "providerCandidate",
+  "providerCandidates",
+  "sourceUrl",
+] as const;
+
+const FORBIDDEN_WEATHER_PLANNER_EXTRACTION_FIELDS = [
+  ...FORBIDDEN_WEATHER_REPAIR_FIELDS,
+  "candidate",
+  "candidates",
+] as const;
+
+type WeatherLlmDiagnosticFailureCode =
+  | "llm_unavailable"
+  | "parse_failed"
+  | "schema_rejected"
+  | "empty_candidates";
+
+const SENSITIVE_DIAGNOSTIC_KEY = /(api[-_]?key|authorization|token|password|secret|credential)/i;
+
+function truncateDiagnosticString(value: string): string {
+  return value.length > 160 ? `${value.slice(0, 160)}...` : value;
+}
+
+function sanitizeJsonForDiagnostics(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return truncateDiagnosticString(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 3).map((item) => sanitizeJsonForDiagnostics(item, depth + 1));
+  }
+  if (typeof value !== "object" || depth >= 4) {
+    return "[redacted]";
+  }
+
+  const output: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value).slice(0, 16)) {
+    if (SENSITIVE_DIAGNOSTIC_KEY.test(key)) {
+      output[key] = "[redacted]";
+      continue;
+    }
+    output[key] = sanitizeJsonForDiagnostics(entry, depth + 1);
+  }
+  return output;
+}
+
+async function recordWeatherLlmDiagnostic(payload: {
+  phase: "planner" | "planner_extraction" | "repair";
+  resultStatus?: string;
+  failureCode?: WeatherLlmDiagnosticFailureCode;
+  responseContentLength?: number;
+  plannerJson?: unknown;
+  repairJson?: unknown;
+  candidateCount?: number;
+}): Promise<void> {
+  const gateway = describeLlmGatewayConfig();
+  await auditLogger.record("weather.llm.diagnostic", {
+    phase: payload.phase,
+    provider: gateway.provider,
+    endpointKind: gateway.endpointKind,
+    resultStatus: payload.resultStatus,
+    failureCode: payload.failureCode,
+    responseContentLength: payload.responseContentLength,
+    candidateCount: payload.candidateCount,
+    plannerJson: payload.plannerJson === undefined
+      ? undefined
+      : sanitizeJsonForDiagnostics(payload.plannerJson),
+    repairJson: payload.repairJson === undefined
+      ? undefined
+      : sanitizeJsonForDiagnostics(payload.repairJson),
+  });
+}
+
 async function repairWeatherRequest(
   request: LocationQuery,
-  state: typeof DeepResearchState.State
-): Promise<LocationQuery | undefined> {
+  state: typeof DeepResearchState.State,
+  context?: {
+    question?: string;
+    notFound?: Extract<WeatherToolResult, { status: "not_found" }>;
+  }
+): Promise<WeatherRepairCandidate[]> {
   const prompt = [
-    "Return only one JSON object. Do not use markdown.",
+    "Return only JSON. Do not use markdown.",
     "The weather geocoding service could not find the location below.",
-    "Suggest an alternative location name that a geocoding API (Open-Meteo) might recognize.",
+    "Suggest up to three alternative provider-facing location queries that a geocoding API (Open-Meteo) might recognize.",
+    "Prefer short proper place names for the location field.",
+    "Put parent administrative areas into region, not into location.",
     "You may use a standard local-language name, romanization, or administrative context when the original place is an administrative district or city suffix form.",
-    "Preserve the original raw request; only propose provider-facing location, country, and region fields.",
+    "If the original request implies a district inside a city, candidate 1 should use the district/base place name as location and the parent city as region.",
+    "If a municipality or city suffix is present, use a provider-recognizable city name and country hint only when implied by the original request.",
+    "Do not translate the whole question. Only repair the geographic query.",
+    "Preserve the original raw request in runtime; only propose provider-facing location, country, region, and reason fields.",
+    "If the location cannot be inferred from the original question and request, return an empty candidates array instead of guessing.",
     "Do not invent coordinates.",
-    "Do not return latitude, longitude, providerId, candidates, URLs, source names, or tool calls.",
+    "Do not return latitude, longitude, coordinates, providerId, provider candidates, URLs, source names, or tool calls.",
+    "Do not return more than three candidates.",
+    "Do not include multiple places inside a single candidate.",
     "Do not invent a place that is not implied by the original request.",
     "Keep country and region hints from the original request if they are correct.",
-    'JSON schema: {"location":"string","country":"string optional","region":"string optional"}',
-    `Original request: ${JSON.stringify(request)}`,
+    'JSON schema: {"candidates":[{"location":"string","country":"string optional","region":"string optional","reason":"string optional"}]}',
+    'Backward-compatible single object is accepted: {"location":"string","country":"string optional","region":"string optional","reason":"string optional"}',
+    `Original user question: ${JSON.stringify(context?.question ?? (state.messages ? getResearchTopic(state.messages) : ""))}`,
+    `Planner requested location: ${JSON.stringify(request.location)}`,
+    `Raw location: ${JSON.stringify(request.raw)}`,
+    `Country hint: ${JSON.stringify(request.country ?? "")}`,
+    `Region hint: ${JSON.stringify(request.region ?? "")}`,
+    `Not-found message: ${JSON.stringify(context?.notFound?.message ?? "")}`,
+    `Provider attempted queries: ${JSON.stringify(context?.notFound?.attemptedQueries ?? [])}`,
   ].join("\n");
 
   try {
     const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
     const llm = llmGateway.createChatModel({ model, temperature: 0 });
     const response = await llm.invoke(prompt);
-    const parsed = parseJsonObject<Partial<{
-      location: string;
-      country?: string;
-      region?: string;
-    }> & Record<string, unknown>>(messageContentToString(response));
-    if (!parsed || typeof parsed.location !== "string") {
-      return undefined;
+    const rawContent = messageContentToString(response);
+    const parsedResult = parseJsonObjectWithDiagnostics<WeatherRepairResponse>(rawContent);
+    if (parsedResult.failureCode || !parsedResult.parsed) {
+      await recordWeatherLlmDiagnostic({
+        phase: "repair",
+        failureCode: "parse_failed",
+        responseContentLength: parsedResult.responseContentLength,
+      });
+      return [];
     }
 
-    const forbiddenFields = ["latitude", "longitude", "providerId", "candidates", "sourceUrl"];
-    if (forbiddenFields.some((field) => field in parsed)) {
-      return undefined;
-    }
-
-    const location = parsed.location.trim();
-    if (validateLocationInput(location, 160)) {
-      return undefined;
-    }
-
-    const country = typeof parsed.country === "string" && parsed.country.trim()
-      ? parsed.country.trim()
-      : request.country;
-    const region = typeof parsed.region === "string" && parsed.region.trim()
-      ? parsed.region.trim()
-      : request.region;
-
-    return {
-      raw: request.raw,
-      location,
-      country,
-      region,
-    };
+    const candidates = coerceWeatherRepairCandidates(parsedResult.parsed, request);
+    const rawCandidateCount = getRawWeatherRepairCandidateCount(parsedResult.parsed);
+    await recordWeatherLlmDiagnostic({
+      phase: "repair",
+      resultStatus: candidates.length ? "accepted" : "rejected",
+      failureCode: candidates.length
+        ? undefined
+        : rawCandidateCount > 0
+          ? "schema_rejected"
+          : "empty_candidates",
+      responseContentLength: parsedResult.responseContentLength,
+      repairJson: parsedResult.parsed,
+      candidateCount: candidates.length,
+    });
+    return candidates;
   } catch {
+    await recordWeatherLlmDiagnostic({
+      phase: "repair",
+      failureCode: "llm_unavailable",
+    });
+    return [];
+  }
+}
+
+function getRawWeatherRepairCandidateCount(parsed: WeatherRepairResponse): number {
+  if (Array.isArray(parsed.candidates)) {
+    return parsed.candidates.length;
+  }
+  return parsed.location !== undefined ? 1 : 0;
+}
+
+function coerceWeatherRepairCandidates(
+  parsed: WeatherRepairResponse | undefined,
+  request: LocationQuery
+): WeatherRepairCandidate[] {
+  if (!parsed || typeof parsed !== "object") {
+    return [];
+  }
+
+  const rawCandidates = Array.isArray(parsed.candidates)
+    ? parsed.candidates
+    : parsed.location !== undefined
+      ? [parsed]
+      : [];
+
+  const candidates: WeatherRepairCandidate[] = [];
+  const seen = new Set<string>();
+
+  for (const rawCandidate of rawCandidates.slice(0, MAX_WEATHER_REPAIR_CANDIDATES)) {
+    const candidate = coerceWeatherRepairCandidate(rawCandidate, request);
+    if (!candidate) {
+      continue;
+    }
+
+    const key = [
+      candidate.location,
+      candidate.country ?? "",
+      candidate.region ?? "",
+    ].map((value) => value.normalize("NFKC").toLowerCase()).join("|");
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    candidates.push(candidate);
+  }
+
+  return candidates;
+}
+
+function coerceWeatherRepairCandidate(
+  rawCandidate: unknown,
+  request: LocationQuery
+): WeatherRepairCandidate | undefined {
+  if (!rawCandidate || typeof rawCandidate !== "object" || Array.isArray(rawCandidate)) {
     return undefined;
+  }
+
+  const candidate = rawCandidate as Record<string, unknown>;
+  if (FORBIDDEN_WEATHER_REPAIR_FIELDS.some((field) => field in candidate)) {
+    return undefined;
+  }
+
+  if (typeof candidate.location !== "string") {
+    return undefined;
+  }
+
+  const location = candidate.location.trim();
+  if (validateLocationInput(location, 160)) {
+    return undefined;
+  }
+
+  const country = typeof candidate.country === "string" && candidate.country.trim()
+    ? candidate.country.trim()
+    : request.country;
+  const region = typeof candidate.region === "string" && candidate.region.trim()
+    ? candidate.region.trim()
+    : request.region;
+  const reason = typeof candidate.reason === "string" && candidate.reason.trim()
+    ? candidate.reason.trim()
+    : undefined;
+
+  return {
+    location,
+    country,
+    region,
+    reason,
+  };
+}
+
+function shouldRepairWeatherRequest(
+  result: WeatherToolResult
+): result is Extract<WeatherToolResult, { status: "not_found" }> {
+  return result.status === "not_found";
+}
+
+function plannerReturnedWeatherWithoutLocation(rawPlan: Partial<ResearchPlan> | undefined): boolean {
+  return rawPlan?.answerMode === "weather" && !coerceWeatherRequest(rawPlan.weather);
+}
+
+function shouldRetryWeatherPlannerExtraction(
+  rawPlan: Partial<ResearchPlan> | undefined,
+  plan: ResearchPlan,
+  question: string
+): boolean {
+  const rawClarification =
+    typeof rawPlan?.clarification === "string" ? rawPlan.clarification : undefined;
+  const fallbackDecision = createPlannerFailureRoutingDecision(question);
+  const fallbackDetectedWeatherWithoutLocation =
+    plan.answerMode === "clarify" &&
+    !plan.weather?.location.trim() &&
+    fallbackDecision.answerMode === "clarify" &&
+    isMissingWeatherLocationClarification(fallbackDecision.clarification);
+
+  return (
+    plannerReturnedWeatherWithoutLocation(rawPlan) ||
+    isMissingWeatherLocationClarification(rawClarification) ||
+    (plan.answerMode === "clarify" &&
+      isMissingWeatherLocationClarification(plan.clarification)) ||
+    fallbackDetectedWeatherWithoutLocation
+  );
+}
+
+function hasForbiddenWeatherExtractionFields(
+  parsed: WeatherPlannerExtractionResponse | undefined
+): boolean {
+  if (!parsed) {
+    return false;
+  }
+
+  const weather = isRecord(parsed.weather) ? parsed.weather : undefined;
+  return FORBIDDEN_WEATHER_PLANNER_EXTRACTION_FIELDS.some(
+    (field) => field in parsed || Boolean(weather && field in weather)
+  );
+}
+
+function coerceWeatherPlannerExtractionPlan(
+  parsed: WeatherPlannerExtractionResponse | undefined,
+  question: string
+): ResearchPlan | undefined {
+  if (!parsed || !isRecord(parsed) || hasForbiddenWeatherExtractionFields(parsed)) {
+    return undefined;
+  }
+
+  const weather = coerceWeatherRequest(parsed.weather);
+  if (weather) {
+    return {
+      question,
+      answerMode: "weather",
+      rationale: "Bounded weather planner extraction recovered a user-provided location.",
+      queries: [],
+      urls: [],
+      weather,
+      requiredSourceCount: 1,
+    };
+  }
+
+  if (parsed.answerMode === "clarify") {
+    return {
+      ...missingWeatherLocationPlan(
+        question,
+        "Bounded weather planner extraction could not find a user-provided location."
+      ),
+      clarification:
+        typeof parsed.clarification === "string" && parsed.clarification.trim()
+          ? parsed.clarification.trim()
+          : BACKEND_ERROR_MESSAGES.planner.missingWeatherLocation,
+    };
   }
 
   return undefined;
 }
 
-function shouldRepairWeatherRequest(result: WeatherToolResult): boolean {
-  return result.status === "not_found";
+async function retryWeatherPlannerExtraction(
+  question: string,
+  state: typeof DeepResearchState.State
+): Promise<ResearchPlan | undefined> {
+  const prompt = [
+    "Return only JSON. Do not use markdown.",
+    "Extract a weather planning decision from the current user request only.",
+    "Plan only the current user request.",
+    "Do not use prior messages.",
+    "Do not treat prior assistant clarification as the current request.",
+    "Use the exact user-provided place text, or a directly traceable place span from the current request.",
+    "Do not translate place names to English.",
+    "Do not strip weather words, time words, particles, or punctuation to guess a location.",
+    "If the current request asks for weather and includes a location, return answerMode weather with weather.location.",
+    "If no location is provided, return answerMode clarify with a short clarification.",
+    "Do not invent coordinates.",
+    "Do not return latitude, longitude, coordinates, providerId, provider candidates, URLs, source names, or tool calls.",
+    'JSON schema: {"answerMode":"weather|clarify","weather":{"location":"string","country":"string optional","region":"string optional"},"clarification":"string optional"}',
+    `Current user request: ${JSON.stringify(question)}`,
+  ].join("\n");
+
+  try {
+    const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
+    const llm = llmGateway.createChatModel({ model, temperature: 0 });
+    const response = await llm.invoke(prompt);
+    const rawContent = messageContentToString(response);
+    const parsedResult = parseJsonObjectWithDiagnostics<WeatherPlannerExtractionResponse>(rawContent);
+    if (parsedResult.failureCode || !parsedResult.parsed) {
+      await recordWeatherLlmDiagnostic({
+        phase: "planner_extraction",
+        failureCode: "parse_failed",
+        responseContentLength: parsedResult.responseContentLength,
+      });
+      return undefined;
+    }
+
+    const plan = coerceWeatherPlannerExtractionPlan(parsedResult.parsed, question);
+    await recordWeatherLlmDiagnostic({
+      phase: "planner_extraction",
+      resultStatus: plan ? plan.answerMode : "rejected",
+      failureCode: plan ? undefined : "schema_rejected",
+      responseContentLength: parsedResult.responseContentLength,
+      plannerJson: parsedResult.parsed,
+    });
+    return plan;
+  } catch {
+    await recordWeatherLlmDiagnostic({
+      phase: "planner_extraction",
+      failureCode: "llm_unavailable",
+    });
+    return undefined;
+  }
+}
+
+async function applyWeatherPlannerExtractionRetry(
+  rawPlan: Partial<ResearchPlan> | undefined,
+  plan: ResearchPlan,
+  question: string,
+  state: typeof DeepResearchState.State
+): Promise<ResearchPlan> {
+  if (!shouldRetryWeatherPlannerExtraction(rawPlan, plan, question)) {
+    return plan;
+  }
+
+  const retryPlan = await retryWeatherPlannerExtraction(question, state);
+  return retryPlan ?? missingWeatherLocationPlan(
+    question,
+    "Weather intent was detected, but no geocoding-friendly location was provided."
+  );
 }
 
 async function planResearch(
   state: typeof DeepResearchState.State,
   _config: RunnableConfig
 ): Promise<Partial<typeof DeepResearchState.State>> {
-  const question = getResearchTopic(state.messages).trim();
+  const question = getLatestUserMessage(state.messages).trim();
   if (!question) {
     return {
       plan: {
@@ -625,6 +1039,10 @@ async function planResearch(
   const prompt = [
     "You are a research pipeline planner for a LangGraph agent.",
     "Return only one JSON object. Do not use markdown.",
+    "Plan only the current user request.",
+    "Recent messages are context only.",
+    "Do not treat prior assistant clarification as the current request.",
+    "Set question exactly to the current user request below, not to a transcript.",
     "Classify the user request and decide whether it needs direct answer, current weather, calculation, web research, or clarification.",
     "Use web research for current facts, news, products, prices, law, regulations, company/person changes, technical docs that may have changed, and any topic requiring external evidence.",
     "Use weather only for actual weather/temperature/rain/wind/humidity questions.",
@@ -638,7 +1056,7 @@ async function planResearch(
     JSON.stringify(contextPack, null, 2),
     "Image recognition context:",
     imageContext,
-    "User request:",
+    "Current user request:",
     question,
   ].join("\n");
 
@@ -646,8 +1064,22 @@ async function planResearch(
     const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
     const llm = llmGateway.createChatModel({ model, temperature: 0 });
     const response = await llm.invoke(prompt);
-    const parsed = parseJsonObject<Partial<ResearchPlan>>(messageContentToString(response));
-    const plan = coercePlan(parsed, question, state);
+    const rawContent = messageContentToString(response);
+    const parsedResult = parseJsonObjectWithDiagnostics<Partial<ResearchPlan>>(rawContent);
+    const parsed = parsedResult.parsed;
+    const plan = await applyWeatherPlannerExtractionRetry(
+      parsed,
+      coercePlan(parsed, question, state),
+      question,
+      state
+    );
+    await recordWeatherLlmDiagnostic({
+      phase: "planner",
+      resultStatus: plan.answerMode,
+      failureCode: parsedResult.failureCode,
+      responseContentLength: parsedResult.responseContentLength,
+      plannerJson: parsed,
+    });
     return { plan };
   } catch (error) {
     const llmDiagnostics = describeLlmGatewayConfig();
@@ -655,7 +1087,13 @@ async function planResearch(
       count: 1,
       ...llmDiagnostics,
     });
-    const plan = fallbackPlan(question, state, formatLlmError(error));
+    const fallback = fallbackPlan(question, state, formatLlmError(error));
+    const plan = await applyWeatherPlannerExtractionRetry(undefined, fallback, question, state);
+    await recordWeatherLlmDiagnostic({
+      phase: "planner",
+      resultStatus: plan.answerMode,
+      failureCode: "llm_unavailable",
+    });
     return { plan };
   }
 }
@@ -711,8 +1149,21 @@ async function targetedTools(
         repaired: true,
       });
       await recordMetric("weather.location.repair.count", { count: 1 });
-      const repairedRequest = await repairWeatherRequest(request, state);
-      if (repairedRequest) {
+      const repairCandidates = await repairWeatherRequest(request, state, {
+        question: plan.question,
+        notFound: parsedResult,
+      });
+      let firstClarification: { content: string; result: WeatherToolResult } | undefined;
+      let lastNotFound: { content: string; result: WeatherToolResult } | undefined;
+      let terminalRepairResult: { content: string; result: WeatherToolResult } | undefined;
+
+      for (const [index, candidate] of repairCandidates.entries()) {
+        const repairedRequest: LocationQuery = {
+          raw: request.raw,
+          location: candidate.location,
+          country: candidate.country,
+          region: candidate.region,
+        };
         const retryContent = await invokeTool(
           DEEP_RESEARCH_TOOL_NAMES.currentWeather,
           {
@@ -722,17 +1173,38 @@ async function targetedTools(
           _config
         );
         const retryParsed = parseWeatherToolResult(retryContent);
-        if (retryParsed) {
-          parsedResult = retryParsed;
-          content = retryContent;
-          await recordWeatherAuditEvent("weather.location.repair.result", {
-            raw: repairedRequest.raw,
-            strategy: "llm_repair",
-            resultStatus: retryParsed.status,
-            errorCode: "code" in retryParsed ? retryParsed.code : undefined,
-            repaired: true,
-          });
+        if (!retryParsed) {
+          continue;
         }
+
+        await recordWeatherAuditEvent("weather.location.repair.result", {
+          raw: repairedRequest.raw,
+          strategy: "llm_repair",
+          resultStatus: retryParsed.status,
+          errorCode: "code" in retryParsed ? retryParsed.code : undefined,
+          repaired: true,
+          attemptCount: index + 1,
+        });
+
+        if (retryParsed.status === "success" || retryParsed.status === "error") {
+          terminalRepairResult = { content: retryContent, result: retryParsed };
+          break;
+        }
+
+        if (retryParsed.status === "needs_clarification" && !firstClarification) {
+          firstClarification = { content: retryContent, result: retryParsed };
+          continue;
+        }
+
+        if (retryParsed.status === "not_found") {
+          lastNotFound = { content: retryContent, result: retryParsed };
+        }
+      }
+
+      const selectedRepairResult = terminalRepairResult ?? firstClarification ?? lastNotFound;
+      if (selectedRepairResult) {
+        parsedResult = selectedRepairResult.result;
+        content = selectedRepairResult.content;
       } else {
         await recordWeatherAuditEvent("weather.location.repair.result", {
           raw: request.raw,
@@ -1191,6 +1663,7 @@ function buildTargetedToolAnswer(
 
 export const deepResearcherWeatherTestInternals = {
   planResearch,
+  routeAfterPlan,
   parseWeatherToolResult,
   repairWeatherRequest,
   buildWeatherToolAnswer,

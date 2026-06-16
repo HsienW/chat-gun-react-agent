@@ -177,6 +177,16 @@ const candidates: Record<string, OpenMeteoResult[]> = {
   [MUNCHEN.toLowerCase()]: [
     {
       name: MUNCHEN,
+      latitude: 52.1,
+      longitude: 13.4,
+      country: "Germany",
+      country_code: "DE",
+      admin1: "Brandenburg",
+      timezone: "Europe/Berlin",
+      population: 3_000,
+    },
+    {
+      name: "Munich",
       latitude: 48.137,
       longitude: 11.575,
       country: "Germany",
@@ -187,13 +197,11 @@ const candidates: Record<string, OpenMeteoResult[]> = {
     },
     {
       name: MUNCHEN,
-      latitude: 52.1,
-      longitude: 13.4,
+      latitude: 48.1372,
+      longitude: 11.5754,
       country: "Germany",
       country_code: "DE",
-      admin1: "Brandenburg",
-      timezone: "Europe/Berlin",
-      population: 3_000,
+      admin1: "Bavaria",
     },
     {
       name: MUNCHEN,

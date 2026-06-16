@@ -2,6 +2,22 @@
 
 ## ADDED Requirements
 
+### Requirement: Bounded LLM Repair Candidate Retry
+
+Runtime MUST limit LLM Repair to one bounded invocation after the first `not_found`; that invocation MAY return up to three textual LocationQuery candidates.
+
+#### Scenario: Multi-candidate repair retries through Resolver
+
+- GIVEN Deterministic Resolver returns `not_found`
+- AND the Weather Request has not yet been repaired
+- WHEN Runtime starts LLM Repair
+- THEN LLM Repair output MUST contain only textual candidates with `location`, optional `country`, optional `region`, and optional `reason`
+- AND Runtime MUST reject coordinates, provider IDs, provider candidates, URLs, tool calls, and other direct resolution data
+- AND Runtime MUST validate each candidate and re-run the same Provider Resolver with `resolutionStrategy = "llm_repair"`
+- AND Runtime MAY use the first candidate that resolves successfully through the provider-backed weather tool
+- AND Runtime MUST NOT run a second LLM Repair invocation for the same Weather Request
+- AND Runtime MUST NOT ask the LLM to choose among provider candidates when a repair candidate returns `ambiguous`
+
 ### Requirement: Planner 不得限制可查詢地區
 
 Deep Research Planner MUST 將天氣地點視為開放文字實體，MUST NOT 透過 Prompt 中的固定城市範例形成地區 allowlist。

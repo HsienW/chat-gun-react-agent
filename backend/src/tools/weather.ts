@@ -505,6 +505,7 @@ export const weatherTool = tool(
         code: "weather_location_not_found",
         message: `Could not find location "${query.location}". Please provide a more specific location.`,
         summary: `Could not find "${query.location}". Please provide a more specific location.`,
+        attemptedQueries: resolutionResult.attemptedQueries,
       };
       await recordMetric("weather.location.resolve.not_found.count", { count: 1 });
       await auditLogger.record("weather.location.resolve.not_found", {

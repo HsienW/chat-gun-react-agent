@@ -26,6 +26,60 @@ export interface LlmGateway {
   createChatModel(options?: ChatModelOptions): ChatModelInvoker;
 }
 
+export type LlmProviderName = "gemini" | "ccr" | "openai-compatible";
+export type LlmEndpointKind = "gemini-sdk" | "anthropic-messages" | "openai-chat-completions";
+
+type LlmResponseDiagnostics = {
+  provider: LlmProviderName;
+  endpointKind: LlmEndpointKind;
+  responseContentLength: number;
+  jsonParseFailureCode?: "llm_response_json_parse_failed";
+};
+
+function responseDiagnostics(
+  provider: LlmProviderName,
+  endpointKind: LlmEndpointKind,
+  responseText: string,
+  jsonParseFailureCode?: LlmResponseDiagnostics["jsonParseFailureCode"]
+): LlmResponseDiagnostics {
+  return {
+    provider,
+    endpointKind,
+    responseContentLength: responseText.length,
+    ...(jsonParseFailureCode ? { jsonParseFailureCode } : {}),
+  };
+}
+
+function formatResponseDiagnostics(diagnostics: LlmResponseDiagnostics): string {
+  return JSON.stringify(diagnostics);
+}
+
+function parseJsonResponse<T>(
+  responseText: string,
+  provider: LlmProviderName,
+  endpointKind: LlmEndpointKind
+): T {
+  try {
+    return JSON.parse(responseText) as T;
+  } catch {
+    throw new Error(
+      `LLM gateway response JSON parse failed: ${formatResponseDiagnostics(
+        responseDiagnostics(provider, endpointKind, responseText, "llm_response_json_parse_failed")
+      )}`
+    );
+  }
+}
+
+function endpointKindForProvider(provider: LlmProviderName): LlmEndpointKind {
+  if (provider === "ccr") {
+    return "anthropic-messages";
+  }
+  if (provider === "openai-compatible") {
+    return "openai-chat-completions";
+  }
+  return "gemini-sdk";
+}
+
 class GeminiGateway implements LlmGateway {
   createChatModel(options: ChatModelOptions = {}): ChatModelInvoker {
     return new ChatGoogleGenerativeAI({
@@ -81,6 +135,7 @@ function getOpenAiCompatibleBaseUrl(): string {
   return getFirstEnv([
     "OPENAI_COMPATIBLE_BASE_URL",
     "OPENAI_BASE_URL",
+    "CCR_BASE_URL",
   ]);
 }
 
@@ -88,6 +143,7 @@ function getOpenAiCompatibleApiKey(): string {
   return getFirstEnv([
     "OPENAI_COMPATIBLE_API_KEY",
     "OPENAI_API_KEY",
+    "CCR_API_KEY",
   ]);
 }
 
@@ -95,6 +151,7 @@ function getOpenAiCompatibleModel(requestedModel: string | undefined): string {
   const configuredModel = getFirstEnv([
     "OPENAI_COMPATIBLE_MODEL",
     "OPENAI_MODEL",
+    "CCR_MODEL",
     "DEFAULT_MODEL",
   ]);
   const requested = requestedModel?.trim();
@@ -267,6 +324,8 @@ class OpenAiCompatibleChatModel implements ChatModelInvoker {
 
   async invoke(input: ChatModelInput): Promise<ChatModelOutput> {
     const url = buildChatCompletionsUrl(this.options.baseUrl);
+    const provider: LlmProviderName = "openai-compatible";
+    const endpointKind: LlmEndpointKind = "openai-chat-completions";
     const headers: Record<string, string> = {
       "content-type": "application/json",
     };
@@ -288,15 +347,20 @@ class OpenAiCompatibleChatModel implements ChatModelInvoker {
             messages: toOpenAiMessages(input),
           }),
         });
+        const responseText = await response.text();
+        const diagnostics = responseDiagnostics(provider, endpointKind, responseText);
 
         if (!response.ok) {
-          const responseText = await response.text();
           throw new Error(
-            `OpenAI-compatible chat completion failed: ${response.status} ${response.statusText}${responseText ? ` ${responseText.slice(0, 500)}` : ""}`
+            `OpenAI-compatible chat completion failed: ${response.status} ${response.statusText} ${formatResponseDiagnostics(diagnostics)}`
           );
         }
 
-        const parsed = (await response.json()) as OpenAiChatCompletionResponse;
+        const parsed = parseJsonResponse<OpenAiChatCompletionResponse>(
+          responseText,
+          provider,
+          endpointKind
+        );
         const content = parsed.choices?.[0]?.message?.content;
         return new AIMessage(contentToString(content));
       } catch (error) {
@@ -341,6 +405,8 @@ class CcrAnthropicChatModel implements ChatModelInvoker {
 
   async invoke(input: ChatModelInput): Promise<ChatModelOutput> {
     const url = buildAnthropicMessagesUrl(this.options.baseUrl);
+    const provider: LlmProviderName = "ccr";
+    const endpointKind: LlmEndpointKind = "anthropic-messages";
     const headers: Record<string, string> = {
       "content-type": "application/json",
       "anthropic-version": "2023-06-01",
@@ -367,15 +433,20 @@ class CcrAnthropicChatModel implements ChatModelInvoker {
             ...(payload.system ? { system: payload.system } : {}),
           }),
         });
+        const responseText = await response.text();
+        const diagnostics = responseDiagnostics(provider, endpointKind, responseText);
 
         if (!response.ok) {
-          const responseText = await response.text();
           throw new Error(
-            `CCR messages request failed: ${response.status} ${response.statusText}${responseText ? ` ${responseText.slice(0, 500)}` : ""}`
+            `CCR messages request failed: ${response.status} ${response.statusText} ${formatResponseDiagnostics(diagnostics)}`
           );
         }
 
-        const parsed = (await response.json()) as AnthropicMessagesResponse;
+        const parsed = parseJsonResponse<AnthropicMessagesResponse>(
+          responseText,
+          provider,
+          endpointKind
+        );
         const content = parsed.content
           ?.map((block) => block.type === "text" ? contentToString(block.text) : "")
           .filter(Boolean)
@@ -409,8 +480,6 @@ class CcrGateway implements LlmGateway {
     });
   }
 }
-
-export type LlmProviderName = "gemini" | "ccr" | "openai-compatible";
 
 export function getConfiguredLlmProvider(): LlmProviderName {
   const provider = getEnv("LLM_PROVIDER").trim().toLowerCase();
@@ -452,6 +521,7 @@ export function describeLlmGatewayConfig(): Record<string, string | boolean> {
   const provider = getConfiguredLlmProvider();
   return {
     provider,
+    endpointKind: endpointKindForProvider(provider),
     baseUrlConfigured: provider === "ccr"
       ? Boolean(getCcrBaseUrl())
       : provider === "openai-compatible"

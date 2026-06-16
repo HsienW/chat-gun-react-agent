@@ -99,54 +99,79 @@ export function buildGeocodingQueryVariants(
   query: LocationQuery,
   maxVariants: number = 6
 ): GeocodingQueryVariant[] {
-  const variants: string[] = [];
-  const seen = new Set<string>();
+  const requiredTexts: string[] = [];
+  const preFallbackOptionalTexts: string[] = [];
+  const postFallbackOptionalTexts: string[] = [];
+  const seenTexts = new Set<string>();
 
-  function add(text: string): void {
+  function addText(target: string[], text: string): void {
     const trimmed = text.trim();
-    if (trimmed && !seen.has(trimmed.toLowerCase()) && variants.length < maxVariants) {
-      seen.add(trimmed.toLowerCase());
-      variants.push(trimmed);
+    const key = trimmed.toLowerCase();
+    if (trimmed && !seenTexts.has(key)) {
+      seenTexts.add(key);
+      target.push(trimmed);
     }
   }
 
-  // 1. Location only
-  add(query.location);
+  addText(requiredTexts, query.location);
 
-  // 2. Location + country
-  if (query.country) {
-    add(`${query.location}, ${query.country}`);
-    add(`${query.location} ${query.country}`);
-  }
-
-  // 3. Location + region
   if (query.region) {
-    add(`${query.location}, ${query.region}`);
-    add(`${query.location} ${query.region}`);
+    addText(requiredTexts, `${query.location}, ${query.region}`);
   }
 
-  // 4. Location + region + country
   if (query.region && query.country) {
-    add(`${query.location}, ${query.region}, ${query.country}`);
+    addText(requiredTexts, `${query.location}, ${query.region}, ${query.country}`);
+  }
+
+  if (query.country) {
+    addText(preFallbackOptionalTexts, `${query.location}, ${query.country}`);
+  }
+
+  if (query.region) {
+    addText(postFallbackOptionalTexts, `${query.location} ${query.region}`);
+  }
+
+  if (query.region && query.country) {
+    addText(postFallbackOptionalTexts, `${query.location} ${query.region} ${query.country}`);
+  }
+
+  if (query.country) {
+    addText(postFallbackOptionalTexts, `${query.location} ${query.country}`);
   }
 
   const providerVariants: GeocodingQueryVariant[] = [];
   const providerSeen = new Set<string>();
-  const languages: Array<string | undefined> = [undefined, "zh", "en"];
+  const allTexts = [...requiredTexts, ...preFallbackOptionalTexts, ...postFallbackOptionalTexts];
 
-  for (const text of variants) {
-    for (const language of languages) {
-      const key = `${text.toLowerCase()}|${language ?? ""}`;
-      if (providerSeen.has(key) || providerVariants.length >= maxVariants) {
-        continue;
-      }
-      providerSeen.add(key);
-      providerVariants.push({
-        text,
-        language,
-        strategy: language ? "locale_fallback" : query.country || query.region ? "contextual" : "original",
-      });
+  function addVariant(text: string, language?: string): void {
+    const key = `${text.toLowerCase()}|${language ?? ""}`;
+    if (providerSeen.has(key) || providerVariants.length >= maxVariants) {
+      return;
     }
+    providerSeen.add(key);
+    providerVariants.push({
+      text,
+      language,
+      strategy: language ? "locale_fallback" : text === query.location ? "original" : "contextual",
+    });
+  }
+
+  for (const text of requiredTexts) {
+    addVariant(text);
+  }
+
+  for (const text of preFallbackOptionalTexts) {
+    addVariant(text);
+  }
+
+  for (const language of ["zh", "en"]) {
+    for (const text of allTexts) {
+      addVariant(text, language);
+    }
+  }
+
+  for (const text of postFallbackOptionalTexts) {
+    addVariant(text);
   }
 
   return providerVariants;

@@ -433,11 +433,29 @@ LLM 只能回傳：
 
 ```json
 {
-  "location": "string",
-  "country": "string optional",
-  "region": "string optional"
+  "candidates": [
+    {
+      "location": "string",
+      "country": "string optional",
+      "region": "string optional",
+      "reason": "string optional"
+    }
+  ]
 }
 ```
+
+LLM Repair remains a single bounded invocation. It MAY return up to three textual LocationQuery candidates. Backward-compatible single-object repair output MAY be accepted and treated as one candidate:
+
+```json
+{
+  "location": "string",
+  "country": "string optional",
+  "region": "string optional",
+  "reason": "string optional"
+}
+```
+
+Runtime MUST validate each candidate, preserve the original raw location, set `resolutionStrategy = "llm_repair"`, and re-run the same Provider Resolver for each candidate in order. The first provider-resolved weather success MAY be used. If a repair candidate returns `ambiguous`, Runtime MUST NOT ask the LLM to choose a provider candidate; it MAY continue to the next repair candidate, and otherwise MUST preserve the clarification result. Runtime MUST NOT run a second LLM Repair invocation.
 
 不得回傳：
 

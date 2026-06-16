@@ -129,6 +129,26 @@ describe("buildQueryVariants (Task 2.5, 2.6)", () => {
     expect(variants.some((variant) => variant.language === "en")).toBe(true);
   });
 
+  it("keeps Fengshan full context before language fallbacks within max queries", () => {
+    const query: LocationQuery = {
+      raw: "\u9ad8\u96c4\u9cf3\u5c71",
+      location: "Fengshan",
+      region: "Kaohsiung",
+      country: "Taiwan",
+    };
+
+    const variants = buildGeocodingQueryVariants(query, 6);
+
+    expect(variants.map((variant) => `${variant.text}|${variant.language ?? "default"}`)).toEqual([
+      "Fengshan|default",
+      "Fengshan, Kaohsiung|default",
+      "Fengshan, Kaohsiung, Taiwan|default",
+      "Fengshan, Taiwan|default",
+      "Fengshan|zh",
+      "Fengshan, Kaohsiung|zh",
+    ]);
+  });
+
   it("should honor configurable max input length", () => {
     expect(validateLocationInput("Tokyo", 4)).not.toBeNull();
     expect(validateLocationInput("Tokyo", 5)).toBeNull();
@@ -256,14 +276,16 @@ describe("resolveLocation", () => {
     }
   });
 
-  it("should resolve Zhongshan with country context but ambiguous without", async () => {
+  it("should keep Zhongshan ambiguous without context and resolve with country context", async () => {
     // Without country, "zhongshan" matches Zhongshan, CN strongly (name match + high pop)
     const queryNoContext: LocationQuery = { raw: "中山", location: "zhongshan" };
+    queryNoContext.raw = "\u4e2d\u5c71";
     const resultNoContext = await resolveLocation(queryNoContext, mockProvider);
-    expect(resultNoContext.status).toBe("resolved");
+    expect(resultNoContext.status).toBe("ambiguous");
 
     // With country=TW, it should match Zhongshan District, Taipei
     const queryTW: LocationQuery = { raw: "中山", location: "zhongshan", country: "TW" };
+    queryTW.raw = "\u4e2d\u5c71";
     const resultTW = await resolveLocation(queryTW, mockProvider);
     expect(resultTW.status).toBe("resolved");
     if (resultTW.status === "resolved") {
@@ -275,6 +297,32 @@ describe("resolveLocation", () => {
     const query: LocationQuery = { raw: "Xyzzyville", location: "xyzzyville" };
     const result = await resolveLocation(query, mockProvider);
     expect(result.status).toBe("not_found");
+  });
+
+  it("includes provider language in attempted query diagnostics", async () => {
+    const emptyProvider: GeocodingProvider = {
+      name: "empty",
+      async search() {
+        return [];
+      },
+    };
+    const query: LocationQuery = {
+      raw: "\u9ad8\u96c4\u9cf3\u5c71",
+      location: "Fengshan",
+      region: "Kaohsiung",
+      country: "Taiwan",
+    };
+
+    const result = await resolveLocation(query, emptyProvider, {
+      ...DEFAULT_RESOLVER_OPTIONS,
+      maxQueries: 6,
+    });
+
+    expect(result.status).toBe("not_found");
+    if (result.status === "not_found") {
+      expect(result.attemptedQueries).toContain("Fengshan, Kaohsiung, Taiwan [language=default]");
+      expect(result.attemptedQueries.some((queryText) => queryText.includes("[language=zh]"))).toBe(true);
+    }
   });
 
   it("should return provider_error when provider fails (Task 3.7)", async () => {
@@ -659,6 +707,140 @@ describe("resolveLocation", () => {
           latitude: 25.064,
           longitude: 121.533,
           population: 220_000,
+        },
+      ])
+    );
+
+    expect(result.status).toBe("ambiguous");
+  });
+
+  it("resolves München Bavaria Germany by conservative Latin prominence dominance", async () => {
+    const result = await resolveLocation(
+      { raw: "M\u00fcnchen", location: "M\u00fcnchen" },
+      providerFor([
+        {
+          provider: "open-meteo",
+          name: "M\u00fcnchen",
+          displayName: "M\u00fcnchen, Brandenburg, Germany",
+          country: "Germany",
+          countryCode: "DE",
+          admin1: "Brandenburg",
+          latitude: 52.1,
+          longitude: 13.4,
+          population: 3_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "Munich",
+          displayName: "Munich, Bavaria, Germany",
+          country: "Germany",
+          countryCode: "DE",
+          admin1: "Bavaria",
+          latitude: 48.137,
+          longitude: 11.575,
+          timezone: "Europe/Berlin",
+          population: 1_500_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "M\u00fcnchen",
+          displayName: "M\u00fcnchen, Bavaria, Germany",
+          country: "Germany",
+          countryCode: "DE",
+          admin1: "Bavaria",
+          latitude: 48.1372,
+          longitude: 11.5754,
+        },
+        {
+          provider: "open-meteo",
+          name: "M\u00fcnchen",
+          displayName: "M\u00fcnchen, Switzerland",
+          country: "Switzerland",
+          countryCode: "CH",
+          latitude: 47.3,
+          longitude: 8.3,
+          population: 1_500,
+        },
+        {
+          provider: "open-meteo",
+          name: "M\u00fcnchen",
+          displayName: "M\u00fcnchen, Austria",
+          country: "Austria",
+          countryCode: "AT",
+          latitude: 48.0,
+          longitude: 14.0,
+          population: 1_000,
+        },
+      ])
+    );
+
+    expect(result.status).toBe("resolved");
+    if (result.status === "resolved") {
+      expect(result.candidate.countryCode).toBe("DE");
+      expect(result.candidate.admin1).toBe("Bavaria");
+      expect(result.candidate.name).toBe("M\u00fcnchen");
+      expect(result.candidate.population).toBe(1_500_000);
+    }
+  });
+
+  it("does not resolve Latin homonyms when prominence ratio is not dominant", async () => {
+    const result = await resolveLocation(
+      { raw: "Springfield", location: "Springfield" },
+      providerFor([
+        {
+          provider: "open-meteo",
+          name: "Springfield",
+          displayName: "Springfield, Illinois, United States",
+          country: "United States",
+          countryCode: "US",
+          admin1: "Illinois",
+          latitude: 39.781,
+          longitude: -89.65,
+          population: 520_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "Springfield",
+          displayName: "Springfield, Missouri, United States",
+          country: "United States",
+          countryCode: "US",
+          admin1: "Missouri",
+          latitude: 37.215,
+          longitude: -93.298,
+          population: 168_000,
+        },
+      ])
+    );
+
+    expect(result.status).toBe("ambiguous");
+  });
+
+  it("does not apply prominence dominance to short CJK place names", async () => {
+    const result = await resolveLocation(
+      { raw: "\u4e2d\u5c71", location: "\u4e2d\u5c71" },
+      providerFor([
+        {
+          provider: "open-meteo",
+          name: "\u4e2d\u5c71",
+          displayName: "\u4e2d\u5c71, Guangdong, China",
+          country: "China",
+          countryCode: "CN",
+          admin1: "Guangdong",
+          latitude: 22.521,
+          longitude: 113.378,
+          population: 4_400_000,
+        },
+        {
+          provider: "open-meteo",
+          name: "\u4e2d\u5c71",
+          displayName: "\u4e2d\u5c71, Taipei, Taiwan",
+          country: "Taiwan",
+          countryCode: "TW",
+          admin1: "Taipei City",
+          admin2: "Zhongshan District",
+          latitude: 25.064,
+          longitude: 121.533,
+          population: 120_000,
         },
       ])
     );

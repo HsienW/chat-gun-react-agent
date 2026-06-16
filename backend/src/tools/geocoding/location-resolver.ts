@@ -8,6 +8,7 @@ import {
   LocationQuery,
   LocationResolutionResult,
   ResolutionStrategy,
+  GeocodingQueryVariant,
 } from "../weather-types.js";
 import { buildGeocodingQueryVariants } from "./location-normalizer.js";
 
@@ -33,6 +34,18 @@ export const DEFAULT_RESOLVER_OPTIONS: ResolverOptions = {
   maxQueries: 6,
 };
 
+type CandidateEntry = {
+  candidate: LocationCandidate;
+  queryText: string;
+  strategy: ResolutionStrategy;
+};
+
+type ScoredCandidate = {
+  candidate: LocationCandidate;
+  score: number;
+  strategy: ResolutionStrategy;
+};
+
 /**
  * Resolve a location query using a geocoding provider.
  * Task 3.7 — returns one of four statuses.
@@ -43,12 +56,8 @@ export async function resolveLocation(
   options: ResolverOptions = DEFAULT_RESOLVER_OPTIONS
 ): Promise<LocationResolutionResult> {
   const variants = buildGeocodingQueryVariants(query, options.maxQueries);
-  const allCandidates: Array<{
-    candidate: LocationCandidate;
-    queryText: string;
-    strategy: ResolutionStrategy;
-  }> = [];
-  const seenKeys = new Set<string>();
+  const attemptedQueries = variants.map(formatAttemptedQuery);
+  const candidatesByKey = new Map<string, CandidateEntry>();
 
   for (const variant of variants) {
     try {
@@ -60,14 +69,13 @@ export async function resolveLocation(
       });
 
       for (const candidate of results) {
-        const keys = dedupKeys(candidate);
-        if (keys.some((key) => seenKeys.has(key))) {
+        const key = dedupKey(candidate);
+        const existing = candidatesByKey.get(key);
+        if (existing) {
+          existing.candidate = mergeLocationCandidate(existing.candidate, candidate, query);
           continue;
         }
-        for (const key of keys) {
-          seenKeys.add(key);
-        }
-        allCandidates.push({
+        candidatesByKey.set(key, {
           candidate,
           queryText: variant.text,
           strategy: options.strategy ?? variant.strategy,
@@ -87,7 +95,7 @@ export async function resolveLocation(
       }
 
       // If provider fails on the first variant, return provider_error
-      if (allCandidates.length === 0) {
+      if (candidatesByKey.size === 0) {
         if (message === "weather_geocoding_timeout") {
           return {
             status: "provider_error",
@@ -120,15 +128,19 @@ export async function resolveLocation(
     }
   }
 
-  if (allCandidates.length === 0) {
+  if (candidatesByKey.size === 0) {
     return {
       status: "not_found",
       query,
-      attemptedQueries: variants.map((variant) => variant.text),
+      attemptedQueries,
     };
   }
 
-  return scoreAndResolve(query, allCandidates, variants.map((variant) => variant.text), options);
+  return scoreAndResolve(query, Array.from(candidatesByKey.values()), attemptedQueries, options);
+}
+
+function formatAttemptedQuery(variant: GeocodingQueryVariant): string {
+  return `${variant.text} [language=${variant.language ?? "default"}]`;
 }
 
 /**
@@ -136,11 +148,7 @@ export async function resolveLocation(
  */
 function scoreAndResolve(
   query: LocationQuery,
-  candidates: Array<{
-    candidate: LocationCandidate;
-    queryText: string;
-    strategy: ResolutionStrategy;
-  }>,
+  candidates: CandidateEntry[],
   attemptedQueries: string[],
   options: ResolverOptions
 ): LocationResolutionResult {
@@ -164,13 +172,45 @@ function scoreAndResolve(
 
   const second = scored[1];
   const hasContext = Boolean(query.country || query.region);
+  if (!hasContext && second && (isShortCjkQuery(query.raw) || isShortCjkQuery(query.location))) {
+    const differentCountries = scored
+      .slice(0, options.maxCandidates)
+      .some((s) => s.candidate.countryCode !== best.candidate.countryCode);
+
+    return {
+      status: "ambiguous",
+      query,
+      candidates: scored
+        .slice(0, options.maxCandidates)
+        .map((s) => s.candidate),
+      reason: differentCountries ? "score_too_close" : "missing_country_or_region",
+      attemptedQueries,
+    };
+  }
+
+  const dominant = !hasContext
+    ? findDominantProminence(query, scored, options.minScore)
+    : undefined;
+  const canResolveDominant = Boolean(
+    dominant && (!second || dominant === best || best.score - dominant.score < options.ambiguityDelta)
+  );
+
+  if (dominant && canResolveDominant) {
+    return {
+      status: "resolved",
+      query,
+      candidate: dominant.candidate,
+      confidence: Math.min(100, dominant.score),
+      strategy: options.strategy ?? dominant.strategy,
+      attemptedQueries,
+    };
+  }
 
   // Check for ambiguity: if scores are close and we lack context
   if (
     !hasContext &&
     second &&
-    best.score - second.score < options.ambiguityDelta &&
-    !hasDominantProminence(query, best.candidate, second.candidate)
+    best.score - second.score < options.ambiguityDelta
   ) {
     // Check if the top candidates are in different countries (indicating ambiguity)
     const differentCountries = scored
@@ -201,16 +241,94 @@ function scoreAndResolve(
 
 /**
  * Generate a dedup key for a candidate — Task 3.4
- * Uses provider + rounded coordinates + normalized name.
+ * Uses provider + rounded coordinates so language fallbacks for the same place
+ * can be merged instead of dropping richer metadata.
  */
-function dedupKeys(candidate: LocationCandidate): string[] {
+function dedupKey(candidate: LocationCandidate): string {
   const lat = Math.round(candidate.latitude * 100) / 100;
   const lng = Math.round(candidate.longitude * 100) / 100;
+  return `${candidate.provider}:coords:${lat}:${lng}`;
+}
+
+function mergeLocationCandidate(
+  existing: LocationCandidate,
+  incoming: LocationCandidate,
+  query: LocationQuery
+): LocationCandidate {
+  const preferredText = shouldPreferCandidateText(incoming, existing, query)
+    ? incoming
+    : existing;
+  const fallbackText = preferredText === existing ? incoming : existing;
+  const existingPopulation = existing.population ?? 0;
+  const incomingPopulation = incoming.population ?? 0;
+  const population = Math.max(existingPopulation, incomingPopulation) || undefined;
+
+  return {
+    provider: existing.provider,
+    providerId: existing.providerId ?? incoming.providerId,
+    name: preferredText.name,
+    displayName: preferredText.displayName,
+    country: preferredText.country ?? fallbackText.country,
+    countryCode: preferredText.countryCode ?? fallbackText.countryCode,
+    admin1: preferredText.admin1 ?? fallbackText.admin1,
+    admin2: preferredText.admin2 ?? fallbackText.admin2,
+    latitude: existing.latitude,
+    longitude: existing.longitude,
+    timezone: existing.timezone ?? incoming.timezone,
+    population,
+  };
+}
+
+function shouldPreferCandidateText(
+  incoming: LocationCandidate,
+  existing: LocationCandidate,
+  query: LocationQuery
+): boolean {
+  const incomingScore = candidateTextMatchScore(incoming, query);
+  const existingScore = candidateTextMatchScore(existing, query);
+  if (incomingScore !== existingScore) {
+    return incomingScore > existingScore;
+  }
+
+  return candidateCompletenessScore(incoming) > candidateCompletenessScore(existing);
+}
+
+function candidateTextMatchScore(candidate: LocationCandidate, query: LocationQuery): number {
+  const normalizedLocation = normalizeComparable(query.location);
+  const candidateName = normalizeComparable(candidate.name);
   const displayName = normalizeComparable(candidate.displayName);
+  const displayParts = displayName
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  let score = 0;
+
+  if (candidateName === normalizedLocation) {
+    score += 6;
+  } else if (candidateName.includes(normalizedLocation) || normalizedLocation.includes(candidateName)) {
+    score += 3;
+  }
+
+  if (displayParts.includes(normalizedLocation)) {
+    score += 5;
+  } else if (displayName.includes(normalizedLocation)) {
+    score += 2;
+  }
+
+  return score;
+}
+
+function candidateCompletenessScore(candidate: LocationCandidate): number {
   return [
-    `${candidate.provider}:coords:${lat}:${lng}`,
-    `${candidate.provider}:display:${displayName}`,
-  ];
+    candidate.displayName,
+    candidate.country,
+    candidate.countryCode,
+    candidate.admin1,
+    candidate.admin2,
+    candidate.timezone,
+    candidate.population,
+    candidate.providerId,
+  ].filter((value) => value !== undefined && value !== "").length;
 }
 
 /**
@@ -266,37 +384,67 @@ function isExactNameMatch(candidate: LocationCandidate, query: LocationQuery): b
   return normalizeComparable(candidate.name) === normalizeComparable(query.location);
 }
 
+function hasLatinScript(value: string): boolean {
+  return /\p{Script=Latin}/u.test(value.normalize("NFKC"));
+}
+
+function hasClearDisplayNameMatch(candidate: LocationCandidate, query: LocationQuery): boolean {
+  const displayParts = normalizeComparable(candidate.displayName)
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return displayParts.includes(normalizeComparable(query.location));
+}
+
 function isShortCjkQuery(value: string): boolean {
   const normalized = value.normalize("NFKC").trim();
   return normalized.length <= 2 && /^[\p{Script=Han}]+$/u.test(normalized);
 }
 
-function hasDominantProminence(
+function findDominantProminence(
   query: LocationQuery,
-  best: LocationCandidate,
-  second: LocationCandidate
-): boolean {
-  if (!isExactNameMatch(best, query)) {
-    return false;
+  scored: ScoredCandidate[],
+  minScore: number
+): ScoredCandidate | undefined {
+  if (query.country || query.region) {
+    return undefined;
   }
 
-  if (isShortCjkQuery(query.location) && isExactNameMatch(second, query)) {
-    return false;
+  if (!hasLatinScript(query.location)) {
+    return undefined;
   }
 
-  const bestPopulation = best.population ?? 0;
-  const secondPopulation = second.population ?? 0;
-  if (bestPopulation < 500_000) {
-    return false;
+  if (isShortCjkQuery(query.raw) || isShortCjkQuery(query.location)) {
+    return undefined;
   }
 
-  if (secondPopulation <= 0) {
-    return bestPopulation >= 1_000_000;
+  const candidates = scored
+    .filter((entry) => entry.score >= minScore)
+    .filter((entry) => isExactNameMatch(entry.candidate, query) || hasClearDisplayNameMatch(entry.candidate, query))
+    .filter((entry) => (entry.candidate.population ?? 0) >= 500_000)
+    .sort((a, b) => (b.candidate.population ?? 0) - (a.candidate.population ?? 0));
+
+  for (const candidate of candidates) {
+    const candidatePopulation = candidate.candidate.population ?? 0;
+    const nextLargestPopulation = scored
+      .filter((entry) => entry !== candidate)
+      .reduce((max, entry) => Math.max(max, entry.candidate.population ?? 0), 0);
+
+    if (nextLargestPopulation <= 0) {
+      if (candidatePopulation >= 1_000_000) {
+        return candidate;
+      }
+      continue;
+    }
+
+    const ratio = candidatePopulation / nextLargestPopulation;
+    const difference = candidatePopulation - nextLargestPopulation;
+    if (ratio >= 5 && difference >= 500_000) {
+      return candidate;
+    }
   }
 
-  const ratio = bestPopulation / secondPopulation;
-  const difference = bestPopulation - secondPopulation;
-  return ratio >= 8 || (ratio >= 4 && difference >= 1_000_000);
+  return undefined;
 }
 
 /**

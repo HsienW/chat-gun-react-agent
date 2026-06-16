@@ -122,6 +122,7 @@ export type WeatherNotFoundResult = {
   code: "weather_location_not_found";
   message: string;
   summary: string;
+  attemptedQueries?: string[];
 };
 
 export type WeatherErrorResult = {
