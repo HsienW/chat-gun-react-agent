@@ -200,3 +200,14 @@ cython_debug/
 #.idea/
 
 backend/.langgraph_api
+
+# AI agent local/private settings
+.claude/settings.local.json
+.claude/settings.*.local.json
+.codex/auth.json
+.codex/config.local.toml
+.codex/settings.local.json
+.cursor/mcp.json
+.cursor/settings.local.json
+.qwen/auth.json
+.qwen/settings.local.json
