@@ -2,6 +2,7 @@ import { AIMessage } from "@langchain/core/messages";
 import { RunnableConfig } from "@langchain/core/runnables";
 import { END, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph";
 
+import { getEnv } from "../platform/env.js";
 import { llmGateway } from "../platform/llm-gateway.js";
 import { buildConversationContext, getLatestUserMessage } from "../state.js";
 import { chatbotInstructions } from "../prompts.js";
@@ -23,7 +24,8 @@ async function chatResponse(
   }
 
   const llm = llmGateway.createChatModel({
-    model: process.env.CHAT_MODEL ?? "gemini-2.5-flash",
+    purpose: "chat",
+    model: getEnv("CHAT_MODEL").trim() || undefined,
     temperature: Number(process.env.CHAT_TEMPERATURE ?? 0.7),
   });
 

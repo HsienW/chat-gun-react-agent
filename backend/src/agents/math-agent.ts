@@ -2,6 +2,7 @@ import { AIMessage, BaseMessage } from "@langchain/core/messages";
 import { RunnableConfig } from "@langchain/core/runnables";
 import { END, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph";
 
+import { getEnv } from "../platform/env.js";
 import { llmGateway } from "../platform/llm-gateway.js";
 import { mathSystemMessage } from "../prompts.js";
 import { isHumanMessage } from "../state.js";
@@ -50,7 +51,8 @@ async function callModel(
   }
 
   const llm = llmGateway.createChatModel({
-    model: process.env.MATH_MODEL ?? "gemini-2.5-flash",
+    purpose: "math",
+    model: getEnv("MATH_MODEL").trim() || undefined,
     temperature: Number(process.env.MATH_TEMPERATURE ?? 0.1),
   });
 

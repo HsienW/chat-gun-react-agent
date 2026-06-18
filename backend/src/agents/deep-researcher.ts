@@ -20,7 +20,6 @@ import {
   describeLlmGatewayConfig,
   formatLlmError,
   llmGateway,
-  resolveModel,
 } from "../platform/llm-gateway.js";
 import { auditLogger, recordMetric, recordWeatherAuditEvent } from "../platform/observability.js";
 import { getAgentRuntimeConfig } from "../platform/runtime-config.js";
@@ -40,7 +39,7 @@ import type {
   LocationQuery,
 } from "../tools/weather-types.js";
 
-const DEFAULT_RESEARCH_MODEL = "gemini-2.5-flash";
+const DEFAULT_RESEARCH_MODEL = "";
 const DEFAULT_SEARCH_QUERY_COUNT = 3;
 const DEFAULT_MAX_FETCHED_SOURCES = 5;
 
@@ -548,8 +547,8 @@ async function analyzeImages(
   }
 
   try {
-    const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
-    const llm = llmGateway.createChatModel({ model, temperature: 0 });
+    const model = state.reasoning_model.trim() || undefined;
+    const llm = llmGateway.createChatModel({ purpose: "vision", model, temperature: 0 });
     const response = await llm.invoke([
       new HumanMessage({
         content: content as HumanMessage["content"],
@@ -566,7 +565,7 @@ async function analyzeImages(
           createErrorEnvelope(error, {
             source: "backend",
             stage: "image_recognition",
-            provider: "Gemini",
+            provider: String(describeLlmGatewayConfig().provider),
           })
         ),
       ],
@@ -735,8 +734,13 @@ async function repairWeatherRequest(
   ].join("\n");
 
   try {
-    const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
-    const llm = llmGateway.createChatModel({ model, temperature: 0 });
+    const model = state.reasoning_model.trim() || undefined;
+    const llm = llmGateway.createChatModel({
+      purpose: "research",
+      model,
+      temperature: 0,
+      responseFormat: { type: "json_object" },
+    });
     const response = await llm.invoke(prompt);
     const rawContent = messageContentToString(response);
     const parsedResult = parseJsonObjectWithDiagnostics<WeatherRepairResponse>(rawContent);
@@ -964,8 +968,13 @@ async function retryWeatherPlannerExtraction(
   ].join("\n");
 
   try {
-    const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
-    const llm = llmGateway.createChatModel({ model, temperature: 0 });
+    const model = state.reasoning_model.trim() || undefined;
+    const llm = llmGateway.createChatModel({
+      purpose: "research",
+      model,
+      temperature: 0,
+      responseFormat: { type: "json_object" },
+    });
     const response = await llm.invoke(prompt);
     const rawContent = messageContentToString(response);
     const parsedResult = parseJsonObjectWithDiagnostics<WeatherPlannerExtractionResponse>(rawContent);
@@ -1061,8 +1070,13 @@ async function planResearch(
   ].join("\n");
 
   try {
-    const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
-    const llm = llmGateway.createChatModel({ model, temperature: 0 });
+    const model = state.reasoning_model.trim() || undefined;
+    const llm = llmGateway.createChatModel({
+      purpose: "research",
+      model,
+      temperature: 0,
+      responseFormat: { type: "json_object" },
+    });
     const response = await llm.invoke(prompt);
     const rawContent = messageContentToString(response);
     const parsedResult = parseJsonObjectWithDiagnostics<Partial<ResearchPlan>>(rawContent);
@@ -1744,8 +1758,8 @@ async function synthesizeAnswer(
   ].join("\n\n");
 
   try {
-    const model = resolveModel(state.reasoning_model, DEFAULT_RESEARCH_MODEL);
-    const llm = llmGateway.createChatModel({ model, temperature: 0.1 });
+    const model = state.reasoning_model.trim() || undefined;
+    const llm = llmGateway.createChatModel({ purpose: "research", model, temperature: 0.1 });
     const response = await llm.invoke(prompt);
     const normalized = normalizeAiMessageForStream(response);
     return {

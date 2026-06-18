@@ -63,7 +63,7 @@ Qwen Code
 提供專案級 Qwen Code 設定：
 
 - 以 OpenAI-compatible Provider 連接百煉。
-- 從 `BAILIAN_API_KEY` 環境變數讀取 Credential。
+- 從 `QWEN_API_KEY` 環境變數讀取 Credential。
 - 預設模型設定為可調整的千問模型。
 - `tools.approvalMode` 設為 `plan`。
 - `permissions.deny` 阻擋 Edit、Write、Bash、WebFetch。
@@ -121,19 +121,19 @@ Subagent 不持有 Shell、Edit、Write、Web Fetch 或未列入白名單的 MCP
 
 ```text
 Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
-Credential Environment Variable: BAILIAN_API_KEY
+Credential Environment Variable: QWEN_API_KEY
 ```
 
 Credential 由使用者環境提供：
 
 ```powershell
-$env:BAILIAN_API_KEY="..."
+$env:QWEN_API_KEY="..."
 ```
 
 或：
 
 ```bash
-export BAILIAN_API_KEY="..."
+export QWEN_API_KEY="..."
 ```
 
 也可以使用 Qwen Code `/auth` 完成百煉認證。版本庫只保存 Provider、Model 與環境變數名稱，不保存 Credential。
@@ -282,7 +282,7 @@ openspec/changes/replace-gemini-reviewer-with-doubao-reviewer/
 
 ### 百煉驗證
 
-- 設定 `BAILIAN_API_KEY` 或透過 `/auth` 認證。
+- 設定 `QWEN_API_KEY` 或透過 `/auth` 認證。
 - 啟動後確認 Provider 與模型可用。
 - 不在 Git Diff 中出現 Credential。
 

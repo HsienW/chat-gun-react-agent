@@ -65,12 +65,28 @@ export function inferErrorCode(
   const message = error instanceof Error ? error.message : String(error);
   const statusCode = parseStatusCode(message);
 
+  if (error instanceof Error && error.name === "ProviderResponseParseError") {
+    return { code: "llm_response_json_parse_failed" };
+  }
+
+  if (statusCode === 401 || statusCode === 403) {
+    return { code: "provider_auth_error", details: { statusCode } };
+  }
+
   if (statusCode === 429) {
     return {
       code: "quota_or_rate_limit_exceeded",
       details:
         provider === "Gemini" ? parseGeminiQuotaDetails(message) : { statusCode },
     };
+  }
+
+  if (statusCode === 400) {
+    return { code: "provider_request_validation_error", details: { statusCode } };
+  }
+
+  if (statusCode !== undefined && statusCode >= 500) {
+    return { code: "provider_unavailable", details: { statusCode } };
   }
 
   if (statusCode !== undefined && statusCode >= 400) {

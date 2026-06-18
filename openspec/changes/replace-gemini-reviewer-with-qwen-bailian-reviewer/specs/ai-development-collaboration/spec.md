@@ -80,7 +80,7 @@ Secondary Architecture Reviewer MUST 使用專案級權限限制與 Subagent Too
 
 #### Scenario: 使用環境變數提供百煉 API Key
 
-- GIVEN `.qwen/settings.json` 將 Provider Credential 指向 `BAILIAN_API_KEY`
+- GIVEN `.qwen/settings.json` 將 Provider Credential 指向 `QWEN_API_KEY`
 - WHEN 使用者啟動 Qwen Code
 - THEN Qwen Code MUST 從使用者環境或認證流程取得 Credential
 - AND Git Diff MUST NOT 包含真實 Credential

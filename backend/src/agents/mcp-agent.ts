@@ -2,6 +2,7 @@ import { RunnableConfig } from "@langchain/core/runnables";
 import { END, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 
+import { getEnv } from "../platform/env.js";
 import { llmGateway } from "../platform/llm-gateway.js";
 import { mcpSystemMessage } from "../prompts.js";
 import { loadAgentTools } from "../tools/registry.js";
@@ -22,7 +23,8 @@ async function callModel(
   _config: RunnableConfig
 ): Promise<typeof MessagesAnnotation.Update> {
   const llm = llmGateway.createChatModel({
-    model: process.env.MCP_AGENT_MODEL ?? "gemini-2.5-flash",
+    purpose: "tool",
+    model: getEnv("MCP_AGENT_MODEL").trim() || undefined,
     temperature: Number(process.env.MCP_AGENT_TEMPERATURE ?? 0.2),
   });
 

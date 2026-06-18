@@ -12,11 +12,11 @@
 
 ## 2. 百煉 Credential 與模型
 
-- [x] 2.1 使用 `BAILIAN_API_KEY` 環境變數名稱，不提交真實 Credential。
+- [x] 2.1 使用 `QWEN_API_KEY` 環境變數名稱，不提交真實 Credential。
 - [x] 2.2 在 Qwen 專案設定中配置百煉 OpenAI-compatible Base URL。
 - [x] 2.3 在輸出契約中要求標示 Host、Provider 與實際模型。
 - [x] 2.4 無法確認百煉認證或千問模型時要求 `INCOMPLETE`。
-- [x] 2.5 在目標環境設定有效的 `BAILIAN_API_KEY` 或完成 `/auth`。
+- [x] 2.5 在目標環境設定有效的 `QWEN_API_KEY` 或完成 `/auth`。
 - [x] 2.6 驗證目前百煉帳號可使用設定的千問模型。
 
 ## 3. 協作規則更新

@@ -898,4 +898,32 @@ describe("Deep Research weather structured result integration", () => {
     expect(logs).toContain('"responseContentLength":');
     expect(logs).not.toContain("sk-secret-value");
   });
+
+  it("uses JSON object response format for the planner model call", async () => {
+    const createChatModel = vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(
+          JSON.stringify({
+            question: "Tokyo weather now",
+            answerMode: "weather",
+            rationale: "Weather request.",
+            queries: [],
+            urls: [],
+            weather: { location: "Tokyo" },
+            requiredSourceCount: 1,
+          })
+        )
+      ),
+    });
+
+    const state = makePlannerState([new HumanMessage("Tokyo weather now")]);
+    await deepResearcherWeatherTestInternals.planResearch(state, {});
+
+    expect(createChatModel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        purpose: "research",
+        responseFormat: { type: "json_object" },
+      })
+    );
+  });
 });
