@@ -66,7 +66,7 @@ openspec/changes/<change-name>/specs/
 - 測試與驗證門檻。
 - 權限、逾時、取消與審計要求。
 
-工具專屬橋接文件與 Project Rules（例如 `CLAUDE.md`、`GEMINI.md` 或其他宿主規則）只負責角色、載入與工具操作補充，不得重複、覆蓋或降低本文件與已核准 OpenSpec。
+工具專屬橋接文件與 Project Rules（例如 `CLAUDE.md`、`QWEN.md` 或其他宿主規則）只負責角色、載入與工具操作補充，不得重複、覆蓋或降低本文件與已核准 OpenSpec。
 
 若規則、規格或現有契約互相矛盾，必須停止修改並明確回報，不得自行選擇較方便的版本。
 

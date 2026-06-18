@@ -97,7 +97,18 @@ Claude 必須確保：
 負責程式庫探索、實作、測試、建置與 Diff 說明；不得自行改變需求或降低驗證門檻。
 
 ### Secondary Architecture Reviewer
-負責唯讀審查、反例、安全、跨層契約、測試缺口與長期風險。Reviewer 的模型或宿主可以替換，但責任不得改變。
+預設由 **Qwen Code 搭配阿里雲百煉千問模型**擔任，負責唯讀審查、反例、安全、跨層契約、測試缺口與長期風險。Reviewer 的模型或宿主可以替換，但責任不得改變。
+
+指派 Qwen Reviewer 時必須：
+- 從專案根目錄啟動 Qwen Code。
+- 使用 `.qwen/agents/secondary-architecture-reviewer.md`。
+- 使用 `.qwen/skills/secondary-architecture-reviewer/SKILL.md`。
+- 確認模型透過阿里雲百煉認證與呼叫。
+- 保持 `plan` 模式，不得使用 `auto-edit` 或 `yolo`。
+- 提供 Review Target、Base、OpenSpec Change、Changed Files、驗證結果與未驗證區域。
+- 第一次獨立審查前，不提供其他 Reviewer 的既有結論。
+
+若 Qwen Code、百煉認證、Reviewer Subagent、Skill、Base、Diff 或關鍵規格無法確認，該次獨立審查必須標記為 `INCOMPLETE`，不得靜默回退到 Gemini Reviewer。
 
 ### Focused Reviewer
 高風險變更可額外指定安全、效能、Frontend、BFF、LangGraph 或 Tool Reviewer；每位 Reviewer 只負責明確維度。
@@ -121,6 +132,8 @@ Git Diff
 平行工作必須使用互不覆蓋的工作樹或檔案邊界，不得同時修改相同契約或檔案。
 
 ## 8. 審查協調
+Qwen Reviewer 的宿主橋接規則以根目錄 `QWEN.md`、`.qwen/agents/secondary-architecture-reviewer.md` 與 `.qwen/skills/secondary-architecture-reviewer/SKILL.md` 為準。
+
 指派審查時提供：
 - 審查基準分支、Commit 或 Diff。
 - 變更目的與 OpenSpec Change。

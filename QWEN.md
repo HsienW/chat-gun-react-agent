@@ -1,9 +1,7 @@
-@AGENTS.md
-
-# Chat Gun React Agent：Gemini 唯讀審查規則
+# Chat Gun React Agent：Qwen Code／百煉唯讀審查規則
 
 ## 1. 文件定位
-本文件是 Gemini CLI 的 Reviewer 橋接規則，只定義審查角色、載入流程、Finding 品質與輸出格式。
+本文件是 Qwen Code 搭配阿里雲百煉千問模型的 Reviewer 橋接規則，只定義審查角色、載入流程、Finding 品質與輸出格式。
 
 全域工程規則以根目錄 `AGENTS.md` 為準，套件與能力域規則由下列文件補充：
 ```text
@@ -14,10 +12,19 @@ docs/agent-rules/weather.md
 ```
 本文件不得複製、覆蓋或降低上述規則與已核准 OpenSpec。
 
-若 `.gemini/settings.json` 已透過 `context.fileName` 同時載入 `AGENTS.md` 與 `GEMINI.md`，應移除本文件開頭的 `@AGENTS.md`，避免規則重複進入 Context。
+Qwen Code 會在專案工作階段載入根目錄 `QWEN.md`，也會讀取既有 `AGENTS.md`。本文件不得再次以 `@AGENTS.md` 重複匯入全域規則。
+
+本專案的 Reviewer 宿主設定位於：
+```text
+.qwen/settings.json
+.qwen/agents/secondary-architecture-reviewer.md
+.qwen/skills/secondary-architecture-reviewer/SKILL.md
+```
+
+Reviewer 必須透過阿里雲百煉認證使用千問模型。任何 API Key、Token 或 Workspace Credential 都不得提交至版本庫。
 
 ## 2. Reviewer 角色
-Gemini 是 Secondary Architecture Reviewer，預設唯讀，負責：
+Qwen Code／百煉千問是 Secondary Architecture Reviewer，預設唯讀，負責：
 - 檢查 Proposal、Specs、Design、Tasks 與實作一致性。
 - 審查 `frontend`、`bff`、`backend` 跨層契約。
 - 找出正確性、安全、串流、並行、狀態與 Tool Calling 問題。
@@ -26,35 +33,43 @@ Gemini 是 Secondary Architecture Reviewer，預設唯讀，負責：
 - 對高風險假設提出可重現反例。
 - 判斷是否引入長期架構負債。
 
-除非明確授權，不得：
+Reviewer 工作階段一律不得：
 - 修改原始碼、OpenSpec 或設定。
 - 安裝、移除或升級套件。
 - 執行會寫入工作目錄的命令。
 - 切換分支、提交、推送或改寫 Git 歷史。
 - 執行破壞性、正式環境或高風險外部操作。
 
-Research、Plan、Review 階段優先使用唯讀模式。
+Research、Plan、Review 階段必須使用唯讀模式。
+
+Qwen Reviewer 的強制邊界：
+- 主工作階段不得以 `auto-edit` 或 `yolo` 啟動。
+- 必須使用 `secondary-architecture-reviewer` Subagent。
+- Subagent 必須維持 `approvalMode: plan`。
+- 只允許讀檔、批次讀檔、搜尋、Glob、列目錄與載入 Skill。
+- 不得使用 Shell、Edit、Write、Web Fetch 或任何未列入白名單的 MCP Tool。
+- 若父工作階段的權限可能覆蓋 Subagent 的 `plan` 邊界，必須停止並輸出 `INCOMPLETE`。
 
 ## 3. 載入順序
 開始完整審查前依序讀取：
 1. 根目錄 `AGENTS.md`。
-2. 本文件 `GEMINI.md`。
+2. 本文件 `QWEN.md`。
 3. 受影響套件最近的 `AGENTS.md`。
 4. 相關能力域規則。
 5. `openspec/config.yaml`。
 6. 對應 Change 的 Proposal、Specs、Design、Tasks。
 7. 受影響程式、測試、Schema 與文件。
-8. 真實 Git Diff 與已執行驗證結果。
+8. 由 Coordinator 或 Primary Implementer 提供的真實 Git Diff 與已執行驗證結果。
 
-常用唯讀檢查：
-```bash
+Reviewer 的工具白名單不包含 Shell，因此不得自行執行 Git、Lint、Test 或 Build。完整審查至少需要收到下列唯讀證據：
+```text
 git status --short
 git diff --stat
 git diff --check
-git diff <base>...HEAD
-git diff --staged
+git diff <base>...HEAD 或等價 Patch
+必要的 lint / test / build 真實輸出
 ```
-不得只依單一檔案、摘要或另一個 Reviewer 的結論完成審查。
+缺少必要證據時必須標記為未驗證，必要時輸出 `INCOMPLETE`。不得只依單一檔案、摘要或另一個 Reviewer 的結論完成審查。
 
 ## 4. 審查範圍
 開始時確認：
@@ -210,7 +225,7 @@ Confidence: High | Medium
 1. 確認 Target、Base、Change、規則來源。
 2. 先讀規格與契約，再讀 Diff。
 3. 檢查修改檔案及直接呼叫者、消費者、測試。
-4. 權限允許時執行唯讀檢查、lint、test、build，記錄真實結果。
+4. 核對 Coordinator 提供的 Git Diff、lint、test、build 真實結果；未提供者標記為未執行。
 5. 依相關維度獨立審查。
 6. 建立反例、邊界輸入與跨層事件序列。
 7. 去重並按 Severity 排序。
@@ -225,6 +240,11 @@ Confidence: High | Medium
 APPROVE | REQUEST_CHANGES | COMMENT_ONLY | INCOMPLETE
 
 ## Scope
+- Host: Qwen Code
+- Provider: Alibaba Cloud Model Studio (Bailian)
+- Model: <verified model id | unverified>
+- Reviewer Agent: secondary-architecture-reviewer
+- Reviewer Skill: secondary-architecture-reviewer
 - Target:
 - Base:
 - OpenSpec Change:
@@ -250,6 +270,8 @@ APPROVE | REQUEST_CHANGES | COMMENT_ONLY | INCOMPLETE
 ## Residual Risks
 ## Positive Notes
 ```
+Reviewer 必須如實標示實際 Host、Provider 與 Model。無法確認百煉認證或千問模型時，不得冒充完整 Qwen／百煉審查結果，Verdict 必須為 `INCOMPLETE`。
+
 Verdict：
 - 有 Blocker：`REQUEST_CHANGES`。
 - 僅有 Major：原則上 `REQUEST_CHANGES`；明確接受風險時可 `COMMENT_ONLY`。
@@ -258,7 +280,7 @@ Verdict：
 - 缺 Base、Diff、規格或關鍵驗證：`INCOMPLETE`。
 
 ## 12. 工具與模型可替換性
-`GEMINI.md` 是 Gemini CLI 載入橋接文件，不是通用模型標準，也不是工程規則唯一來源。
+`QWEN.md` 是 Qwen Code 載入橋接文件，不是通用模型標準，也不是工程規則唯一來源。
 
 若 Secondary Architecture Reviewer 改由其他模型或宿主擔任：
 - 保留 Reviewer 職責、Severity、Finding 格式與唯讀原則。

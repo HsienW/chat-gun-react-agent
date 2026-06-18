@@ -1,0 +1,44 @@
+{
+  "modelProviders": {
+    "openai": [
+      {
+        "id": "qwen3.7-plus",
+        "name": "[Bailian] qwen3.7-plus",
+        "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "envKey": "BAILIAN_API_KEY",
+        "generationConfig": {
+          "extra_body": {
+            "enable_thinking": true
+          }
+        }
+      }
+    ]
+  },
+  "security": {
+    "auth": {
+      "selectedType": "openai"
+    }
+  },
+  "model": {
+    "name": "qwen3.7-plus"
+  },
+  "tools": {
+    "approvalMode": "plan"
+  },
+  "permissions": {
+    "deny": [
+      "Edit",
+      "Write",
+      "Bash",
+      "WebFetch"
+    ]
+  },
+  "memory": {
+    "enableManagedAutoMemory": false,
+    "enableManagedAutoDream": false
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "$version": 4
+}
