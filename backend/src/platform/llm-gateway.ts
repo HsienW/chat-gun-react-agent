@@ -1,11 +1,10 @@
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { AIMessage, BaseMessage, ToolMessage } from "@langchain/core/messages";
 import type { UsageMetadata } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 
-import { getEnv, requireEnv } from "./env.js";
+import { getEnv } from "./env.js";
 import { createErrorEnvelope, formatErrorEnvelope } from "./errors.js";
 import { configureNetwork } from "./network.js";
 
@@ -26,7 +25,7 @@ export interface ChatModelOptions {
   toolChoice?: "auto" | "none" | { type: "function"; function: { name: string } };
 }
 
-type ChatModelInput = Parameters<ChatGoogleGenerativeAI["invoke"]>[0];
+type ChatModelInput = unknown;
 type ChatModelOutput = BaseMessage;
 
 export interface ChatModelInvoker {
@@ -41,8 +40,8 @@ export interface LlmGateway {
   createChatModel(options?: ChatModelOptions): ChatModelInvoker;
 }
 
-export type LlmProviderName = "gemini" | "ccr" | "openai-compatible" | "qwen";
-export type LlmEndpointKind = "gemini-sdk" | "anthropic-messages" | "openai-chat-completions";
+export type LlmProviderName = "ccr" | "openai-compatible" | "qwen";
+export type LlmEndpointKind = "anthropic-messages" | "openai-chat-completions";
 
 type LlmCapabilities = {
   supportsStructuredOutput: boolean;
@@ -209,23 +208,10 @@ function endpointKindForProvider(provider: LlmProviderName): LlmEndpointKind {
   if (provider === "ccr") {
     return "anthropic-messages";
   }
-  if (provider === "openai-compatible" || provider === "qwen") {
-    return "openai-chat-completions";
-  }
-  return "gemini-sdk";
+  return "openai-chat-completions";
 }
 
 function capabilitiesForProvider(provider: LlmProviderName, purpose: ModelPurpose): LlmCapabilities {
-  if (provider === "gemini") {
-    return {
-      supportsStructuredOutput: true,
-      supportsToolCalling: true,
-      supportsVision: true,
-      supportsStreaming: true,
-      supportsUsageMetadata: true,
-    };
-  }
-
   if (provider === "ccr") {
     return {
       supportsStructuredOutput: false,
@@ -243,17 +229,6 @@ function capabilitiesForProvider(provider: LlmProviderName, purpose: ModelPurpos
     supportsStreaming: false,
     supportsUsageMetadata: true,
   };
-}
-
-class GeminiGateway implements LlmGateway {
-  createChatModel(options: ChatModelOptions = {}): ChatModelInvoker {
-    return new ChatGoogleGenerativeAI({
-      model: resolveProviderModel("gemini", options.purpose ?? "chat", options.model),
-      temperature: options.temperature ?? 0.7,
-      maxRetries: options.maxRetries ?? 2,
-      apiKey: requireEnv("GEMINI_API_KEY"),
-    }) as ChatModelInvoker;
-  }
 }
 
 function getFirstEnv(names: string[]): string {
@@ -345,7 +320,7 @@ function getOpenAiCompatibleModel(requestedModel: string | undefined, purpose: M
   ]);
   const requested = requestedModel?.trim();
 
-  if (requested && !requested.startsWith("gemini-")) {
+  if (requested) {
     return requested;
   }
 
@@ -367,8 +342,7 @@ function resolveProviderModel(
   if (provider === "ccr") {
     return getCcrModel(requested);
   }
-
-  return resolveModel(requested, getLegacyPurposeModel(purpose) || "gemini-2.5-flash");
+  return resolveQwenModel(purpose, requested);
 }
 
 export function buildChatCompletionsUrl(baseUrl: string): string {
@@ -1001,10 +975,6 @@ class CcrGateway implements LlmGateway {
 
 export function getConfiguredLlmProvider(): LlmProviderName {
   const provider = getEnv("LLM_PROVIDER").trim().toLowerCase();
-  if (provider === "gemini") {
-    return "gemini";
-  }
-
   if (provider === "qwen") {
     return "qwen";
   }
@@ -1016,6 +986,11 @@ export function getConfiguredLlmProvider(): LlmProviderName {
   if (provider === "openai" || provider === "openai-compatible") {
     return "openai-compatible";
   }
+  if (provider) {
+    throw new Error(
+      `Unsupported LLM_PROVIDER "${provider}". Supported providers: qwen, ccr, openai-compatible.`
+    );
+  }
 
   if (getCcrBaseUrl()) {
     return "ccr";
@@ -1025,7 +1000,7 @@ export function getConfiguredLlmProvider(): LlmProviderName {
     return "openai-compatible";
   }
 
-  return "gemini";
+  return "qwen";
 }
 
 function createGateway(): LlmGateway {
@@ -1039,7 +1014,7 @@ function createGateway(): LlmGateway {
   if (provider === "openai-compatible") {
     return new OpenAiCompatibleGateway();
   }
-  return new GeminiGateway();
+  return new QwenGateway();
 }
 
 export function describeLlmGatewayConfig(): Record<string, string | boolean> {
@@ -1051,33 +1026,23 @@ export function describeLlmGatewayConfig(): Record<string, string | boolean> {
       ? Boolean(getCcrBaseUrl())
       : provider === "openai-compatible"
         ? Boolean(getOpenAiCompatibleBaseUrl())
-        : provider === "qwen"
-          ? Boolean(getQwenBaseUrl())
-          : false,
+        : Boolean(getQwenBaseUrl()),
     apiKeyConfigured: provider === "ccr"
       ? Boolean(getCcrApiKey())
       : provider === "openai-compatible"
         ? Boolean(getOpenAiCompatibleApiKey())
-        : provider === "qwen"
-          ? Boolean(getQwenApiKey())
-          : Boolean(getEnv("GEMINI_API_KEY")),
+        : Boolean(getQwenApiKey()),
   };
 }
 
 export const llmGateway: LlmGateway = createGateway();
-
-const deprecatedModelAliases: Record<string, string> = {
-  "gemini-2.5-flash-preview-04-17": "gemini-2.5-flash",
-  "gemini-2.5-pro-preview-05-06": "gemini-2.5-pro",
-};
 
 export function resolveModel(requestedModel: unknown, fallback: string): string {
   if (typeof requestedModel !== "string" || !requestedModel.trim()) {
     return fallback;
   }
 
-  const model = requestedModel.trim();
-  return deprecatedModelAliases[model] ?? model;
+  return requestedModel.trim();
 }
 
 export function resolveModelForPurpose(

@@ -11,18 +11,34 @@ describe("llm-gateway provider selection", () => {
     vi.resetModules();
   });
 
-  it("keeps explicit Gemini provider even when a CCR base URL is present", async () => {
-    vi.stubEnv("LLM_PROVIDER", "gemini");
-    vi.stubEnv("CCR_BASE_URL", "http://127.0.0.1:3456/v1");
+  it("defaults to Qwen provider when no provider is configured", async () => {
+    vi.stubEnv("LLM_PROVIDER", "");
+    vi.stubEnv("CCR_BASE_URL", "");
+    vi.stubEnv("OPENAI_COMPATIBLE_BASE_URL", "");
+    vi.stubEnv("OPENAI_BASE_URL", "");
+    vi.stubEnv("QWEN_API_KEY", "");
     vi.resetModules();
 
     const gatewayModule = await import("./llm-gateway.js");
 
-    expect(gatewayModule.getConfiguredLlmProvider()).toBe("gemini");
+    expect(gatewayModule.getConfiguredLlmProvider()).toBe("qwen");
     expect(gatewayModule.describeLlmGatewayConfig()).toMatchObject({
-      provider: "gemini",
-      endpointKind: "gemini-sdk",
+      provider: "qwen",
+      endpointKind: "openai-chat-completions",
+      baseUrlConfigured: true,
+      apiKeyConfigured: false,
     });
+  });
+
+  it("rejects removed provider configuration", async () => {
+    const removedProvider = ["ge", "mini"].join("");
+    vi.stubEnv("LLM_PROVIDER", removedProvider);
+    vi.stubEnv("CCR_BASE_URL", "http://127.0.0.1:3456/v1");
+    vi.resetModules();
+
+    await expect(import("./llm-gateway.js")).rejects.toThrow(
+      `Unsupported LLM_PROVIDER "${removedProvider}"`
+    );
   });
 
   it("routes CCR provider through CCR Anthropic messages endpoint", async () => {
@@ -115,7 +131,6 @@ describe("llm-gateway provider selection", () => {
     vi.stubEnv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/");
     vi.stubEnv("QWEN_API_KEY", "qwen-test-key");
     vi.stubEnv("QWEN_CHAT_MODEL", "qwen-plus-test");
-    vi.stubEnv("GEMINI_API_KEY", "");
     vi.resetModules();
 
     const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {

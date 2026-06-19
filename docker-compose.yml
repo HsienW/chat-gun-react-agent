@@ -39,7 +39,17 @@ services:
       langgraph-postgres:
         condition: service_healthy
     environment:
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      LLM_PROVIDER: ${LLM_PROVIDER:-qwen}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      QWEN_API_KEY: ${QWEN_API_KEY}
+      QWEN_CHAT_MODEL: ${QWEN_CHAT_MODEL:-qwen-plus}
+      QWEN_RESEARCH_MODEL: ${QWEN_RESEARCH_MODEL:-qwen-plus}
+      QWEN_VISION_MODEL: ${QWEN_VISION_MODEL:-qwen-vl-plus}
+      QWEN_TOOL_MODEL: ${QWEN_TOOL_MODEL:-qwen-plus}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-qwen-plus}
+      CHAT_MODEL: ${CHAT_MODEL:-qwen-plus}
+      MATH_MODEL: ${MATH_MODEL:-qwen-plus}
+      MCP_AGENT_MODEL: ${MCP_AGENT_MODEL:-qwen-plus}
       LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
       REDIS_URI: redis://langgraph-redis:6379
       POSTGRES_URI: postgres://postgres:postgres@langgraph-postgres:5432/postgres?sslmode=disable

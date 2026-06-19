@@ -1,5 +1,8 @@
-## ADDED Requirements
+# backend-model-runtime Specification
 
+## Purpose
+TBD - created by archiving change replace-gemini-runtime-with-qwen-bailian-runtime. Update Purpose after archive.
+## Requirements
 ### Requirement: Qwen Provider Selection
 Backend Runtime MUST support `LLM_PROVIDER=qwen` as a first-class provider and MUST report provider diagnostics as `qwen` when selected.
 
@@ -8,10 +11,10 @@ Backend Runtime MUST support `LLM_PROVIDER=qwen` as a first-class provider and M
 - **WHEN** Backend creates an LLM gateway
 - **THEN** the selected provider MUST be `qwen`
 - **AND** diagnostics MUST identify the endpoint kind as OpenAI-compatible Chat Completions
-- **AND** missing `GEMINI_API_KEY` MUST NOT prevent Qwen gateway creation
+- **AND** missing Gemini credentials MUST NOT prevent Qwen gateway creation
 
 #### Scenario: Existing providers remain selectable
-- **GIVEN** runtime configuration selects `gemini`, `ccr`, or `openai-compatible`
+- **GIVEN** runtime configuration selects `ccr` or `openai-compatible`
 - **WHEN** Backend creates an LLM gateway
 - **THEN** the selected provider MUST preserve the existing provider semantics
 - **AND** Qwen environment variables MUST NOT override the explicit non-Qwen provider
@@ -55,12 +58,6 @@ Backend Runtime MUST resolve models by provider and model purpose without relyin
 - **WHEN** Backend creates models for chat, math, research, vision, or tool purposes
 - **THEN** each model MUST use the matching Qwen purpose-specific variable
 - **AND** configured legacy model overrides MUST remain backward compatible
-
-#### Scenario: Gemini fallback remains available
-- **GIVEN** no explicit non-Gemini provider is configured
-- **WHEN** Backend creates the default gateway
-- **THEN** Backend MUST keep Gemini as the fallback provider
-- **AND** the Gemini SDK dependency MUST remain usable
 
 ### Requirement: JSON Mode Response Format
 Backend Runtime MUST support JSON-only model calls through Chat Completions `response_format`.
@@ -187,3 +184,63 @@ Backend Runtime MUST distinguish automated mock verification from live Qwen／Ba
 - **WHEN** the change is reported
 - **THEN** the report MUST state that live Qwen／Bailian smoke was not verified
 - **AND** mock tests MUST NOT be described as live production validation
+
+### Requirement: Qwen Is The Default Runtime Provider
+Backend model runtime MUST default to Qwen/Bailian when no explicit supported provider is configured.
+
+#### Scenario: No provider is configured
+- **WHEN** backend model runtime resolves the provider without `LLM_PROVIDER`
+- **THEN** the selected provider MUST be `qwen`
+- **AND** diagnostics MUST identify the endpoint kind as OpenAI-compatible Chat Completions
+
+#### Scenario: Qwen provider remains selectable
+- **GIVEN** runtime configuration contains `LLM_PROVIDER=qwen`
+- **WHEN** backend creates an LLM gateway
+- **THEN** the selected provider MUST be `qwen`
+- **AND** missing `GEMINI_API_KEY` MUST NOT affect gateway creation
+
+### Requirement: Gemini Runtime Provider Removed
+Backend model runtime MUST NOT expose Gemini as a selectable provider and MUST NOT construct Gemini SDK chat models.
+
+#### Scenario: Gemini provider is requested
+- **GIVEN** runtime configuration contains `LLM_PROVIDER=gemini`
+- **WHEN** backend resolves the LLM provider
+- **THEN** backend MUST fail fast with an unsupported provider error
+- **AND** backend MUST NOT fall back to Gemini
+
+#### Scenario: Gemini dependency is absent
+- **WHEN** backend dependencies are installed
+- **THEN** `@langchain/google-genai` MUST NOT be present as a backend dependency
+- **AND** backend runtime code MUST NOT import `@langchain/google-genai`
+
+### Requirement: Existing Non-Gemini Providers Remain Available
+Backend model runtime MUST preserve Qwen, CCR, and generic OpenAI-compatible provider behavior after Gemini removal.
+
+#### Scenario: CCR provider remains selectable
+- **GIVEN** runtime configuration contains `LLM_PROVIDER=ccr`
+- **WHEN** backend creates an LLM gateway
+- **THEN** the selected provider MUST be `ccr`
+- **AND** the endpoint kind MUST remain Anthropic messages
+
+#### Scenario: OpenAI-compatible provider remains selectable
+- **GIVEN** runtime configuration contains `LLM_PROVIDER=openai-compatible`
+- **WHEN** backend creates an LLM gateway
+- **THEN** the selected provider MUST be `openai-compatible`
+- **AND** the endpoint kind MUST remain OpenAI-compatible Chat Completions
+
+### Requirement: No Gemini Runtime Code Path
+Backend source runtime paths MUST NOT contain Gemini-specific provider code after the removal.
+
+#### Scenario: Backend source is searched
+- **WHEN** backend source files are searched for Gemini provider identifiers
+- **THEN** no backend runtime source file MUST contain Gemini-specific imports, provider enum values, endpoint kinds, fallback models, or credential checks
+
+### Requirement: Public API And MCP Compatibility
+Gemini removal MUST NOT change frontend/bff public APIs, LangGraph Graph IDs, MCP execution architecture, or tool governance.
+
+#### Scenario: Runtime provider is removed
+- **WHEN** Gemini provider code is removed
+- **THEN** existing Graph IDs MUST remain unchanged
+- **AND** BFF routes and frontend request shape MUST remain unchanged
+- **AND** MCP tools MUST still execute through backend ToolRegistry and ToolNode
+

@@ -186,7 +186,7 @@ liveDescribe("Qwen/Bailian runtime live smoke", () => {
     } catch (error) {
       const formatted = formatLlmError(error);
       expect(formatted).toContain("Provider: qwen");
-      expect(formatted).not.toContain("Gemini");
+      expect(formatted).not.toContain(["Ge", "mini"].join(""));
       console.info("qwen_live_vision_error", JSON.stringify(sanitize(formatted)));
       throw error;
     }

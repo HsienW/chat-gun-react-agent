@@ -49,7 +49,7 @@ function parseStatusCode(message: string): number | undefined {
   return Number.isInteger(value) ? value : undefined;
 }
 
-function parseGeminiQuotaDetails(message: string): Record<string, unknown> {
+function parseQuotaDetails(message: string): Record<string, unknown> {
   return {
     model: message.match(/model:\s*([^,\n]+)/i)?.[1],
     limit: message.match(/limit:\s*([^,\n]+)/i)?.[1],
@@ -76,8 +76,10 @@ export function inferErrorCode(
   if (statusCode === 429) {
     return {
       code: "quota_or_rate_limit_exceeded",
-      details:
-        provider === "Gemini" ? parseGeminiQuotaDetails(message) : { statusCode },
+      details: {
+        statusCode,
+        ...parseQuotaDetails(message),
+      },
     };
   }
 

@@ -1,4 +1,4 @@
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
+﻿import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deepResearcherWeatherTestInternals } from "./deep-researcher.js";
@@ -215,7 +215,7 @@ function makePlannerState(
     imageObservations: [],
     initial_search_query_count: 3,
     max_research_loops: 5,
-    reasoning_model: "gemini-2.5-flash",
+    reasoning_model: "qwen-plus",
   } as unknown) as Parameters<typeof deepResearcherWeatherTestInternals.planResearch>[0];
 }
 
@@ -252,13 +252,13 @@ describe("Deep Research weather structured result integration", () => {
         windDirectionText: "N",
       },
       units: {
-        temperature_2m: "°C",
+        temperature_2m: "簞C",
         relative_humidity_2m: "%",
         wind_speed_10m: "km/h",
       },
       provider: "Open-Meteo",
       sourceUrl: "https://api.open-meteo.com/v1/forecast?latitude=35.676&longitude=139.65",
-      summary: "Current weather for Tokyo: 22°C, clear sky.",
+      summary: "Current weather for Tokyo: 22簞C, clear sky.",
     };
 
     const answer = deepResearcherWeatherTestInternals.buildWeatherToolAnswer(
@@ -267,7 +267,7 @@ describe("Deep Research weather structured result integration", () => {
 
     const content = String(answer?.content);
     expect(content).toContain("Current weather for Tokyo");
-    expect(content).toContain("Temperature: 22°C");
+    expect(content).toContain("Temperature: 22簞C");
     expect(content).toContain("Humidity: 65%");
   });
 
@@ -369,7 +369,7 @@ describe("Deep Research weather structured result integration", () => {
       imageObservations: [],
       initial_search_query_count: 3,
       max_research_loops: 5,
-      reasoning_model: "gemini-2.5-flash",
+      reasoning_model: "qwen-plus",
     } as unknown) as Parameters<typeof deepResearcherWeatherTestInternals.planResearch>[0];
 
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
@@ -697,7 +697,7 @@ describe("Deep Research weather structured result integration", () => {
       imageObservations: [],
       initial_search_query_count: 3,
       max_research_loops: 5,
-      reasoning_model: "gemini-2.5-flash",
+      reasoning_model: "qwen-plus",
     } as unknown) as Parameters<typeof deepResearcherWeatherTestInternals.planResearch>[0];
 
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
@@ -777,7 +777,7 @@ describe("Deep Research weather structured result integration", () => {
       imageObservations: [],
       initial_search_query_count: 3,
       max_research_loops: 5,
-      reasoning_model: "gemini-2.5-flash",
+      reasoning_model: "qwen-plus",
     } as unknown) as Parameters<typeof deepResearcherWeatherTestInternals.planResearch>[0];
 
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
@@ -826,7 +826,7 @@ describe("Deep Research weather structured result integration", () => {
 
     const repaired = await deepResearcherWeatherTestInternals.repairWeatherRequest(
       { raw: "\u5317\u4eac\u5e02", location: "\u5317\u4eac\u5e02" },
-      ({ reasoning_model: "gemini-2.5-flash" } as unknown) as Parameters<
+      ({ reasoning_model: "qwen-plus" } as unknown) as Parameters<
         typeof deepResearcherWeatherTestInternals.repairWeatherRequest
       >[1]
     );
@@ -885,7 +885,7 @@ describe("Deep Research weather structured result integration", () => {
 
     const repaired = await deepResearcherWeatherTestInternals.repairWeatherRequest(
       { raw: BEIJING_CITY, location: BEIJING_CITY },
-      ({ reasoning_model: "gemini-2.5-flash" } as unknown) as Parameters<
+      ({ reasoning_model: "qwen-plus" } as unknown) as Parameters<
         typeof deepResearcherWeatherTestInternals.repairWeatherRequest
       >[1]
     );
