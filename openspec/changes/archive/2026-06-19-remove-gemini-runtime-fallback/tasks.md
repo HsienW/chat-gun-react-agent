@@ -5,7 +5,7 @@
 - [x] 1.1 Create proposal, design, specs, and tasks for removing Gemini runtime fallback.
 - [x] 1.2 Update previous backend runtime delta spec to remove the Gemini fallback requirement/scenario.
 - [x] 1.3 Run `openspec validate remove-gemini-runtime-fallback`.
-- [x] 1.4 Run `openspec validate replace-gemini-runtime-with-qwen-bailian-runtime`.
+- [-] 1.4 Stale: target change archived. Cross-validation for `replace-gemini-runtime-with-qwen-bailian-runtime` was performed before archival and cannot be re-executed from active `openspec/changes/`.
 
 ## 2. Backend Gateway
 
