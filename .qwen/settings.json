@@ -11,6 +11,9 @@
       "Write",
       "Bash",
       "WebFetch"
+    ],
+    "allow": [
+      "Agent(general-purpose)"
     ]
   },
   "memory": {
