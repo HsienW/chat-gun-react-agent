@@ -26,6 +26,7 @@ export const RUNTIME_EVENT_LABELS = {
   contextBuilt: '上下文已建立',
   finalAnswer: '最終回答',
   card: (cardType: string) => `卡片：${cardType}`,
+  unknown: (eventType: string) => `未知流程事件：${eventType}`,
   contextSources: {
     message: (index: number, role: string) => `近期訊息 ${index}（${role}）`,
     asset: (index: number) => `附件 ${index}`,
@@ -40,6 +41,7 @@ export const RUNTIME_EVENT_ICON_BY_TYPE: Partial<
   'agent.tool.start': 'loading',
   'agent.plan.start': 'plan',
   'agent.tool.success': 'tool',
+  'agent.tool.error': 'tool',
   'agent.context.build': 'context',
   'agent.answer.stream': 'answer',
 };

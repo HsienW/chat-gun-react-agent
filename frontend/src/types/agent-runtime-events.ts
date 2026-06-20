@@ -23,4 +23,10 @@ export type AgentRuntimeEvent =
       ts: number;
     }
   | { type: 'agent.answer.stream'; delta: string; ts: number }
-  | { type: 'agent.card.emit'; cardType: string; payload: unknown; ts: number };
+  | { type: 'agent.card.emit'; cardType: string; payload: unknown; ts: number }
+  | {
+      type: 'agent.unknown';
+      originalType: string;
+      rawPayload?: Record<string, unknown>;
+      ts: number;
+    };

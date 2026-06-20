@@ -18,6 +18,17 @@ type RuntimeEventRule = {
   toEvents: (nodeValue: unknown) => AgentRuntimeEvent[];
 };
 
+const KNOWN_RUNTIME_EVENT_TYPES = new Set<AgentRuntimeEvent['type']>([
+  'agent.plan.start',
+  'agent.tool.start',
+  'agent.tool.success',
+  'agent.tool.error',
+  'agent.context.build',
+  'agent.answer.stream',
+  'agent.card.emit',
+  'agent.unknown',
+]);
+
 const NODE_EVENT_RULES: RuntimeEventRule[] = [
   {
     nodeKey: RUNTIME_EVENT_NODE_KEYS.buildContextPack,
@@ -76,6 +87,146 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function isSerializablePrimitive(value: unknown): boolean {
+  return (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  );
+}
+
+function toSafeSerializableValue(value: unknown): unknown {
+  if (isSerializablePrimitive(value)) return value;
+  if (Array.isArray(value)) {
+    return value
+      .map(toSafeSerializableValue)
+      .filter((item) => item !== undefined);
+  }
+
+  const record = asRecord(value);
+  if (!record) return undefined;
+
+  return Object.fromEntries(
+    Object.entries(record)
+      .map(([key, item]) => [key, toSafeSerializableValue(item)] as const)
+      .filter(([, item]) => item !== undefined)
+  );
+}
+
+function getEventTimestamp(record: Record<string, unknown>): number {
+  return typeof record.ts === 'number' && Number.isFinite(record.ts)
+    ? record.ts
+    : Date.now();
+}
+
+function getUnknownRawPayload(
+  record: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  const payloadEntries = Object.entries(record).filter(
+    ([key]) => key !== 'type' && key !== 'ts'
+  );
+  const payload = Object.fromEntries(
+    payloadEntries
+      .map(([key, value]) => [key, toSafeSerializableValue(value)] as const)
+      .filter(([, value]) => value !== undefined)
+  );
+
+  return Object.keys(payload).length > 0 ? payload : undefined;
+}
+
+function normalizeAgentRuntimeEvent(value: unknown): AgentRuntimeEvent | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+
+  const type = record.type;
+
+  if (typeof type !== 'string' || !type.startsWith('agent.')) {
+    return undefined;
+  }
+
+  if (!KNOWN_RUNTIME_EVENT_TYPES.has(type as AgentRuntimeEvent['type'])) {
+    return {
+      type: 'agent.unknown',
+      originalType: type,
+      rawPayload: getUnknownRawPayload(record),
+      ts: getEventTimestamp(record),
+    };
+  }
+
+  if (type === 'agent.unknown') {
+    return typeof record.originalType === 'string'
+      ? {
+          type,
+          originalType: record.originalType,
+          rawPayload: asRecord(record.rawPayload),
+          ts: getEventTimestamp(record),
+        }
+      : undefined;
+  }
+
+  if (typeof record.ts !== 'number' || !Number.isFinite(record.ts)) {
+    return undefined;
+  }
+
+  switch (type) {
+    case 'agent.plan.start':
+      return typeof record.title === 'string'
+        ? { type, title: record.title, ts: record.ts }
+        : undefined;
+    case 'agent.tool.start':
+      return typeof record.toolName === 'string'
+        ? {
+            type,
+            toolName: record.toolName,
+            input: record.input,
+            ts: record.ts,
+          }
+        : undefined;
+    case 'agent.tool.success':
+      return typeof record.toolName === 'string' && typeof record.costMs === 'number'
+        ? {
+            type,
+            toolName: record.toolName,
+            output: record.output,
+            costMs: record.costMs,
+            ts: record.ts,
+          }
+        : undefined;
+    case 'agent.tool.error':
+      return typeof record.toolName === 'string' && typeof record.error === 'string'
+        ? {
+            type,
+            toolName: record.toolName,
+            error: record.error,
+            ts: record.ts,
+          }
+        : undefined;
+    case 'agent.context.build':
+      return Array.isArray(record.sources) && typeof record.tokenEstimate === 'number'
+        ? {
+            type,
+            sources: record.sources as ContextSource[],
+            tokenEstimate: record.tokenEstimate,
+            ts: record.ts,
+          }
+        : undefined;
+    case 'agent.answer.stream':
+      return typeof record.delta === 'string'
+        ? { type, delta: record.delta, ts: record.ts }
+        : undefined;
+    case 'agent.card.emit':
+      return typeof record.cardType === 'string'
+        ? {
+            type,
+            cardType: record.cardType,
+            payload: record.payload,
+            ts: record.ts,
+          }
+        : undefined;
+  }
+}
+
 function getNodeMessages(nodeValue: unknown): unknown[] {
   const messages = asRecord(nodeValue)?.messages;
   return Array.isArray(messages) ? messages : [];
@@ -84,13 +235,15 @@ function getNodeMessages(nodeValue: unknown): unknown[] {
 function getRuntimeEvents(value: unknown): AgentRuntimeEvent[] {
   const runtimeEvents = asRecord(value)?.runtimeEvents;
   return Array.isArray(runtimeEvents)
-    ? runtimeEvents.filter(isAgentRuntimeEvent)
+    ? runtimeEvents.flatMap((event) => {
+        const normalized = normalizeAgentRuntimeEvent(event);
+        return normalized ? [normalized] : [];
+      })
     : [];
 }
 
-function isAgentRuntimeEvent(value: unknown): value is AgentRuntimeEvent {
-  const type = asRecord(value)?.type;
-  return typeof type === 'string' && type.startsWith('agent.');
+export function isAgentRuntimeEvent(value: unknown): value is AgentRuntimeEvent {
+  return normalizeAgentRuntimeEvent(value) !== undefined;
 }
 
 function getPlanTitle(nodeValue: unknown): string {
@@ -248,15 +401,33 @@ function getAnswerEvents(nodeValue: unknown): AgentRuntimeEvent[] {
 export function extractAgentRuntimeEvents(
   event: Record<string, unknown>
 ): AgentRuntimeEvent[] {
-  const directEvents = getRuntimeEvents(event);
-  const nodeEvents = Object.values(event).flatMap(getRuntimeEvents);
-  const adaptedEvents = NODE_EVENT_RULES.flatMap((rule) => {
+  return [
+    ...extractDirectAgentRuntimeEvents(event),
+    ...extractNestedAgentRuntimeEvents(event),
+    ...extractNodeAdapterRuntimeEvents(event),
+  ];
+}
+
+export function extractDirectAgentRuntimeEvents(
+  event: Record<string, unknown>
+): AgentRuntimeEvent[] {
+  return getRuntimeEvents(event);
+}
+
+export function extractNestedAgentRuntimeEvents(
+  event: Record<string, unknown>
+): AgentRuntimeEvent[] {
+  return Object.values(event).flatMap(getRuntimeEvents);
+}
+
+export function extractNodeAdapterRuntimeEvents(
+  event: Record<string, unknown>
+): AgentRuntimeEvent[] {
+  return NODE_EVENT_RULES.flatMap((rule) => {
     if (!(rule.nodeKey in event)) return [];
     if (getRuntimeEvents(event[rule.nodeKey]).length > 0) return [];
     return rule.toEvents(event[rule.nodeKey]);
   });
-
-  return [...directEvents, ...nodeEvents, ...adaptedEvents];
 }
 
 export function runtimeEventToProcessedEvent(
@@ -308,5 +479,17 @@ export function runtimeEventToProcessedEvent(
         data: stringifyEventData(event.payload),
         eventType: event.type,
       };
+    case 'agent.unknown':
+      return {
+        title: RUNTIME_EVENT_LABELS.unknown(event.originalType),
+        data: {
+          originalType: event.originalType,
+          ...(event.rawPayload ?? {}),
+        },
+        eventType: event.type,
+      };
   }
+
+  const exhaustiveEvent: never = event;
+  return exhaustiveEvent;
 }
