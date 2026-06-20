@@ -71,10 +71,20 @@ export const InputForm: React.FC<InputFormProps> = ({
   const uploadConfig = uploadConfigRef.current;
   const imageItemsRef = useRef<ImageUploadItem[]>([]);
   const activeUploadCountRef = useRef(0);
+  const unmountedRef = useRef(false);
   const supportsImageUpload = selectedAgent === AgentId.DEEP_RESEARCHER;
   const visibleAgents = getVisibleAgents();
 
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+    };
+  }, []);
+
   const patchImageItem = useCallback((id: string, patch: Partial<ImageUploadItem>) => {
+    if (unmountedRef.current) return;
+
     const updatedItems = imageItemsRef.current.map((item) =>
       item.id === id ? { ...item, ...patch } : item
     );
@@ -92,15 +102,18 @@ export const InputForm: React.FC<InputFormProps> = ({
 
       void preprocessImageFile(nextItem.file, uploadConfig)
         .then((attachment) => {
+          if (unmountedRef.current) return;
           patchImageItem(nextItem.id, { status: 'completed', attachment });
         })
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
+          if (unmountedRef.current) return;
           patchImageItem(nextItem.id, { status: 'failed', error: message });
           setPreflightError(`${nextItem.file.name}: ${message}`);
         })
         .finally(() => {
           activeUploadCountRef.current = Math.max(0, activeUploadCountRef.current - 1);
+          if (unmountedRef.current) return;
           drainUploadQueue();
         });
     }

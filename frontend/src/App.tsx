@@ -1,6 +1,6 @@
 import { useStream } from '@langchain/langgraph-sdk/react';
 import type { Message } from '@langchain/langgraph-sdk';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 
 import { ProcessedEvent } from '@/components/ActivityTimeline';
 import { WelcomeScreen } from '@/components/WelcomeScreen';
@@ -70,6 +70,11 @@ export default function App() {
   const [streamErrorMessage, setStreamErrorMessage] = useState<string | null>(null);
   const [cancelledMessage, setCancelledMessage] = useState<Message | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const selectedAgentIdRef = useRef(selectedAgentId);
+
+  useEffect(() => {
+    selectedAgentIdRef.current = selectedAgentId;
+  }, [selectedAgentId]);
 
   const validateAgentId = useCallback((agentId: string): string => {
     if (isValidAgentId(agentId)) {
@@ -100,6 +105,35 @@ export default function App() {
     [validateAgentId]
   );
 
+  const handleStreamError = useCallback((error: unknown) => {
+    if (isAbortError(error)) {
+      console.debug('Stream aborted by client action.');
+      return;
+    }
+    setStreamErrorMessage(formatStreamError(error));
+    console.error('LangGraph stream error:', error);
+  }, []);
+
+  const handleStreamFinish = useCallback((event: unknown) => {
+    console.log(event);
+  }, []);
+
+  const handleStreamUpdate = useCallback((event: Record<string, unknown>) => {
+    const currentAgent = getAgentById(selectedAgentIdRef.current);
+    if (!currentAgent?.showActivityTimeline) return;
+
+    const processedEvents = extractAgentRuntimeEvents(event).map(
+      runtimeEventToProcessedEvent
+    );
+
+    if (processedEvents.length > 0) {
+      setProcessedEventsTimeline((prevEvents) => [
+        ...prevEvents,
+        ...processedEvents,
+      ]);
+    }
+  }, []);
+
   const thread = useStream<{
     messages: Message[];
     initial_search_query_count: number;
@@ -109,32 +143,9 @@ export default function App() {
     apiUrl: getLangGraphApiUrl(),
     assistantId: selectedAgentId,
     messagesKey: 'messages',
-    onError: (error: unknown) => {
-      if (isAbortError(error)) {
-        console.debug('Stream aborted by client action.');
-        return;
-      }
-      setStreamErrorMessage(formatStreamError(error));
-      console.error('LangGraph stream error:', error);
-    },
-    onFinish: (event: unknown) => {
-      console.log(event);
-    },
-    onUpdateEvent: (event: Record<string, unknown>) => {
-      const currentAgent = getAgentById(selectedAgentId);
-      if (!currentAgent?.showActivityTimeline) return;
-
-      const processedEvents = extractAgentRuntimeEvents(event).map(
-        runtimeEventToProcessedEvent
-      );
-
-      if (processedEvents.length > 0) {
-        setProcessedEventsTimeline((prevEvents) => [
-          ...prevEvents,
-          ...processedEvents,
-        ]);
-      }
-    },
+    onError: handleStreamError,
+    onFinish: handleStreamFinish,
+    onUpdateEvent: handleStreamUpdate,
   });
 
   useEffect(() => {
@@ -219,19 +230,27 @@ export default function App() {
     setCancelledMessage(createCancelledAssistantMessage());
   }, [thread]);
 
-  const messagesWithStreamError = streamErrorMessage
-    ? [
-        ...thread.messages,
-        {
-          type: 'ai',
-          content: streamErrorMessage,
-          id: 'stream-error',
-        } as Message,
-      ]
-    : thread.messages;
-  const displayMessages = cancelledMessage
-    ? [...messagesWithStreamError, cancelledMessage]
-    : messagesWithStreamError;
+  const messagesWithStreamError = useMemo(
+    () =>
+      streamErrorMessage
+        ? [
+            ...thread.messages,
+            {
+              type: 'ai',
+              content: streamErrorMessage,
+              id: 'stream-error',
+            } as Message,
+          ]
+        : thread.messages,
+    [thread.messages, streamErrorMessage]
+  );
+  const displayMessages = useMemo(
+    () =>
+      cancelledMessage
+        ? [...messagesWithStreamError, cancelledMessage]
+        : messagesWithStreamError,
+    [messagesWithStreamError, cancelledMessage]
+  );
 
   useEffect(() => {
     if (scrollAreaRef.current) {
