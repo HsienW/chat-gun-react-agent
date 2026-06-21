@@ -4,10 +4,14 @@
   "private": true,
   "type": "module",
   "author": "HsienW",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "npm run build && node dist/server.js",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test": "npm run build && node --test dist/errors.test.js dist/server.test.js"
   },
   "dependencies": {
     "dotenv": "^16.5.0"

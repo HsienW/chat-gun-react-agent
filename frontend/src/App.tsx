@@ -14,23 +14,17 @@ import {
   createInitialStreamActivityState,
   streamActivityReducer,
 } from '@/lib/stream-activity-state';
-import type { StreamActivityState, StreamErrorKind } from '@/lib/stream-activity-state';
+import type { StreamActivityState } from '@/lib/stream-activity-state';
 import type { ProcessedImageAttachment } from '@/lib/image-upload';
 import { AgentId, DEFAULT_AGENT } from '@/types/agents';
 import { formatErrorEnvelope, parseErrorEnvelope } from '@/types/errors';
-import type { ErrorEnvelope } from '@/types/errors';
 import { getAgentById, isValidAgentId } from '@/lib/agents';
+import {
+  classifyStreamError,
+  isStreamAbortError,
+} from '@/lib/stream-error-classification';
 
 const STREAM_ERROR_MESSAGE_ID = 'stream-error';
-
-function isAbortError(error: unknown): boolean {
-  if (!error) return false;
-  if (error instanceof DOMException && error.name === 'AbortError') return true;
-  if (error instanceof Error) {
-    return /abort|aborted/i.test(`${error.name} ${error.message}`);
-  }
-  return /abort|aborted/i.test(String(error));
-}
 
 function formatStreamError(error: unknown): string {
   const envelope =
@@ -49,29 +43,6 @@ function formatStreamError(error: unknown): string {
       error instanceof Error ? error.message : String(error)
     }`,
   ].join('\n');
-}
-
-function getStreamErrorEnvelope(error: unknown): ErrorEnvelope | undefined {
-  return (
-    parseErrorEnvelope(error) ||
-    parseErrorEnvelope(error instanceof Error ? error.message : String(error))
-  );
-}
-
-function classifyStreamError(error: unknown): StreamErrorKind {
-  const envelope = getStreamErrorEnvelope(error);
-  const code = envelope?.error.code.toLowerCase();
-  const causeCode = envelope?.error.cause?.code?.toLowerCase();
-
-  if (code === 'timeout' || code === 'upstream_timeout' || causeCode === 'timeout') {
-    return 'timeout';
-  }
-
-  if (isAbortError(error)) {
-    return 'abort';
-  }
-
-  return 'generic';
 }
 
 function getLangGraphApiUrl(): string {
@@ -166,7 +137,7 @@ export default function App() {
   const handleStreamError = useCallback((error: unknown) => {
     // Best-effort fast path; reducer terminal idempotency is the primary guard.
     if (
-      isAbortError(error) &&
+      isStreamAbortError(error) &&
       streamActivityStateRef.current.lifecycle === 'cancelled'
     ) {
       console.debug('Stream aborted by client action.');
