@@ -43,10 +43,41 @@ function getCause(error: Error): ErrorEnvelope["error"]["cause"] | undefined {
   };
 }
 
-function parseStatusCode(message: string): number | undefined {
-  const match = message.match(/\[(\d{3})\s+[^\]]+\]|\b(\d{3})\b/);
-  const value = Number(match?.[1] ?? match?.[2]);
-  return Number.isInteger(value) ? value : undefined;
+const MESSAGE_TELEMETRY_PATTERN = /fetch failed|network|connect|timeout|aborted/i;
+const PUBLIC_CAUSE_ERROR_CODES = new Set([
+  "provider_auth_error",
+  "quota_or_rate_limit_exceeded",
+  "provider_unavailable",
+  "provider_http_error",
+  "provider_request_validation_error",
+  "llm_response_json_parse_failed",
+  "timeout",
+  "unknown_error",
+]);
+
+function getStructuredStatusCode(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+
+  const statusCode = (error as { statusCode?: unknown }).statusCode;
+  return typeof statusCode === "number" && Number.isInteger(statusCode)
+    ? statusCode
+    : undefined;
+}
+
+function getMessageTelemetryHint(message: string): Record<string, unknown> | undefined {
+  return MESSAGE_TELEMETRY_PATTERN.test(message)
+    ? { telemetryHint: "message_matched_network_or_timeout_pattern" }
+    : undefined;
+}
+
+function inferCauseCode(causeCode: string): { code: string; details?: Record<string, unknown> } {
+  const normalizedCauseCode = causeCode.toLowerCase();
+
+  return PUBLIC_CAUSE_ERROR_CODES.has(normalizedCauseCode)
+    ? { code: normalizedCauseCode }
+    : { code: "unknown_error", details: { causeCode } };
 }
 
 function parseQuotaDetails(message: string): Record<string, unknown> {
@@ -63,10 +94,14 @@ export function inferErrorCode(
   provider?: string
 ): { code: string; details?: Record<string, unknown> } {
   const message = error instanceof Error ? error.message : String(error);
-  const statusCode = parseStatusCode(message);
+  const statusCode = getStructuredStatusCode(error);
 
   if (error instanceof Error && error.name === "ProviderResponseParseError") {
     return { code: "llm_response_json_parse_failed" };
+  }
+
+  if (error instanceof Error && error.name === "AbortError") {
+    return { code: "timeout" };
   }
 
   if (statusCode === 401 || statusCode === 403) {
@@ -98,18 +133,15 @@ export function inferErrorCode(
   if (error instanceof Error) {
     const cause = getCause(error);
     if (cause?.code) {
-      return { code: String(cause.code).toLowerCase() };
-    }
-    if (error.name === "AbortError") {
-      return { code: "timeout" };
+      return inferCauseCode(String(cause.code));
     }
   }
 
-  if (/fetch failed|network|connect|timeout|aborted/i.test(message)) {
-    return { code: "network_error" };
-  }
+  const telemetryDetails = getMessageTelemetryHint(message);
 
-  return { code: "unknown_error" };
+  return telemetryDetails
+    ? { code: "unknown_error", details: telemetryDetails }
+    : { code: "unknown_error" };
 }
 
 export function createErrorEnvelope(

@@ -397,6 +397,8 @@ function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string
   if (answerMode === "calculation" && !calculation?.expression.trim()) {
     return {
       ...fallback,
+      answerMode: "clarify",
+      queries: [],
       rationale: "The planner classified calculation intent but did not provide an expression.",
       clarification: BACKEND_ERROR_MESSAGES.planner.missingCalculationExpression,
     };
@@ -1682,6 +1684,13 @@ export const deepResearcherWeatherTestInternals = {
   repairWeatherRequest,
   buildWeatherToolAnswer,
   targetedTools,
+};
+
+export const deepResearcherQueryContractTestInternals = {
+  coercePlan,
+  fallbackPlan,
+  parseJsonObjectWithDiagnostics,
+  routeAfterPlan,
 };
 
 function buildTargetedToolErrorAnswer(

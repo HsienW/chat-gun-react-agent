@@ -231,6 +231,21 @@ function capabilitiesForProvider(provider: LlmProviderName, purpose: ModelPurpos
   };
 }
 
+function assertProviderCapability(
+  capabilities: LlmCapabilities,
+  provider: LlmProviderName,
+  endpointKind: LlmEndpointKind,
+  capability: keyof Pick<LlmCapabilities, "supportsStructuredOutput" | "supportsToolCalling">
+): void {
+  if (capabilities[capability]) {
+    return;
+  }
+
+  throw new Error(
+    `Provider ${provider} endpoint ${endpointKind} does not support ${capability}.`
+  );
+}
+
 function getFirstEnv(names: string[]): string {
   for (const name of names) {
     const value = getEnv(name).trim();
@@ -741,6 +756,13 @@ class OpenAiCompatibleChatModel implements ChatModelInvoker {
     tools: StructuredToolInterface[],
     kwargs?: Pick<ChatModelOptions, "toolChoice">
   ): ChatModelInvoker {
+    assertProviderCapability(
+      capabilitiesForProvider(this.options.provider, this.options.purpose),
+      this.options.provider,
+      "openai-chat-completions",
+      "supportsToolCalling"
+    );
+
     return new OpenAiCompatibleChatModel({
       ...this.options,
       tools: tools.map(toOpenAiTool),
@@ -767,6 +789,15 @@ class OpenAiCompatibleChatModel implements ChatModelInvoker {
           endpointKind,
           model: this.options.model,
         })}`
+      );
+    }
+
+    if (this.options.responseFormat) {
+      assertProviderCapability(
+        capabilities,
+        this.options.provider,
+        endpointKind,
+        "supportsStructuredOutput"
       );
     }
 
@@ -962,9 +993,21 @@ class CcrGateway implements LlmGateway {
     if (!baseUrl) {
       throw new Error("CCR LLM provider selected but CCR_BASE_URL is not configured.");
     }
+    const provider: LlmProviderName = "ccr";
+    const purpose = options.purpose ?? "chat";
+    const endpointKind: LlmEndpointKind = "anthropic-messages";
+
+    if (options.responseFormat) {
+      assertProviderCapability(
+        capabilitiesForProvider(provider, purpose),
+        provider,
+        endpointKind,
+        "supportsStructuredOutput"
+      );
+    }
 
     return new CcrAnthropicChatModel({
-      model: resolveProviderModel("ccr", options.purpose ?? "chat", options.model),
+      model: resolveProviderModel(provider, purpose, options.model),
       baseUrl,
       apiKey: getCcrApiKey() || undefined,
       temperature: options.temperature ?? 0.7,

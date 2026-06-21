@@ -87,6 +87,22 @@ describe("llm-gateway provider selection", () => {
     });
   });
 
+  it("fails fast when CCR provider is requested with structured output", async () => {
+    vi.stubEnv("LLM_PROVIDER", "ccr");
+    vi.stubEnv("CCR_BASE_URL", "http://127.0.0.1:3456/v1");
+    vi.stubEnv("CCR_MODEL", "ccr-test-model");
+    vi.resetModules();
+
+    const { llmGateway } = await import("./llm-gateway.js");
+
+    expect(() =>
+      llmGateway.createChatModel({
+        purpose: "research",
+        responseFormat: { type: "json_object" },
+      })
+    ).toThrow(/ccr.*supportsStructuredOutput/i);
+  });
+
   it("routes OpenAI-compatible provider through chat completions endpoint", async () => {
     vi.stubEnv("LLM_PROVIDER", "openai-compatible");
     vi.stubEnv("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:9999/v1");
@@ -541,7 +557,7 @@ describe("llm-gateway provider selection", () => {
     expect(formatted).not.toContain("qwen-secret-test-key");
   });
 
-  it("maps Qwen network failures without leaking API key", async () => {
+  it("maps Qwen network-like message failures to unknown_error without leaking API key", async () => {
     vi.stubEnv("LLM_PROVIDER", "qwen");
     vi.stubEnv("QWEN_API_KEY", "qwen-secret-test-key");
     vi.resetModules();
@@ -562,7 +578,8 @@ describe("llm-gateway provider selection", () => {
     }
 
     const formatted = formatLlmError(error);
-    expect(formatted).toContain("Code: network_error");
+    expect(formatted).toContain("Code: unknown_error");
+    expect(formatted).toContain("message_matched_network_or_timeout_pattern");
     expect(formatted).toContain("Provider: qwen");
     expect(formatted).not.toContain("qwen-secret-test-key");
   });

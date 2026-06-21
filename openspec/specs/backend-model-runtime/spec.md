@@ -59,6 +59,31 @@ Backend Runtime MUST resolve models by provider and model purpose without relyin
 - **THEN** each model MUST use the matching Qwen purpose-specific variable
 - **AND** configured legacy model overrides MUST remain backward compatible
 
+### Requirement: Provider Capability Enforcement
+Backend Runtime MUST enforce provider capabilities before sending requests that require unsupported model features.
+
+#### Scenario: Tool calling capability is unsupported
+- **GIVEN** a selected provider reports `supportsToolCalling: false`
+- **WHEN** Backend attempts to bind tools for that provider
+- **THEN** Backend MUST fail fast with a structured capability error
+- **AND** Backend MUST NOT silently skip tools or continue into a degraded tool-calling path
+
+#### Scenario: Structured output capability is unsupported
+- **GIVEN** a selected provider reports `supportsStructuredOutput: false`
+- **WHEN** Backend creates or invokes a chat model with `responseFormat: { "type": "json_object" }`
+- **THEN** Backend MUST fail fast with a structured capability error
+- **AND** Backend MUST NOT silently omit the response format requirement
+
+#### Scenario: Supported capabilities continue normally
+- **GIVEN** a selected provider reports support for tool calling or structured output
+- **WHEN** Backend binds tools or requests JSON object response format
+- **THEN** Backend MUST preserve the provider request behavior for the supported capability
+
+#### Scenario: Capability errors are safe
+- **WHEN** Backend reports a provider capability error
+- **THEN** the error message MUST identify the provider and missing capability
+- **AND** the error MUST NOT include API keys, authorization headers, tokens, or credentials
+
 ### Requirement: JSON Mode Response Format
 Backend Runtime MUST support JSON-only model calls through Chat Completions `response_format`.
 
@@ -141,11 +166,33 @@ Backend Runtime MUST map provider failures to structured error codes without rel
 - **THEN** the error code MUST distinguish auth, quota/rate limit, bad request, and provider server error categories
 - **AND** provider metadata MUST identify the selected provider
 
-#### Scenario: Network, timeout, abort, and parse errors are categorized
-- **GIVEN** provider invocation fails due to network error, timeout/abort, or invalid JSON
+#### Scenario: Transport, timeout, abort, and parse errors are handled safely
+- **GIVEN** provider invocation fails due to transport failure, timeout/abort, or invalid JSON
 - **WHEN** Backend creates an error envelope
-- **THEN** the error code MUST distinguish network, timeout, and provider response parse errors
+- **THEN** the error code MUST distinguish timeout and provider response parse errors when structured sources identify them
+- **AND** unmanaged transport cause codes MUST fall back to `unknown_error` with safe telemetry details
 - **AND** error details MUST NOT leak credentials
+
+### Requirement: Error Code Source MUST Be Structured
+Backend Runtime MUST determine public error codes from structured sources and MUST NOT use error message regex matching as the public classifier.
+
+#### Scenario: Structured sources produce public error codes
+- **GIVEN** Backend receives an error with structured status, name, or allowlisted cause code
+- **WHEN** Backend infers the public error code
+- **THEN** Backend MUST derive the code from the structured source
+- **AND** message text such as `timeout`, `network`, `fetch failed`, `connect`, or `aborted` MUST NOT be the primary public classifier
+
+#### Scenario: Unknown structured source falls back safely
+- **GIVEN** Backend receives an unmanaged or unknown structured cause code
+- **WHEN** Backend infers the public error code
+- **THEN** Backend MUST return `unknown_error`
+- **AND** Backend MAY retain the original cause code only in safe telemetry details
+
+#### Scenario: Existing public error codes remain stable
+- **GIVEN** Backend recognizes a stable public error code such as `provider_auth_error`, `quota_or_rate_limit_exceeded`, `provider_unavailable`, `provider_http_error`, `provider_request_validation_error`, `llm_response_json_parse_failed`, or `timeout`
+- **WHEN** Backend reports an error envelope
+- **THEN** Backend MUST preserve that public code
+- **AND** Backend MUST NOT invent provider- or runtime-specific public codes from raw messages
 
 ### Requirement: Usage and Model Metadata Normalization
 Backend Runtime MUST normalize available provider usage and model metadata while tolerating unknown provider fields.
@@ -243,4 +290,3 @@ Gemini removal MUST NOT change frontend/bff public APIs, LangGraph Graph IDs, MC
 - **THEN** existing Graph IDs MUST remain unchanged
 - **AND** BFF routes and frontend request shape MUST remain unchanged
 - **AND** MCP tools MUST still execute through backend ToolRegistry and ToolNode
-

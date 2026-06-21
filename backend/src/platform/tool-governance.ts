@@ -1,4 +1,4 @@
-import { tool, type StructuredToolInterface } from "@langchain/core/tools";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 
 import { auditLogger, recordMetric } from "./observability.js";
 
@@ -152,77 +152,76 @@ function wrapToolWithGovernance(
     return sourceTool;
   }
 
-  const wrappedTool = tool(
-    async (input: unknown) => {
-      const startedAt = Date.now();
-      const inputChars = serializeForLimit(input).length;
-      const commonAuditPayload = {
-        toolName: sourceTool.name,
-        inputChars,
-        timeoutMs: policy.timeoutMs,
-        maxOutputChars: policy.maxOutputChars,
-      };
+  const wrappedTool = Object.assign(
+    Object.create(Object.getPrototypeOf(sourceTool)) as StructuredToolInterface,
+    sourceTool
+  );
+  const governedInvoke = async (input: unknown, config?: unknown): Promise<unknown> => {
+    const startedAt = Date.now();
+    const inputChars = serializeForLimit(input).length;
+    const commonAuditPayload = {
+      toolName: sourceTool.name,
+      inputChars,
+      timeoutMs: policy.timeoutMs,
+      maxOutputChars: policy.maxOutputChars,
+    };
 
-      if (inputChars > policy.maxInputChars) {
-        await auditToolEvent("tool.blocked", policy, {
-          ...commonAuditPayload,
-          reason: "input_too_large",
-          maxInputChars: policy.maxInputChars,
-        });
-        return `Error: ${sourceTool.name} blocked by tool governance - input exceeds ${policy.maxInputChars} characters.`;
-      }
-
-      await auditToolEvent("tool.invoke.start", policy, commonAuditPayload);
-
-      try {
-        const result = await withTimeout(
-          sourceTool.invoke(input),
-          policy.timeoutMs,
-          sourceTool.name
-        );
-        const governedResult = truncateOutput(
-          sourceTool.name,
-          result,
-          policy.maxOutputChars
-        );
-        const outputChars = serializeForLimit(governedResult).length;
-        const durationMs = Date.now() - startedAt;
-
-        await auditToolEvent("tool.invoke.success", policy, {
-          ...commonAuditPayload,
-          outputChars,
-          durationMs,
-        });
-        await recordMetric("tool.invoke.duration_ms", {
-          toolName: sourceTool.name,
-          durationMs,
-        });
-
-        return governedResult;
-      } catch (error) {
-        const durationMs = Date.now() - startedAt;
-        const errorMessage = error instanceof Error ? error.message : String(error);
-
-        await auditToolEvent("tool.invoke.failure", policy, {
-          ...commonAuditPayload,
-          durationMs,
-          error: errorMessage,
-        });
-        await recordMetric("tool.invoke.failure.count", {
-          toolName: sourceTool.name,
-          count: 1,
-        });
-
-        return `Error: ${sourceTool.name} failed by tool governance - ${errorMessage}`;
-      }
-    },
-    {
-      name: sourceTool.name,
-      description: sourceTool.description,
-      schema: sourceTool.schema,
-      returnDirect: sourceTool.returnDirect,
+    if (inputChars > policy.maxInputChars) {
+      await auditToolEvent("tool.blocked", policy, {
+        ...commonAuditPayload,
+        reason: "input_too_large",
+        maxInputChars: policy.maxInputChars,
+      });
+      return `Error: ${sourceTool.name} blocked by tool governance - input exceeds ${policy.maxInputChars} characters.`;
     }
-  ) as StructuredToolInterface;
+
+    await auditToolEvent("tool.invoke.start", policy, commonAuditPayload);
+
+    try {
+      const result = await withTimeout(
+        sourceTool.invoke(input as never, config as never),
+        policy.timeoutMs,
+        sourceTool.name
+      );
+      const governedResult = truncateOutput(
+        sourceTool.name,
+        result,
+        policy.maxOutputChars
+      );
+      const outputChars = serializeForLimit(governedResult).length;
+      const durationMs = Date.now() - startedAt;
+
+      await auditToolEvent("tool.invoke.success", policy, {
+        ...commonAuditPayload,
+        outputChars,
+        durationMs,
+      });
+      await recordMetric("tool.invoke.duration_ms", {
+        toolName: sourceTool.name,
+        durationMs,
+      });
+
+      return governedResult;
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      await auditToolEvent("tool.invoke.failure", policy, {
+        ...commonAuditPayload,
+        durationMs,
+        error: errorMessage,
+      });
+      await recordMetric("tool.invoke.failure.count", {
+        toolName: sourceTool.name,
+        count: 1,
+      });
+
+      return `Error: ${sourceTool.name} failed by tool governance - ${errorMessage}`;
+    }
+  };
+
+  wrappedTool.invoke = governedInvoke as StructuredToolInterface["invoke"];
+  wrappedTool.call = governedInvoke as StructuredToolInterface["call"];
 
   governedTools.add(wrappedTool as object);
   return wrappedTool;
