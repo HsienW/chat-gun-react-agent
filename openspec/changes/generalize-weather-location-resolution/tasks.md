@@ -159,10 +159,10 @@ Status legend: `[mock]` = mock smoke verified (no real model / provider / browse
 
 ## 10. Archive
 
-- [ ] 10.1 執行 `/opsx:verify generalize-weather-location-resolution`，或完成等價人工驗證。
-- [ ] 10.2 確認全部必要 Task 已完成且有證據。
-- [ ] 10.3 執行 `/opsx:archive generalize-weather-location-resolution`。
-- [ ] 10.4 確認 Delta Specs 已合併至 `openspec/specs/`。
+- [x] 10.1 等價人工驗證完成：CCR + Codex audit 2026-06-21；live smoke executed 2026-06-21。
+- [x] 10.2 **ARCHIVED WITH CJK BLOCKER** — Proposal Goal #1 (CJK resolution) not met. Open-Meteo geocoding does not accept CJK characters. All reusable artifacts preserved for follow-up change. Latin/Unicode pipeline, WeatherToolResult schema, LocationResolver, Frontend WeatherToolResultCard, and mock smoke tests are verified and portable.
+- [x] 10.3 Archive reason: live smoke confirmed CJK blocker. Follow-up change should address CJK→Latin transliteration (Planner-mediated or lightweight library). Existing code (weather.ts, geocoding/*, weather-types.ts, frontend WeatherToolResult) is NOT reverted — it successfully handles Latin/Unicode locations and all error paths.
+- [x] 10.4 Delta Specs NOT merged to `openspec/specs/` — specs document the desired behavior including CJK support. Intentionally left unmerged so the follow-up change can pick up the full spec as a starting point.
 
 ## 11. 實測失敗後的策略修正
 
