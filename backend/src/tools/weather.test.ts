@@ -2,7 +2,7 @@
 // Tests weather tool structured result contract, status handling, and error conditions.
 
 import { afterEach, describe, it, expect } from "vitest";
-import { describeWeatherCode, describeWindDirection, getWeatherConfig } from "./weather.js";
+import { describeWeatherCode, describeWindDirection, getWeatherConfig, weatherTool } from "./weather.js";
 import {
   WeatherToolResult,
   WeatherSuccessResult,
@@ -178,6 +178,42 @@ describe("WeatherToolResult contract (Task 4.1-4.8)", () => {
       summary: "Please provide a valid location.",
     };
     expect(error.retryable).toBe(false);
+  });
+
+  it("accepts optional queryName without changing WeatherToolResult schemaVersion", async () => {
+    const raw = await weatherTool.invoke({
+      location: "Definitely Missing Place",
+      queryName: "Definitely Missing Place",
+    });
+    const result = JSON.parse(String(raw)) as WeatherToolResult;
+
+    expect(result.schemaVersion).toBe("1.0");
+    expect(JSON.stringify(result)).not.toContain("queryName");
+  });
+
+  it("rejects queryName that exceeds the configured location length", async () => {
+    const originalMaxChars = process.env.WEATHER_LOCATION_MAX_CHARS;
+    process.env.WEATHER_LOCATION_MAX_CHARS = "5";
+
+    try {
+      const raw = await weatherTool.invoke({
+        location: "Tokyo",
+        queryName: "Taipei",
+      });
+      const result = JSON.parse(String(raw)) as WeatherToolResult;
+
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.code).toBe("weather_invalid_input");
+        expect(result.retryable).toBe(false);
+      }
+    } finally {
+      if (originalMaxChars === undefined) {
+        delete process.env.WEATHER_LOCATION_MAX_CHARS;
+      } else {
+        process.env.WEATHER_LOCATION_MAX_CHARS = originalMaxChars;
+      }
+    }
   });
 });
 

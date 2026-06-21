@@ -12,7 +12,7 @@ import { configureNetwork } from "../platform/network.js";
 
 import { OpenMeteoGeocodingProvider } from "./geocoding/open-meteo-provider.js";
 import { resolveLocation, DEFAULT_RESOLVER_OPTIONS } from "./geocoding/location-resolver.js";
-import { buildLocationQuery, validateLocationInput } from "./geocoding/location-normalizer.js";
+import { buildLocationQuery, normalizeLocation, validateLocationInput } from "./geocoding/location-normalizer.js";
 import type {
   LocationCandidate,
   LocationQuery,
@@ -83,6 +83,26 @@ function isCancelError(message: string): boolean {
 
 function isTimeoutError(message: string): boolean {
   return message === "weather_fetch_timeout" || message === "weather_geocoding_timeout" || message.includes("timeout");
+}
+
+function validateOptionalQueryName(
+  rawQueryName: unknown,
+  maxChars: number
+): { queryName?: string; error?: string } {
+  if (rawQueryName === undefined) {
+    return {};
+  }
+
+  if (typeof rawQueryName !== "string") {
+    return { error: "queryName must be a string when provided." };
+  }
+
+  const validationError = validateLocationInput(rawQueryName, maxChars);
+  if (validationError) {
+    return { error: validationError.replace("Location input", "queryName") };
+  }
+
+  return { queryName: normalizeLocation(rawQueryName) };
 }
 
 export function describeWeatherCode(code: number | undefined): string {
@@ -366,7 +386,7 @@ function formatLegacyText(result: WeatherToolResult): string {
 }
 
 export const weatherTool = tool(
-  async ({ location, country, region, resolutionStrategy, raw }, config?: RunnableConfig) => {
+  async ({ location, country, region, queryName, resolutionStrategy, raw }, config?: RunnableConfig) => {
     const startTime = Date.now();
     const weatherConfig = getWeatherConfig();
     const runSignal = getRunnableSignal(config);
@@ -396,15 +416,42 @@ export const weatherTool = tool(
         : formatLegacyText(result);
     }
 
+    const queryNameValidation = validateOptionalQueryName(
+      queryName,
+      weatherConfig.locationMaxChars
+    );
+    if (queryNameValidation.error) {
+      const result: WeatherToolResult = {
+        schemaVersion: "1.0",
+        tool: "current_weather",
+        status: "error",
+        requestedLocation: { raw: location ?? "", location: location ?? "" },
+        code: "weather_invalid_input",
+        retryable: false,
+        message: queryNameValidation.error,
+        summary: "Invalid location input. Please provide a valid city or place name.",
+      };
+      await auditLogger.record("weather.location.resolve.start", {
+        error: "invalid_query_name",
+        location,
+        queryNameProvided: true,
+      });
+      return weatherConfig.structuredResultEnabled
+        ? JSON.stringify(result)
+        : formatLegacyText(result);
+    }
+
     // Build the query
     const query = {
       ...buildLocationQuery(location, country, region),
       raw: typeof raw === "string" && raw.trim() ? raw : location,
     };
+    const providerQueryName = queryNameValidation.queryName;
     await auditLogger.record("weather.location.resolve.start", {
       raw: query.raw,
       location: query.location,
       country: query.country,
+      queryNameProvided: Boolean(providerQueryName),
     });
 
     if (weatherConfig.forceGeocodingError) {
@@ -441,6 +488,7 @@ export const weatherTool = tool(
         maxQueries: weatherConfig.geocodingMaxQueries,
         signal: runSignal,
         strategy,
+        queryName: providerQueryName,
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -685,6 +733,10 @@ export const weatherTool = tool(
         .string()
         .optional()
         .describe("Internal original user location text preserved across one-time repair."),
+      queryName: z
+        .string()
+        .optional()
+        .describe("Optional geocoding-friendly Latin name for Chinese or mixed-Chinese locations."),
     }),
   }
 );

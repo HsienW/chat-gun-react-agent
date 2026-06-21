@@ -129,6 +129,52 @@ describe("buildQueryVariants (Task 2.5, 2.6)", () => {
     expect(variants.some((variant) => variant.language === "en")).toBe(true);
   });
 
+  it("prioritizes queryName before the original CJK location while preserving fallback", () => {
+    const query: LocationQuery = { raw: "台北", location: "台北" };
+
+    const variants = buildGeocodingQueryVariants(query, 6, "Taipei");
+
+    expect(variants[0]).toEqual({
+      text: "Taipei",
+      strategy: "original",
+    });
+    expect(variants[1]).toEqual({
+      text: "台北",
+      strategy: "original",
+    });
+    expect(variants.map((variant) => variant.text)).toContain("台北");
+  });
+
+  it("deduplicates queryName when it matches location", () => {
+    const query: LocationQuery = { raw: "Tokyo", location: "Tokyo" };
+    const baseline = buildGeocodingQueryVariants(query, 20);
+
+    const variants = buildGeocodingQueryVariants(query, 20, "Tokyo");
+
+    expect(variants).toEqual(baseline);
+    expect(variants[0]?.text).toBe("Tokyo");
+  });
+
+  it("keeps existing variant order when queryName is absent", () => {
+    const query: LocationQuery = {
+      raw: "Fengshan",
+      location: "Fengshan",
+      region: "Kaohsiung",
+      country: "Taiwan",
+    };
+
+    const variants = buildGeocodingQueryVariants(query, 6);
+
+    expect(variants.map((variant) => `${variant.text}|${variant.language ?? "default"}`)).toEqual([
+      "Fengshan|default",
+      "Fengshan, Kaohsiung|default",
+      "Fengshan, Kaohsiung, Taiwan|default",
+      "Fengshan, Taiwan|default",
+      "Fengshan|zh",
+      "Fengshan, Kaohsiung|zh",
+    ]);
+  });
+
   it("keeps Fengshan full context before language fallbacks within max queries", () => {
     const query: LocationQuery = {
       raw: "\u9ad8\u96c4\u9cf3\u5c71",
@@ -191,6 +237,25 @@ describe("scoreCandidate", () => {
       region: "Taipei City",
     };
     expect(scoreCandidate(taipei, query)).toBeGreaterThanOrEqual(100);
+  });
+
+  it("scores provider candidates whose admin fields cover a multi-token Latin queryName", () => {
+    const fengshan: LocationCandidate = {
+      provider: "open-meteo",
+      name: "Fengshan",
+      displayName: "Fengshan, Kaohsiung City, Taiwan",
+      country: "Taiwan",
+      countryCode: "TW",
+      admin1: "Kaohsiung City",
+      admin2: "Fengshan District",
+      latitude: 22.624,
+      longitude: 120.355,
+      timezone: "Asia/Taipei",
+      population: 350_000,
+    };
+
+    expect(scoreCandidate(fengshan, { raw: "高雄鳳山", location: "Kaohsiung Fengshan" }))
+      .toBeGreaterThanOrEqual(DEFAULT_RESOLVER_OPTIONS.minScore);
   });
 });
 

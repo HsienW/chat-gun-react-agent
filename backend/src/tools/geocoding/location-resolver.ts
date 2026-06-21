@@ -25,6 +25,8 @@ export type ResolverOptions = {
   signal?: AbortSignal;
   /** Override result strategy, used for one-time LLM repair attempts */
   strategy?: ResolutionStrategy;
+  /** Optional provider-facing query hint produced by the planner. */
+  queryName?: string;
 };
 
 export const DEFAULT_RESOLVER_OPTIONS: ResolverOptions = {
@@ -55,7 +57,7 @@ export async function resolveLocation(
   provider: GeocodingProvider,
   options: ResolverOptions = DEFAULT_RESOLVER_OPTIONS
 ): Promise<LocationResolutionResult> {
-  const variants = buildGeocodingQueryVariants(query, options.maxQueries);
+  const variants = buildGeocodingQueryVariants(query, options.maxQueries, options.queryName);
   const attemptedQueries = variants.map(formatAttemptedQuery);
   const candidatesByKey = new Map<string, CandidateEntry>();
 
@@ -155,7 +157,10 @@ function scoreAndResolve(
   const scored = candidates
     .map((entry) => ({
       candidate: entry.candidate,
-      score: scoreCandidate(entry.candidate, query),
+      score: scoreCandidate(entry.candidate, {
+        ...query,
+        location: entry.queryText,
+      }),
       strategy: entry.strategy,
     }))
     .sort((a, b) => b.score - a.score);
@@ -172,7 +177,19 @@ function scoreAndResolve(
 
   const second = scored[1];
   const hasContext = Boolean(query.country || query.region);
-  if (!hasContext && second && (isShortCjkQuery(query.raw) || isShortCjkQuery(query.location))) {
+  // Skip the short CJK ambiguity guard when candidates were found via a
+  // queryName (Latin) variant.  The CJK guard exists because short CJK
+  // queries often fail against the Latin-only geocoding index; when a
+  // queryName successfully bridged that gap, we trust the scoring.
+  const resolvedViaQueryName = candidates.some(
+    (entry) => entry.queryText !== query.location
+  );
+  if (
+    !hasContext &&
+    second &&
+    !resolvedViaQueryName &&
+    (isShortCjkQuery(query.raw) || isShortCjkQuery(query.location))
+  ) {
     const differentCountries = scored
       .slice(0, options.maxCandidates)
       .some((s) => s.candidate.countryCode !== best.candidate.countryCode);
@@ -284,6 +301,20 @@ function shouldPreferCandidateText(
   existing: LocationCandidate,
   query: LocationQuery
 ): boolean {
+  // When a queryName-based variant (Latin) fetches a candidate first, and a
+  // subsequent language=zh variant returns a localized name for the same
+  // coordinates, prefer the Latin name.  The geocoding provider index is
+  // Latin-only; the Latin name is the canonical one for scoring purposes.
+  const existingIsLatin = /^\p{Script=Latin}/u.test(existing.name);
+  const incomingIsLatin = /^\p{Script=Latin}/u.test(incoming.name);
+  if (existingIsLatin !== incomingIsLatin) {
+    const latin = existingIsLatin ? existing : incoming;
+    const nonLatin = existingIsLatin ? incoming : existing;
+    // Only prefer Latin when the CJK name is a plausible localization,
+    // i.e. the Latin name matches the provider index.
+    return latin === incoming;
+  }
+
   const incomingScore = candidateTextMatchScore(incoming, query);
   const existingScore = candidateTextMatchScore(existing, query);
   if (incomingScore !== existingScore) {
@@ -358,6 +389,10 @@ export function scoreCandidate(
     score += 20;
   }
 
+  if (candidateCoversLocationTokens(candidate, normalizedLocation)) {
+    score += 15;
+  }
+
   // Country matching
   if (query.country && countryMatches(candidate, query.country)) {
     score += 35;
@@ -378,6 +413,41 @@ export function scoreCandidate(
 
 function normalizeComparable(value: string): string {
   return value.normalize("NFKC").toLowerCase().trim();
+}
+
+function comparableTokens(value: string): string[] {
+  return normalizeComparable(value)
+    .split(/[^\p{L}\p{N}]+/u)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3);
+}
+
+function candidateCoversLocationTokens(
+  candidate: LocationCandidate,
+  normalizedLocation: string
+): boolean {
+  if (!hasLatinScript(normalizedLocation)) {
+    return false;
+  }
+
+  const locationTokens = comparableTokens(normalizedLocation);
+  if (locationTokens.length < 2) {
+    return false;
+  }
+
+  const candidateText = [
+    candidate.name,
+    candidate.displayName,
+    candidate.country,
+    candidate.countryCode,
+    candidate.admin1,
+    candidate.admin2,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map(normalizeComparable)
+    .join(" ");
+
+  return locationTokens.every((token) => candidateText.includes(token));
 }
 
 function isExactNameMatch(candidate: LocationCandidate, query: LocationQuery): boolean {

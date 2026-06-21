@@ -269,6 +269,57 @@ const candidates: Record<string, OpenMeteoResult[]> = {
   ],
 };
 
+const latinQueryCandidates: Record<string, OpenMeteoResult[]> = {
+  taipei: [
+    {
+      name: "Taipei",
+      latitude: 25.033,
+      longitude: 121.565,
+      country: "Taiwan",
+      country_code: "TW",
+      admin1: "Taipei City",
+      timezone: "Asia/Taipei",
+      population: 7_000_000,
+    },
+  ],
+  "kaohsiung fengshan": [
+    {
+      name: "Fengshan",
+      latitude: 22.624,
+      longitude: 120.355,
+      country: "Taiwan",
+      country_code: "TW",
+      admin1: "Kaohsiung City",
+      admin2: "Fengshan District",
+      timezone: "Asia/Taipei",
+      population: 350_000,
+    },
+  ],
+  beijing: [
+    {
+      name: "Beijing",
+      latitude: 39.904,
+      longitude: 116.407,
+      country: "China",
+      country_code: "CN",
+      admin1: "Beijing",
+      timezone: "Asia/Shanghai",
+      population: 21_000_000,
+    },
+  ],
+  singapore: [
+    {
+      name: "Singapore",
+      latitude: 1.352,
+      longitude: 103.82,
+      country: "Singapore",
+      country_code: "SG",
+      timezone: "Asia/Singapore",
+      population: 5_600_000,
+    },
+  ],
+};
+
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
     status: init?.status ?? 200,
@@ -277,7 +328,10 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
   });
 }
 
-function installMockOpenMeteoFetch(scenario: Scenario = { kind: "normal" }): void {
+function installMockOpenMeteoFetch(
+  scenario: Scenario = { kind: "normal" },
+  geocodingCandidates: Record<string, OpenMeteoResult[]> = candidates
+): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string | URL | Request) => {
@@ -289,7 +343,7 @@ function installMockOpenMeteoFetch(scenario: Scenario = { kind: "normal" }): voi
         }
 
         const name = (url.searchParams.get("name") ?? "").toLowerCase();
-        const results = candidates[name] ?? [];
+        const results = geocodingCandidates[name] ?? [];
         return jsonResponse({ results });
       }
 
@@ -338,6 +392,7 @@ function installMockOpenMeteoFetch(scenario: Scenario = { kind: "normal" }): voi
 
 async function invokeWeather(input: {
   location: string;
+  queryName?: string;
   country?: string;
   region?: string;
 }): Promise<WeatherToolResult> {
@@ -370,6 +425,26 @@ describe("mock smoke acceptance for weather manual matrix", () => {
       expect(result.resolvedLocation.name).toBe(expectedName);
       expect(result.current.temperature).toBe(24);
       expect(result.sourceUrl).toContain("api.open-meteo.com");
+    }
+  });
+
+  it.each([
+    ["5.1", TAIPEI_SIMPLIFIED, "Taipei", "Taipei"],
+    ["5.2", TAIPEI_TRADITIONAL, "Taipei", "Taipei"],
+    ["5.3", KAOHSIUNG_FENGSHAN, "Kaohsiung Fengshan", "Fengshan"],
+    ["5.4", BEIJING_CITY, "Beijing", "Beijing"],
+    ["5.5", SINGAPORE_ZH, "Singapore", "Singapore"],
+  ])("%s resolves CJK location %s through Latin queryName %s", async (_taskId, location, queryName, expectedName) => {
+    installMockOpenMeteoFetch({ kind: "normal" }, latinQueryCandidates);
+
+    const result = await invokeWeather({ location, queryName });
+
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.requestedLocation.raw).toBe(location);
+      expect(result.requestedLocation.location).toBe(location);
+      expect(result.resolvedLocation.name).toBe(expectedName);
+      expect(JSON.stringify(result)).not.toContain("queryName");
     }
   });
 

@@ -50,10 +50,10 @@ function installTaipeiWeatherFetchMock(): void {
         const name = url.searchParams.get("name");
         return jsonResponse({
           results:
-            name === "\u53f0\u5317"
+            name === "Taipei"
               ? [
                   {
-                    name: "\u53f0\u5317",
+                    name: "Taipei",
                     latitude: 25.033,
                     longitude: 121.565,
                     country: "Taiwan",
@@ -355,6 +355,7 @@ describe("Deep Research weather structured result integration", () => {
             urls: [],
             weather: {
               location: "\u53f0\u5317",
+              queryName: "Taipei",
             },
             requiredSourceCount: 1,
           })
@@ -376,6 +377,7 @@ describe("Deep Research weather structured result integration", () => {
 
     expect(planned.plan?.answerMode).toBe("weather");
     expect(planned.plan?.weather?.location).toBe("\u53f0\u5317");
+    expect(planned.plan?.weather?.queryName).toBe("Taipei");
 
     const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
       {
@@ -393,9 +395,63 @@ describe("Deep Research weather structured result integration", () => {
     expect(weatherResult?.status).toBe("success");
     if (weatherResult?.status === "success") {
       expect(weatherResult.requestedLocation.raw).toBe("\u53f0\u5317");
-      expect(weatherResult.resolvedLocation.name).toBe("\u53f0\u5317");
+      expect(weatherResult.requestedLocation.location).toBe("\u53f0\u5317");
+      expect(JSON.stringify(weatherResult)).not.toContain("queryName");
+      expect(weatherResult.resolvedLocation.name).toBe("Taipei");
       expect(weatherResult.current.temperature).toBe(24);
     }
+  });
+
+  it("planner prompt documents optional queryName for Chinese and mixed-Chinese locations only", async () => {
+    const invoke = vi.fn(async () =>
+      new AIMessage(
+        JSON.stringify({
+          question: "Tokyo weather now",
+          answerMode: "weather",
+          rationale: "Weather request.",
+          queries: [],
+          urls: [],
+          weather: { location: "Tokyo" },
+          requiredSourceCount: 1,
+        })
+      )
+    );
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({ invoke });
+
+    const state = makePlannerState([new HumanMessage("Tokyo weather now")]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+    const plannerPrompt = String((invoke.mock.calls as unknown as Array<[unknown]>)[0]?.[0]);
+
+    expect(planned.plan?.weather?.queryName).toBeUndefined();
+    expect(plannerPrompt).toContain("queryName");
+    expect(plannerPrompt).toContain("traditional Chinese");
+    expect(plannerPrompt).toContain("simplified Chinese");
+    expect(plannerPrompt).toContain("Japanese");
+    expect(plannerPrompt).toContain("Korean");
+  });
+
+  it("keeps rollback behavior when planner output omits queryName", async () => {
+    const invoke = vi.fn(async () =>
+      new AIMessage(
+        JSON.stringify({
+          question: "Tokyo weather now",
+          answerMode: "weather",
+          rationale: "Weather request.",
+          queries: [],
+          urls: [],
+          weather: { location: "Tokyo" },
+          requiredSourceCount: 1,
+        })
+      )
+    );
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({ invoke });
+
+    const state = makePlannerState([new HumanMessage("Tokyo weather now")]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+
+    expect(planned.plan?.answerMode).toBe("weather");
+    expect(planned.plan?.weather?.location).toBe("Tokyo");
+    expect(planned.plan?.weather?.queryName).toBeUndefined();
   });
 
   it("plans only the latest user message in a multi-turn weather clarification thread", async () => {

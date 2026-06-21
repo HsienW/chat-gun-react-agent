@@ -61,6 +61,17 @@ weatherCapability
 
 不得直接宣稱地理實體解析成功。
 
+`queryName` is an optional planner hint for Chinese or mixed-Chinese weather locations.
+It may contain a geocoding-friendly Latin place name, but it must not replace the
+user's original `location`/raw location text. The resolver may try `queryName`
+before the original location as a provider query variant, but provider-backed
+candidates remain the only geographic authority.
+
+`queryName` must not be implemented with Chinese/CJK city alias maps, fixed
+natural-language keyword stripping, phrase stripping, punctuation-stripping
+heuristics, or hardcoded place allowlists. Japanese and Korean inputs are outside
+this `queryName` scope and must not be guessed through this path.
+
 ### Resolver / Geocoding Provider
 
 負責根據 Planner 輸出、對話 Context 與 Provider 候選，產生：

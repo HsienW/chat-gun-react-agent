@@ -81,6 +81,7 @@ type Freshness = "pd" | "pw" | "pm" | "py";
 
 type WeatherRequest = {
   location: string;
+  queryName?: string;
   country?: string;
   region?: string;
 };
@@ -349,8 +350,10 @@ function coerceWeatherRequest(value: unknown): WeatherRequest | undefined {
 
   const country = coerceLocationHint(value.country);
   const region = coerceLocationHint(value.region);
+  const queryName = coerceLocationHint(value.queryName);
   return {
     location,
+    ...(queryName ? { queryName } : {}),
     ...(country ? { country } : {}),
     ...(region ? { region } : {}),
   };
@@ -959,13 +962,16 @@ async function retryWeatherPlannerExtraction(
     "Do not use prior messages.",
     "Do not treat prior assistant clarification as the current request.",
     "Use the exact user-provided place text, or a directly traceable place span from the current request.",
-    "Do not translate place names to English.",
+    "Keep weather.location as the original user-provided place text.",
+    "For traditional Chinese, simplified Chinese, or mixed Chinese-Latin place text, add weather.queryName only when you know a geocoding-friendly Latin name.",
+    "Do not add queryName for pure English or Latin-script place text.",
+    "Japanese and Korean place names are out of scope for required queryName coverage; do not guess if uncertain.",
     "Do not strip weather words, time words, particles, or punctuation to guess a location.",
     "If the current request asks for weather and includes a location, return answerMode weather with weather.location.",
     "If no location is provided, return answerMode clarify with a short clarification.",
     "Do not invent coordinates.",
     "Do not return latitude, longitude, coordinates, providerId, provider candidates, URLs, source names, or tool calls.",
-    'JSON schema: {"answerMode":"weather|clarify","weather":{"location":"string","country":"string optional","region":"string optional"},"clarification":"string optional"}',
+    'JSON schema: {"answerMode":"weather|clarify","weather":{"location":"string","queryName":"string optional","country":"string optional","region":"string optional"},"clarification":"string optional"}',
     `Current user request: ${JSON.stringify(question)}`,
   ].join("\n");
 
@@ -1057,11 +1063,13 @@ async function planResearch(
     "Classify the user request and decide whether it needs direct answer, current weather, calculation, web research, or clarification.",
     "Use web research for current facts, news, products, prices, law, regulations, company/person changes, technical docs that may have changed, and any topic requiring external evidence.",
     "Use weather only for actual weather/temperature/rain/wind/humidity questions.",
-    "For weather, extract the place name the user provided. Keep the original text the user used — the geocoding tool handles multiple languages. Include country or region only when the user explicitly mentioned them. Do not translate place names to English.",
+    "For weather, extract the place name the user provided. Keep weather.location as the original text the user used. Include country or region only when the user explicitly mentioned them.",
+    "For traditional Chinese, simplified Chinese, or mixed Chinese-Latin weather locations, add weather.queryName only when you know a geocoding-friendly Latin name. Do not add queryName for pure English or Latin-script locations.",
+    "Japanese and Korean place names are out of scope for required queryName coverage; do not guess queryName if uncertain.",
     "Do not include latitude or longitude in the weather request — the geocoding tool resolves coordinates.",
     "If a location is ambiguous, include country or region when the user supplied it; otherwise leave it to the weather tool to request clarification.",
     "JSON schema:",
-    '{"question":"string","answerMode":"direct|weather|calculation|research|clarify","rationale":"string","queries":["string"],"urls":["https://..."],"freshness":"pd|pw|pm|py optional","weather":{"location":"string","country":"string optional","region":"string optional"},"calculation":{"expression":"string"},"clarification":"string optional","requiredSourceCount":3}',
+    '{"question":"string","answerMode":"direct|weather|calculation|research|clarify","rationale":"string","queries":["string"],"urls":["https://..."],"freshness":"pd|pw|pm|py optional","weather":{"location":"string","queryName":"string optional","country":"string optional","region":"string optional"},"calculation":{"expression":"string"},"clarification":"string optional","requiredSourceCount":3}',
     `Today is ${today()}.`,
     "IM Context Pack:",
     JSON.stringify(contextPack, null, 2),
@@ -1151,6 +1159,9 @@ async function targetedTools(
 
     weatherExecution = { status: "running", requestedLocation: request };
     const input = request as Record<string, unknown>;
+    if (rawRequest.queryName) {
+      input.queryName = rawRequest.queryName;
+    }
     let content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.currentWeather, input, _config);
 
     // Try to parse as structured result
