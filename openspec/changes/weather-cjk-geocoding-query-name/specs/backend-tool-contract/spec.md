@@ -55,21 +55,19 @@ When `queryName` is provided and differs from `location` after normalization, `b
 
 ---
 
-### Requirement: Feature Flag MUST Allow Disabling queryName Planner Extraction
+### Requirement: queryName Rollback MUST Be Achievable via Prompt Change Without Feature Flag
 
-`WEATHER_PLANNER_QUERY_NAME_ENABLED` env var (default `true`) MUST gate whether Planner Prompt instructs queryName extraction. When `false`, Planner MUST NOT be asked to produce `queryName`, and `coerceWeatherRequest` MUST ignore any `queryName` in Planner output.
+The system MUST NOT introduce an env-based feature flag for `queryName`. Rollback MUST be achievable by modifying the Planner Prompt to remove `queryName` extraction instruction. The Tool MUST accept `queryName` as optional regardless.
 
-#### Scenario: Flag enabled (default)
+#### Scenario: Planner prompt includes queryName instruction
 
-- GIVEN `WEATHER_PLANNER_QUERY_NAME_ENABLED=true` (or unset)
-- WHEN Planner extracts weather request
-- THEN Prompt SHOULD instruct `queryName` extraction for CJK locations
-- AND `coerceWeatherRequest` SHOULD extract and validate `queryName`
+- GIVEN Planner Prompt 包含 `queryName` extraction instruction
+- WHEN Planner 處理中文輸入
+- THEN Planner MAY 產出 `queryName`
 
-#### Scenario: Flag disabled
+#### Scenario: Rollback via prompt change
 
-- GIVEN `WEATHER_PLANNER_QUERY_NAME_ENABLED=false`
-- WHEN Planner extracts weather request
-- THEN Prompt MUST NOT instruct `queryName` extraction
-- AND `coerceWeatherRequest` MUST ignore `queryName` even if Planner accidentally emits it
-- AND Tool behavior MUST be identical to pre-change
+- GIVEN Planner Prompt 不含 `queryName` extraction instruction（rollback 後）
+- WHEN Planner 處理中文輸入
+- THEN Planner SHALL NOT 產出 `queryName`
+- AND queryName 即使被 Planner 意外產出，`coerceWeatherRequest` SHALL 保留它（Tool 為 optional no-op）

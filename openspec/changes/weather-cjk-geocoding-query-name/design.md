@@ -63,15 +63,17 @@ WeatherToolResult:
 
 ### 3.1 Planner Owns Semantic Transliteration
 
-Planner LLM 具備多語言理解能力，能將 `台北` 語意轉寫為 `Taipei`、`北京市` → `Beijing`、`高雄鳳山` → `Kaohsiung Fengshan`。
+Planner LLM 具備多語言理解能力，能將繁體/簡體中文地名語意轉寫為 Latin name，例如 `台北`→`Taipei`、`北京市`→`Beijing`、`高雄鳳山`→`Kaohsiung Fengshan`。混合中英文輸入（如 `台北101`）一併涵蓋。
+
+範圍僅限繁體中文與簡體中文。日文（漢字/仮名）、韓文（Hangul）不在本次 scope，後續可擴張。
 
 這不是固定 mapping，是 LLM 的語意理解能力。每次 Planner 調用都是獨立判斷，可涵蓋未見過的城市名稱。
 
 Planner Prompt 指引：
 - 保留使用者原文於 `location`。
-- 若 `location` 為純 CJK 或含 CJK，且你知道對應的 geocoding-friendly Latin name，填入 `queryName`。
+- 若 `location` 為繁體中文、簡體中文，或含中文的混合輸入，且你知道對應的 geocoding-friendly Latin name，填入 `queryName`。
 - 不確定時不填 `queryName`（讓 Resolver fallback）。
-- 不為英文/拉丁輸入填 `queryName`（減少冗余）。
+- 不為純英文/拉丁輸入填 `queryName`（減少冗余）。
 
 ### 3.2 Resolver Owns Provider-Backed Geographic Validation
 
@@ -83,7 +85,7 @@ Planner 提供的 `queryName` 不等於已解析地點。Provider 回 `not_found
 
 - Tool Schema 中 `queryName` 為 optional。不填時行為完全向後相容。
 - 英文/拉丁輸入時 Planner 可不填 `queryName`。
-- Feature Flag `WEATHER_PLANNER_QUERY_NAME_ENABLED` 控制 Planner 是否產出 `queryName`（預設 `true`）。
+- 不引入 Feature Flag — `queryName` 本身已是 optional 且完全向後相容，無需額外開關。若 Planner 大量 hallucinate 錯誤 `queryName`，可直接修改 Planner Prompt 移除 extraction instruction。
 
 ### 3.4 queryName Is Query Acceleration, Not Authority
 
@@ -92,14 +94,6 @@ Planner 提供的 `queryName` 不等於已解析地點。Provider 回 `not_found
 ### 3.5 Raw CJK Input Is Preserved
 
 `raw` 和 `location` 永遠保留使用者原始地點文字。`queryName` 出現在 Tool input、Audit log 和 Query Variant 中，但不出現在 User-facing UI（WeatherToolResultCard 顯示 `resolvedLocation.displayName`，來自 Provider）。
-
-### 3.6 Feature Flag
-
-```
-WEATHER_PLANNER_QUERY_NAME_ENABLED=true   (default)
-```
-
-關閉時 Planner 不要求產出 `queryName`，Tool 仍接受 `queryName` 參數（no-op），確保部署後可快速回滾。
 
 ---
 
@@ -204,7 +198,7 @@ Resolve audit event 記錄 `queryName` 是否存在（不記錄完整字串，De
 - Planner Prompt: 新增 `queryName` extraction instruction
 - Tool Input Schema: 新增 optional `queryName`
 - Query Variant Builder: 接受 optional `queryName`，插入優先 variant
-- Feature Flag: 新增 `WEATHER_PLANNER_QUERY_NAME_ENABLED`
+- No Feature Flag — `queryName` 已是 optional
 
 ### Migration
 

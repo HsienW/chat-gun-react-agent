@@ -13,9 +13,8 @@
 - [ ] 1.1 在 Planner Prompt（`deep-researcher.ts` plan_research Node）新增 `queryName` extraction instruction：保留 `location` 原文；若為純 CJK 或含 CJK 且知道 geocoding-friendly Latin name，填入 `queryName`；不確定時不填。
 - [ ] 1.2 在 Planner structured output schema instruction 中 `weather` 物件新增 optional `weather.queryName: string`。
 - [ ] 1.3 在 `coerceWeatherRequest` 中新增 `queryName` 欄位萃取與 validation（trim、不為空字串、不超長）。
-- [ ] 1.4 新增 Feature Flag `WEATHER_PLANNER_QUERY_NAME_ENABLED`（預設 `true`）。關閉時 Planner Prompt 不要求 `queryName`，且 `coerceWeatherRequest` 忽略 `queryName`。
-- [ ] 1.5 新增 Planner output test：驗證 `queryName` 欄位 optional、可萃取、不覆蓋 `location`。
-- [ ] 1.6 新增 Planner output test：`WEATHER_PLANNER_QUERY_NAME_ENABLED=false` 時 `queryName` 不影響既有行為。
+- [ ] 1.4 新增 Planner output test：驗證 `queryName` 欄位 optional、可萃取、不覆蓋 `location`。
+- [ ] 1.5 新增 Planner output test：Planner Prompt 不含 `queryName` instruction 時（模擬 rollback），`queryName` 不影響既有行為。
 
 ## 2. Tool Schema
 

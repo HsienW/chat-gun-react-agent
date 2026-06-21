@@ -23,29 +23,35 @@ Planner `weather.location` MUST retain user-provided text as-is. `weather.queryN
 
 ---
 
-### Requirement: Weather Planner SHOULD Provide Geocoding-Friendly queryName for CJK-Only Locations
+### Requirement: Weather Planner SHOULD Provide Geocoding-Friendly queryName for Chinese or Mixed-Chinese Locations
 
-Planner SHOULD populate `weather.queryName` with a Latin-script geocoding-friendly name when `weather.location` contains CJK characters and the Planner knows the corresponding Latin name. Planner MUST NOT fabricate `queryName` when uncertain.
+Planner SHOULD populate `weather.queryName` with a Latin-script geocoding-friendly name when `weather.location` contains traditional Chinese, simplified Chinese, or mixed Chinese-Latin characters and the Planner knows the corresponding Latin name. Planner MUST NOT fabricate `queryName` when uncertain.
 
-#### Scenario: Known CJK city with queryName
+#### Scenario: Known Chinese city with queryName
 
-- GIVEN 使用者查詢已知 CJK 城市（例如 台北、北京）
+- GIVEN 使用者查詢已知繁體/簡體中文城市（例如 台北、北京、高雄鳳山）
 - WHEN Planner 知道對應 Latin name
-- THEN Planner SHOULD 提供 `queryName`（例如 `"Taipei"`, `"Beijing"`）
+- THEN Planner SHOULD 提供 `queryName`（例如 `"Taipei"`, `"Beijing"`, `"Kaohsiung Fengshan"`）
 
-#### Scenario: Unknown or uncertain CJK
+#### Scenario: Mixed Chinese-Latin input
 
-- GIVEN Planner 不確定 CJK 地點的對應 Latin name
+- GIVEN 使用者輸入混合中文與英文的地點（例如 `台北101`、`北京CBD`）
+- WHEN Planner 知道該地點的 geocoding-friendly Latin name
+- THEN Planner SHOULD 提供 `queryName`
+
+#### Scenario: Unknown or uncertain Chinese location
+
+- GIVEN Planner 不確定中文地點的對應 Latin name
 - WHEN Planner 產生 weather extraction
 - THEN Planner MUST NOT 猜測 `queryName`
 - AND Resolver fallback 到原 `location` 查詢
 
-#### Scenario: Feature flag disabled
+#### Scenario: Non-Chinese CJK out of scope
 
-- GIVEN `WEATHER_PLANNER_QUERY_NAME_ENABLED=false`
+- GIVEN 使用者以日文（例如 `東京`）或韓文（例如 `서울`）提供地點
 - WHEN Planner 產生 weather extraction
-- THEN Planner MUST NOT 產出 `queryName`
-- AND 既有行為不受影響
+- THEN Planner MAY 產出 `queryName` 但無強制要求
+- AND 本次 Change 的 test coverage 不要求覆蓋日文/韓文案例
 
 ---
 

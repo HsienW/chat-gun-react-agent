@@ -1,10 +1,10 @@
-# Proposal：CJK 地名轉寫支援
+# Proposal：繁體/簡體中文地名轉寫支援
 
 ## Intent
 
 `generalize-weather-location-resolution` change 建立了 Provider-driven 的地點解析 pipeline（LocationResolver、WeatherToolResult Discriminated Union、Frontend WeatherToolResultCard），但 2026-06-21 live smoke 證實 **Open-Meteo Geocoding API 不支援 CJK 字元查詢**。`台北`、`臺北`、`北京市`、`高雄鳳山` 等純中文地名全部回傳 `not_found`。拉丁/Unicode 地名（Tokyo、São Paulo、München）正常。
 
-本 Change 的唯一目標：在不可替換 Open-Meteo Provider 的前提下，讓 CJK 地名能正確解析為地理實體。策略是讓 **Planner LLM 在抽取天氣意圖時，同時產出 geocoding-friendly 的 Latin 查詢字串（`queryName`）**，協助 Provider 跨越 CJK 文字索引障礙。
+本 Change 的唯一目標：在不可替換 Open-Meteo Provider 的前提下，讓繁體中文與簡體中文地名能正確解析為地理實體。策略是讓 **Planner LLM 在抽取天氣意圖時，同時產出 geocoding-friendly 的 Latin 查詢字串（`queryName`）**，協助 Provider 跨越中文文字索引障礙。混合中英文輸入（如 `台北101`）一併涵蓋。
 
 所有舊 change 已驗證的資產（Resolver pipeline、WeatherToolResult schema、Frontend card、mock smoke test、live smoke harness）全部繼承，不重做、不重構、不降級。
 
@@ -28,9 +28,10 @@
 
 ## Non-goals
 
-- 不建立人工 CJK→Latin 城市對照表。
+- 不建立人工中文→Latin 城市對照表。
 - 不引入第二個 Geocoding Provider。
-- 不將 CJK→Latin 轉寫邏輯寫死在 normalizer 或 resolver 中。
+- 不將中文→Latin 轉寫邏輯寫死在 normalizer 或 resolver 中。
+- 不處理日文（漢字/仮名）、韓文（Hangul）或其他非中文 CJK 文字 — 本次僅涵蓋繁體中文與簡體中文。
 - 不修改 WeatherToolResult schema version（仍為 `1.0`）。
 - 不修改 Frontend WeatherToolResultCard（`queryName` 不出現在 UI）。
 - 不修改 BFF Proxy 行為。
@@ -48,7 +49,7 @@
 - **Tool Schema**：`current_weather` input 新增 optional `queryName`。
 - **Query Variant**：`buildQueryVariants` 在 `queryName` 存在且與 `location` 不同時，插入為第一優先變體；保留去重。
 - **Runtime Validation**：Planner 產出的 `queryName` 經 Schema validation；不繞過 Provider 驗證。
-- **Feature Flag**：`WEATHER_PLANNER_QUERY_NAME_ENABLED`（預設 `true`），關閉時 Planner 不產出 `queryName`。
+- **Feature Flag**：無。`queryName` 已是 optional 且完全向後相容，不引入額外 env 開關。
 - **Tests**：mock smoke + live smoke 覆蓋 CJK 案例；既有拉丁案例不回歸。
 
 ### Frontend
@@ -123,8 +124,8 @@ WeatherToolResult:
 ## Rollback strategy
 
 - `queryName` 是 optional 欄位。若 Planner 不產出，行為等價現狀。
-- 可透過 `WEATHER_PLANNER_QUERY_NAME_ENABLED=false` 關閉 Planner `queryName` 產出。
-- 關閉後，Tool 仍接受 `queryName` 參數（no-op），不破壞向後相容。
+- 若 Planner 大量 hallucinate 錯誤 `queryName`，可修改 Planner Prompt 移除 `queryName` extraction instruction（純 prompt change，無需程式碼回滾）。
+- Tool 永遠接受 `queryName` 參數（no-op when absent），不破壞向後相容。
 
 ---
 
