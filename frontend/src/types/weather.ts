@@ -86,6 +86,7 @@ export type WeatherNotFoundResult = {
   code: string;
   message: string;
   summary: string;
+  attemptedQueries?: string[];
 };
 
 export type WeatherErrorResult = {
@@ -125,10 +126,10 @@ export function parseWeatherToolResult(content: string): WeatherToolResult | und
       if (status === 'needs_clarification' && parsed.candidates) {
         return parsed as unknown as WeatherClarificationResult;
       }
-      if (status === 'not_found') {
+      if (status === 'not_found' && typeof parsed.code === 'string') {
         return parsed as unknown as WeatherNotFoundResult;
       }
-      if (status === 'error') {
+      if (status === 'error' && typeof parsed.code === 'string' && typeof parsed.retryable === 'boolean') {
         return parsed as unknown as WeatherErrorResult;
       }
       // Forward-compat: unknown schemaVersion or unknown status

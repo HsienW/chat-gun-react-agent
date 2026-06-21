@@ -20,23 +20,25 @@ This is not formal product live acceptance. The 9.x manual acceptance tasks rema
 
 ## 9.x Coverage
 
+All tasks 9.1–9.15 are mock-verified. Live acceptance (real Planner model, real Open-Meteo, real browser streaming/cancel) is pending — see tasks.md 9.16.
+
 | Task | Mock smoke coverage | Live acceptance status |
 | --- | --- | --- |
-| 9.1 `台北現在天氣如何？` | Mock geocoding resolves `台北` to Taipei and mock forecast returns success. | live acceptance pending |
-| 9.2 `臺北現在天氣如何？` | Mock geocoding resolves `臺北` to Taipei and mock forecast returns success. | live acceptance pending |
-| 9.3 `高雄鳳山今天會下雨嗎？` | Mock geocoding resolves `高雄鳳山` to Fengshan and mock forecast returns success. | live acceptance pending |
-| 9.4 `北京市現在幾度？` | Mock geocoding resolves `北京市` to Beijing and mock forecast returns success. | live acceptance pending |
-| 9.5 `新加坡現在的濕度？` | Mock geocoding resolves `新加坡` to Singapore and mock forecast returns success. | live acceptance pending |
-| 9.6 `Tokyo weather now` | Mock geocoding resolves Tokyo and mock forecast returns success. | live acceptance pending |
-| 9.7 `São Paulo weather` | Mock geocoding resolves the Unicode accented location and mock forecast returns success. | live acceptance pending |
-| 9.8 `München weather` | Mock geocoding resolves the Unicode umlaut location and mock forecast returns success. | live acceptance pending |
-| 9.9 `Springfield weather` | Mock geocoding returns multiple Springfield candidates and asserts `needs_clarification`. | live acceptance pending |
-| 9.10 `中山現在天氣如何？` | Mock geocoding returns multiple Zhongshan candidates and asserts `needs_clarification`. | live acceptance pending |
-| 9.11 Unknown location | Mock geocoding returns no candidates and asserts `not_found` without coordinates. | live acceptance pending |
-| 9.12 Geocoding provider failure | Mock geocoding failure asserts provider error, not `not_found`. | live acceptance pending |
-| 9.13 Forecast provider failure | Mock forecast failure asserts terminal weather error. | live acceptance pending |
-| 9.14 User cancellation / frontend loading | Mock cancelled WeatherToolResult renders as terminal error and does not show waiting/running fallback. | live acceptance pending |
-| 9.15 Sensitive data display | Mock error result with sensitive `message` verifies UI only renders safe summary. | live acceptance pending |
+| 9.1 `台北現在天氣如何？` | Mock geocoding resolves `台北` to Taipei and mock forecast returns success. | [mock] pending |
+| 9.2 `臺北現在天氣如何？` | Mock geocoding resolves `臺北` to Taipei and mock forecast returns success. | [mock] pending |
+| 9.3 `高雄鳳山今天會下雨嗎？` | Mock geocoding resolves `高雄鳳山` to Fengshan and mock forecast returns success. | [mock] pending |
+| 9.4 `北京市現在幾度？` | Mock geocoding resolves `北京市` to Beijing and mock forecast returns success. | [mock] pending |
+| 9.5 `新加坡現在的濕度？` | Mock geocoding resolves `新加坡` to Singapore and mock forecast returns success. | [mock] pending |
+| 9.6 `Tokyo weather now` | Mock geocoding resolves Tokyo and mock forecast returns success. | [mock] pending |
+| 9.7 `São Paulo weather` | Mock geocoding resolves the Unicode accented location and mock forecast returns success. | [mock] pending |
+| 9.8 `München weather` | Mock geocoding resolves the Unicode umlaut location and mock forecast returns success. | [mock] pending |
+| 9.9 `Springfield weather` | Mock geocoding returns multiple Springfield candidates and asserts `needs_clarification`. | [mock] pending |
+| 9.10 `中山現在天氣如何？` | Mock geocoding returns multiple Zhongshan candidates and asserts `needs_clarification`. | [mock] pending |
+| 9.11 Unknown location | Mock geocoding returns no candidates and asserts `not_found` without coordinates. | [mock] pending |
+| 9.12 Geocoding provider failure | Mock geocoding failure asserts provider error, not `not_found`. | [mock] pending |
+| 9.13 Forecast provider failure | Mock forecast failure asserts terminal weather error. | [mock] pending |
+| 9.14 User cancellation / frontend loading | Mock cancelled WeatherToolResult renders as terminal error and does not show waiting/running fallback. | [mock] pending |
+| 9.15 Sensitive data display | Mock error result with sensitive `message` verifies UI only renders safe summary. | [mock] pending |
 
 ## Boundary
 

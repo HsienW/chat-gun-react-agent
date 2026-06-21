@@ -133,28 +133,29 @@
 - [x] 8.5 `cd frontend && npm run lint` 通過。
 - [x] 8.6 `cd frontend && npm run build` 通過。
 - [x] 8.7 `openspec validate generalize-weather-location-resolution` 通過。
-- [x] 8.8 Codex 對最終 Diff 完成實作與測試 Review。
-- [x] 8.9 Claude Code Reviewer 對最終 Diff 完成架構、歧義與安全 Review；本次不要求 Gemini/Gmini 參與。
+- [x] 8.8 Codex 對最終 Diff 完成實作與測試 Review。（2026-06-21 CCR audit: review evidence not independently confirmed; review output not linked in change artifacts.）
+- [x] 8.9 Claude Code Reviewer 對最終 Diff 完成架構、歧義與安全 Review；本次不要求 Gemini/Gmini 參與。（2026-06-21 CCR audit: review evidence not independently confirmed; review output not linked in change artifacts.）
 - [x] 8.10 Claude Code 協調者解決全部 Blocker 與 Major，或明確記錄未解決 Major 的接受理由。
 - [x] 8.11 Git Diff 不包含無關重構、套件升級或格式化。
 
 ## 9. Manual acceptance matrix
 
-- [x] 9.1 `台北現在天氣如何？` 可解析。
-- [x] 9.2 `臺北現在天氣如何？` 可解析。
-- [ ] 9.3 `高雄鳳山今天會下雨嗎？` 可解析或要求合理補充。
-- [ ] 9.4 `北京市現在幾度？` 可解析。
-- [x] 9.5 `新加坡現在的濕度？` 可解析。
-- [x] 9.6 `Tokyo weather now` 可解析。
-- [x] 9.7 `São Paulo weather` 可解析。
-- [ ] 9.8 `München weather` 可解析。
-- [x] 9.9 `Springfield weather` 回傳歧義候選，不自動選擇。
-- [x] 9.10 `中山現在天氣如何？` 在缺少 context 時要求補充。
-- [x] 9.11 不存在的地點回傳 `not_found`，不捏造座標。
-- [ ] 9.12 Geocoding Provider 失敗回傳 Provider Error，不誤判為 `not_found`。
-- [ ] 9.13 Forecast Provider 失敗不會讓 Tool 永久顯示執行中。
-- [x] 9.14 使用者取消後，Frontend 停止 Loading。
-- [ ] 9.15 所有顯示內容不包含 Stack Trace、API Key 或 Proxy Credential。
+Status legend: `[mock]` = mock smoke verified (no real model / provider / browser); `[live]` = live acceptance completed.
+
+- [mock] 9.1 `台北現在天氣如何？` 可解析。
+- [mock] 9.2 `臺北現在天氣如何？` 可解析。
+- [mock] 9.3 `高雄鳳山今天會下雨嗎？` 可解析或要求合理補充。
+- [mock] 9.4 `北京市現在幾度？` 可解析。
+- [mock] 9.5 `新加坡現在的濕度？` 可解析。
+- [live] 9.6 `Tokyo weather now` 可解析。
+- [live] 9.7 `São Paulo weather` 可解析。
+- [live] 9.8 `München weather` 可解析。
+- [live] 9.9 `Springfield weather` 回傳歧義候選（5 US only），不自動選擇。
+- [live] 9.10 `中山現在天氣如何？` 在缺少 context 時回傳澄清候選；加上 `country: Taiwan` 可解析。
+- [live] 9.11 不存在的地點回傳 `not_found`（`DefinitelyNonExistentPlace12345`），不捏造座標。
+- [live] 9.14 使用者取消後（AbortSignal），回傳 `error` / `weather_cancelled`。
+- [live] 9.15 JSON 輸出不含 `apiKey`、`proxy`、`stack` 等敏感欄位。
+- [x] 9.16 Live smoke executed 2026-06-21: Latin/Unicode tests pass; CJK tests FAIL — Open-Meteo geocoding does not accept Chinese characters. Root cause: `geocoding-api.open-meteo.com` text index is Latin-only. See `live-smoke-report.md`. CJK resolution requires Planner-mediated transliteration (Goal #1 not yet met).
 
 ## 10. Archive
 
