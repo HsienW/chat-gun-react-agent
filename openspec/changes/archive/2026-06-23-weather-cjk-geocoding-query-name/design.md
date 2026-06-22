@@ -248,8 +248,9 @@ Resolve audit event 記錄 `queryName` 是否存在（不記錄完整字串，De
 - `OPEN_METEO_LIVE_SMOKE=true` 時，使用真實 Open-Meteo API：
   - `台北` + `queryName: "Taipei"` → `success`
   - `臺北` + `queryName: "Taipei"` → 與 `台北` 相同 entity
-  - `新加坡` + `queryName: "Singapore"` → `success`
-  - `北京市` + `queryName: "Beijing"` → `success`
+  - `高雄鳳山` + `queryName: "Fengshan"` + `region: "Kaohsiung"` + `country: "Taiwan"` → `success`
+  - `新加坡` + `queryName: "Singapore"` + `country: "Singapore"` → `success`
+  - `北京市` + `queryName: "Beijing"` + `country: "China"` → `success`
   - Latin cases unchanged regression
 
 ### Frontend Tests

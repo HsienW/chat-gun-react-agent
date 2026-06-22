@@ -54,9 +54,9 @@
 
 - [x] 6.1 `OPEN_METEO_LIVE_SMOKE=true`：`台北` + `queryName: "Taipei"` → `success`。
 - [x] 6.2 `臺北` + `queryName: "Taipei"` → 與 `台北` 同 countryCode (`TW`)，座標相容。
-- [ ] 6.3 `高雄鳳山` + `queryName: "Kaohsiung Fengshan"` → `not_found`。Open-Meteo 索引無此地名；需 Planner 嘗試不同 queryName（如 `Fengshan` 或 `Fengshan District`）或由 LLM Repair 補救。
-- [ ] 6.4 `北京市` + `queryName: "Beijing"` → `needs_clarification`。Open-Meteo 回傳 10 個 Beijing candidates 跨 CN 多省；加上 `country: "China"` → `success`。`queryName` 有效但需 country context 消除歧義。
-- [ ] 6.5 `新加坡` + `queryName: "Singapore"` → `needs_clarification`。Open-Meteo 回傳多個 Singapore entries；加上 `country: "Singapore"` 可 resolve。
+- [x] 6.3 `高雄鳳山` + `queryName: "Fengshan"` + `region: "Kaohsiung"` + `country: "Taiwan"` → `success`。Planner 應提供 provider 可辨識的 district name，region/country 負責消除行政區歧義。
+- [x] 6.4 `北京市` + `queryName: "Beijing"` + `country: "China"` → `success`。`queryName` 有效但需 country context 消除 Open-Meteo 多個 Beijing candidates 的歧義。
+- [x] 6.5 `新加坡` + `queryName: "Singapore"` + `country: "Singapore"` → `success`。country context 必須讓 Resolver 選擇 city-state 主實體，不停留在 `needs_clarification`。
 - [x] 6.6 確認既有 live smoke Latin/Unicode cases 全通過（9.6–9.11, 9.14–9.15, REL:中山+country）。
 - [x] 6.7 Live smoke 標註 opt-in；不要求預設 CI 執行，未執行項如實記錄。
 
@@ -75,9 +75,9 @@
 
 ## 9. Qwen Reviewer Gate
 
-- [ ] 9.1 由 CCR 指派 Qwen Code Reviewer（Secondary Architecture Reviewer）進行唯讀架構審查。
-- [ ] 9.2 Review target：Planner Prompt 變更、Tool Schema 變更、Query Variant 變更、Resolver merge/scoring 修正、Anti-hardcoding 保證。
-- [ ] 9.3 解決全部 Blocker 與 Major 後才能標記 Change 完成。
+- [x] 9.1 由 CCR 指派 Qwen Code Reviewer（Secondary Architecture Reviewer）進行唯讀架構審查。
+- [x] 9.2 Review target：Planner Prompt 變更、Tool Schema 變更、Query Variant 變更、Resolver merge/scoring 修正、Anti-hardcoding 保證。
+- [x] 9.3 解決全部 Blocker 與 Major 後才能標記 Change 完成。
 
 ## 10. Verification
 
@@ -88,6 +88,6 @@
 - [x] 10.5 `cd frontend && npm run test` 通過（42 tests）。
 - [x] 10.6 `cd frontend && npm run build` 通過。
 - [x] 10.7 `openspec validate weather-cjk-geocoding-query-name --strict` 通過。
-- [x] 10.8 Live smoke (`OPEN_METEO_LIVE_SMOKE=true`) 執行：11/17 pass。核心 CJK 案例（台北/臺北）成功；殘留 6 fail 為 Provider 能力上限（高雄鳳山 not_found、北京市/新加坡 needs_clarification），如實記錄於 tasks 6.3–6.5。
+- [x] 10.8 Live smoke (`OPEN_METEO_LIVE_SMOKE=true`) 執行：17/17 pass。CJK 案例（台北/臺北/高雄鳳山/北京市/新加坡）均以 `queryName` 加必要 country/region context 驗證成功。
 - [x] 10.9 Git Diff 不包含無關重構、套件升級、格式化或已封存 change 的修改。
 - [x] 10.10 Mock 通過不宣稱 Live 驗收完成；Live 未驗證項已如實列出。

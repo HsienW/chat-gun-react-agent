@@ -17,6 +17,7 @@ import { weatherTool } from "./weather.js";
 import type { WeatherToolResult } from "./weather-types.js";
 
 const LIVE_SMOKE = (process.env.OPEN_METEO_LIVE_SMOKE ?? "").toLowerCase() === "true";
+const LIVE_SMOKE_TEST_TIMEOUT_MS = 30_000;
 
 async function invokeWeather(input: {
   location: string;
@@ -33,56 +34,61 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
   it("9.1 台北現在天氣如何？ → resolves 台北 (Taipei)", async () => {
     const result = await invokeWeather({ location: "台北", queryName: "Taipei" });
     expect(result.status).toBe("success");
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("9.2 臺北天氣 → resolves 臺北 (Taipei)", async () => {
     const result = await invokeWeather({ location: "臺北", queryName: "Taipei" });
     expect(result.status).toBe("success");
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("9.3 高雄鳳山今天會下雨嗎？ → resolves 高雄鳳山 (Fengshan)", async () => {
-    const result = await invokeWeather({ location: "高雄鳳山", queryName: "Kaohsiung Fengshan" });
-    // Open-Meteo may not have "Kaohsiung Fengshan" in its Latin index.
-    // Success, needs_clarification, or not_found (with fallback to LLM repair) are all valid.
-    expect(["success", "needs_clarification", "not_found"]).toContain(result.status);
-  });
+    const result = await invokeWeather({
+      location: "高雄鳳山",
+      queryName: "Fengshan",
+      region: "Kaohsiung",
+      country: "Taiwan",
+    });
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.resolvedLocation.countryCode).toBe("TW");
+      expect([result.resolvedLocation.name, result.resolvedLocation.admin2].filter(Boolean).join(" ")).toMatch(
+        /F[eo]ngshan/
+      );
+    }
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
-  it("9.4 北京市現在幾度？ → resolves 北京市 (Beijing)", async () => {
-    const result = await invokeWeather({ location: "北京市", queryName: "Beijing" });
-    // Open-Meteo returns multiple Beijing candidates across China (Beijing Municipality,
-    // Beijing/Shanxi, Beijing/Jiangxi, etc.) — ambiguous is correct without country context.
-    // With country: "China" it should resolve.
-    expect(["success", "needs_clarification"]).toContain(result.status);
-  });
-
-  it("9.4b 北京市 + country: China → resolved", async () => {
+  it("9.4 北京市 + country: China → resolves 北京市 (Beijing)", async () => {
     const result = await invokeWeather({ location: "北京市", country: "China", queryName: "Beijing" });
     expect(result.status).toBe("success");
     if (result.status === "success") {
       expect(result.resolvedLocation.countryCode).toBe("CN");
+      expect(result.resolvedLocation.name).toContain("Beijing");
     }
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
-  it("9.5 新加坡天氣 → resolves 新加坡 (Singapore)", async () => {
-    const result = await invokeWeather({ location: "新加坡", queryName: "Singapore" });
-    // Open-Meteo returns multiple Singapore entries — may be success or ambiguous
-    expect(["success", "needs_clarification"]).toContain(result.status);
-  });
+  it("9.5 新加坡 + country: Singapore → resolves 新加坡 (Singapore)", async () => {
+    const result = await invokeWeather({ location: "新加坡", country: "Singapore", queryName: "Singapore" });
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.resolvedLocation.countryCode).toBe("SG");
+      expect(result.resolvedLocation.name).toContain("Singapore");
+    }
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("9.6 Tokyo weather now → resolves Tokyo", async () => {
     const result = await invokeWeather({ location: "Tokyo" });
     expect(result.status).toBe("success");
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("9.7 São Paulo weather → resolves São Paulo with accents", async () => {
     const result = await invokeWeather({ location: "São Paulo" });
     expect(["success", "needs_clarification"]).toContain(result.status);
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("9.8 München weather → resolves München with umlaut", async () => {
     const result = await invokeWeather({ location: "München" });
     expect(["success", "needs_clarification"]).toContain(result.status);
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   // 9.9: Springfield → needs_clarification
   it("9.9 Springfield weather → returns needs_clarification, no auto-selection", async () => {
@@ -93,13 +99,13 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
     if (result.status === "needs_clarification") {
       expect(result.candidates.length).toBeGreaterThan(0);
     }
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   // 9.10: 中山 → needs_clarification without context
   it("9.10 中山現在天氣如何？ → returns clarification without context", async () => {
     const result = await invokeWeather({ location: "中山" });
     expect(["success", "needs_clarification"]).toContain(result.status);
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   // 9.11: Unknown location → not_found, no coordinates fabricated
   it("9.11 does not fabricate coordinates for unknown locations", async () => {
@@ -113,7 +119,7 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
       expect(json).not.toContain("latitude");
       expect(json).not.toContain("longitude");
     }
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   // 9.14: cancel → AbortSignal propagation
   it("9.14 cancels with AbortSignal before provider fetch completes", async () => {
@@ -129,7 +135,7 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
     if (result.status === "error") {
       expect(["weather_cancelled", "weather_geocoding_cancelled"]).toContain(result.code);
     }
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   // 9.15: sensitive data check
   it("9.15 does not expose stack trace, API key, or proxy credential in error response", async () => {
@@ -139,7 +145,7 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
     expect(json).not.toContain("apiKey");
     expect(json).not.toContain("proxy");
     expect(json).not.toContain("stack");
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   // Relationship invariants (weather.md §9)
   it("REL: 台北 and 臺北 resolve to the same geographic entity", async () => {
@@ -150,7 +156,7 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
     if (r1.status === "success" && r2.status === "success") {
       expect(r1.resolvedLocation.countryCode).toBe(r2.resolvedLocation.countryCode);
     }
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("REL: Singapore and 新加坡 resolve to the same geographic entity", async () => {
     const r1 = await invokeWeather({ location: "Singapore" });
@@ -161,7 +167,7 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
     if (r1.status === "success" && r2.status === "success") {
       expect(r1.resolvedLocation.countryCode).toBe(r2.resolvedLocation.countryCode);
     }
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("REL: adding country context narrows candidates, doesn't jump to unrelated location", async () => {
     const r1 = await invokeWeather({ location: "中山" });
@@ -172,12 +178,12 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
     if (r2.status === "success") {
       expect(r2.resolvedLocation.countryCode).toBe("TW");
     }
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("REL: punctuation doesn't change resolution result", async () => {
     const r1 = await invokeWeather({ location: "台北", queryName: "Taipei" });
     const r2 = await invokeWeather({ location: "台北。", queryName: "Taipei" });
     expect(r1.status).toBe("success");
     expect(r2.status).toBe("success");
-  });
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 });

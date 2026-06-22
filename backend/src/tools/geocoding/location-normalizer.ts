@@ -133,6 +133,10 @@ export function buildGeocodingQueryVariants(
     addText(requiredTexts, `${normalizedQueryName}, ${query.region}, ${query.country}`);
   }
 
+  if (hasDistinctQueryName && query.country) {
+    addText(requiredTexts, `${normalizedQueryName}, ${query.country}`);
+  }
+
   if (query.region) {
     addText(requiredTexts, `${query.location}, ${query.region}`);
   }

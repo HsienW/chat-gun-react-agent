@@ -155,6 +155,25 @@ describe("buildQueryVariants (Task 2.5, 2.6)", () => {
     expect(variants[0]?.text).toBe("Tokyo");
   });
 
+  it("adds queryName with country context before locale fallbacks", () => {
+    const query: LocationQuery = {
+      raw: "北京市",
+      location: "北京市",
+      country: "China",
+    };
+
+    const variants = buildGeocodingQueryVariants(query, 6, "Beijing");
+
+    expect(variants.map((variant) => `${variant.text}|${variant.language ?? "default"}`)).toEqual([
+      "Beijing|default",
+      "北京市|default",
+      "Beijing, China|default",
+      "北京市, China|default",
+      "Beijing|zh",
+      "北京市|zh",
+    ]);
+  });
+
   it("keeps existing variant order when queryName is absent", () => {
     const query: LocationQuery = {
       raw: "Fengshan",
