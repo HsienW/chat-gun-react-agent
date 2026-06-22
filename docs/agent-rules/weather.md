@@ -209,7 +209,20 @@ invalid_input
 
 ## 8. Golden Regression Matrix
 
-至少建立以下案例：
+天氣能力變更必須維護可重現的 Golden Regression Matrix。矩陣至少分成三層：
+
+- deterministic：不呼叫真實模型、不呼叫真實 Provider、不依賴網路，適合預設 CI。
+- mock integration：使用受控模型／Provider fixture 驗證 Planner、Resolver、Tool 與 terminal outcome 邊界。
+- live smoke：明確 opt-in 才能呼叫真實模型或真實天氣 Provider，不得作為預設 CI gate。
+
+Baseline report 必須誠實區分：
+
+- `pass`：目前能力符合結構化期望。
+- `fail`：目前能力違反 Phase 內應通過的結構化期望。
+- `known_gap`：已知能力缺口，例如 forecast 或 multi-turn clarification，必須標明後續 Phase owner。
+- `skipped`：未啟用 live smoke 或環境不可用，不得假裝通過。
+
+矩陣至少建立以下案例：
 
 ### 地點形式
 
@@ -242,11 +255,12 @@ São Paulo weather
 - 現在幾度。
 - 現在是否下雨。
 - 今天會不會下雨。
-- 明天天氣。
-- 週末天氣。
-- 下週是否適合出遊。
-- 歷史天氣。
-- 一般氣候問題。
+- 明天天氣（若尚無 Forecast Tool，標為 Phase 2 known gap）。
+- 今晚天氣（若尚無 Forecast Tool，標為 Phase 2 known gap）。
+- 週末天氣（若尚無 Forecast Tool，標為 Phase 2 known gap）。
+- 下週是否適合出遊（若尚無 Forecast Tool 或 advice 能力，標為 Phase 2 known gap）。
+- 歷史天氣（若尚無 Historical Tool，標為 known gap，不得用 current observation 代答）。
+- 一般氣候問題（若尚無 climate capability，標為 known gap，不得用 current observation 代答）。
 
 ### 失敗
 
@@ -259,6 +273,34 @@ São Paulo weather
 - Weather Provider Error。
 - 使用者取消。
 - Tool 成功但 Synthesis 失敗。
+- Live smoke 未啟用時必須記錄為 `skipped`，不得記錄為 pass。
+
+### Baseline Report
+
+Baseline report 必須包含：
+
+- case id。
+- mode：`deterministic`、`mock_integration` 或 `live_smoke`。
+- capability category。
+- expected outcome summary。
+- observed outcome summary。
+- result classification：`pass`、`fail`、`known_gap` 或 `skipped`。
+- known gap owner（例如 Phase 2 forecast、Phase 3 clarification）。
+- reproduction commands。
+
+Baseline report 不得包含：
+
+- API Key、Authorization Header、Credential、Token。
+- 完整 Prompt。
+- Raw Provider Body。
+- 未限制大小的 Tool Output。
+- Live smoke 大型原始輸出。
+
+`weather-golden-eval` Phase 1 的 baseline report 固定提交於：
+
+```text
+openspec/changes/weather-golden-eval/baseline-report.md
+```
 
 ---
 
