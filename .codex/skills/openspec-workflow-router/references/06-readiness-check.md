@@ -1,0 +1,54 @@
+﻿# 06 Readiness Check
+
+Use this prompt when CCR should decide whether a change can enter archive.
+
+```text
+請以 CCR / OpenSpec flow coordinator 身分，判定 change 是否可進入 archive。
+
+Change：
+{change_name}
+
+Codex 最終摘要：
+{change_summary}
+
+Qwen review 結論：
+{review_findings}
+
+驗證結果：
+{verification_results}
+
+請只做流程判定，不修改 application code。優先讀取：
+
+- openspec/changes/{change_name}/proposal.md
+- openspec/changes/{change_name}/design.md
+- openspec/changes/{change_name}/tasks.md
+- openspec/changes/{change_name}/specs/
+- Qwen verdict
+- 驗證結果
+- git diff 檔案清單與摘要
+
+不要重掃整個 repo。忽略 `.gitignore` 內文件、node_modules、dist、build、coverage。預設忽略 lockfile；若 diff 顯示 dependency 變更才讀取。
+
+請檢查：
+
+- Requirement / Scenario / Task 是否一致。
+- 已勾選 task 是否都有實作與驗證。
+- 是否仍有 Blocker / Major。
+- 是否有宣稱但未執行的驗證。
+- Diff 是否只包含本 change 相關檔案。
+
+輸出：
+
+## 完成判定
+
+- READY_TO_ARCHIVE
+- NOT_READY
+
+## 判定理由
+## 已完成 Tasks
+## 驗證核對
+## 尚未處理事項
+## Archive 前建議
+
+請使用繁體中文。
+```
