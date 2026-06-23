@@ -1,3 +1,7 @@
 interface:
-  display_name: "Openspec Workflow Router"
-  short_description: "Help with Openspec Workflow Router tasks"
+  display_name: "OpenSpec Workflow Router"
+  short_description: "Routes OpenSpec workflow stages to lean prompts."
+  default_prompt: "Use $openspec-workflow-router to run the appropriate OpenSpec workflow stage for this change."
+
+policy:
+  allow_implicit_invocation: true
