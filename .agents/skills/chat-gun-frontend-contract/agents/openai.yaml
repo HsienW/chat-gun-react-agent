@@ -1,0 +1,7 @@
+interface:
+  display_name: "Chat Gun Frontend Contract"
+  short_description: "Chat Gun 前端、串流與契約規範"
+  default_prompt: "Use $chat-gun-frontend-contract to implement or review Chat Gun frontend, streaming, Tool renderer, multimodal, or OpenSpec changes."
+
+policy:
+  allow_implicit_invocation: true

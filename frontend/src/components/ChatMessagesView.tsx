@@ -1,10 +1,9 @@
-import type React from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Message } from '@langchain/langgraph-sdk';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Copy, CopyCheck } from 'lucide-react';
 import { InputForm } from '@/components/InputForm';
 import { Button } from '@/components/ui/button';
-import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -15,11 +14,46 @@ import {
 import { AVAILABLE_AGENTS } from '@/types/agents';
 import { ToolMessageDisplay } from '@/components/ToolMessageDisplay';
 import {
+  extractImageAttachments,
   extractToolCallsFromMessage,
   findToolMessageForCall,
   messageContentToDisplayText,
 } from '@/types/messages';
 import { ToolCall } from '@/types/tools';
+import type { ProcessedImageAttachment } from '@/lib/image-upload';
+
+type ToolMessageDisplayProps = React.ComponentProps<typeof ToolMessageDisplay>;
+
+const areToolArgsEqual = (
+  previousArgs: ToolCall['args'],
+  nextArgs: ToolCall['args']
+) => JSON.stringify(previousArgs) === JSON.stringify(nextArgs);
+
+const areToolMessagesEqual = (
+  previousMessage: ToolMessageDisplayProps['toolMessage'],
+  nextMessage: ToolMessageDisplayProps['toolMessage']
+) =>
+  previousMessage?.id === nextMessage?.id &&
+  previousMessage?.tool_call_id === nextMessage?.tool_call_id &&
+  previousMessage?.name === nextMessage?.name &&
+  previousMessage?.content === nextMessage?.content &&
+  previousMessage?.is_error === nextMessage?.is_error;
+
+const areToolMessageDisplayPropsEqual = (
+  previousProps: ToolMessageDisplayProps,
+  nextProps: ToolMessageDisplayProps
+) =>
+  previousProps.isExpanded === nextProps.isExpanded &&
+  previousProps.toolCall.id === nextProps.toolCall.id &&
+  previousProps.toolCall.name === nextProps.toolCall.name &&
+  previousProps.toolCall.type === nextProps.toolCall.type &&
+  areToolArgsEqual(previousProps.toolCall.args, nextProps.toolCall.args) &&
+  areToolMessagesEqual(previousProps.toolMessage, nextProps.toolMessage);
+
+const MemoizedToolMessageDisplay = React.memo(
+  ToolMessageDisplay,
+  areToolMessageDisplayPropsEqual
+);
 
 // 將 messages 分組，合併 AI responses 與對應的 tool calls/results
 interface MessageGroup {
@@ -266,22 +300,48 @@ interface HumanMessageBubbleProps {
 }
 
 // HumanMessageBubble component
-const HumanMessageBubble: React.FC<HumanMessageBubbleProps> = ({
+const HumanMessageBubble = React.memo(function HumanMessageBubble({
   group,
   mdComponents,
-}) => {
+}: HumanMessageBubbleProps) {
   const message = group.primaryMessage;
+  const imageAttachments = extractImageAttachments(message.content);
+  const displayText = messageContentToDisplayText(message.content);
+
   return (
     <div
       className={cn(messageBubbleClass, 'min-h-7 rounded-br-lg')}
     >
-      <ReactMarkdown components={mdComponents}>
-        {messageContentToDisplayText(message.content) ||
-          JSON.stringify(message.content)}
-      </ReactMarkdown>
+      {displayText && (
+        <ReactMarkdown components={mdComponents}>{displayText}</ReactMarkdown>
+      )}
+      {imageAttachments.length > 0 && (
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          {imageAttachments.map((attachment, index) => (
+            <figure
+              key={`${attachment.fileName ?? 'image'}-${index}`}
+              className="overflow-hidden rounded-2xl border border-[#5A4036] bg-[#160F0C]"
+            >
+              <img
+                src={attachment.url}
+                alt={attachment.fileName ?? `uploaded image ${index + 1}`}
+                className="h-32 w-full object-cover"
+              />
+              <figcaption className="truncate px-2 py-1 text-[11px] text-[#E7D9C1]/70">
+                {attachment.fileName ?? attachment.mimeType ?? 'uploaded image'}
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
+      {!displayText && imageAttachments.length === 0 && (
+        <ReactMarkdown components={mdComponents}>
+          {JSON.stringify(message.content)}
+        </ReactMarkdown>
+      )}
     </div>
   );
-};
+});
 
 // AiMessageBubble props
 interface AiMessageBubbleProps {
@@ -298,7 +358,7 @@ interface AiMessageBubbleProps {
 }
 
 // AiMessageBubble component
-const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
+const AiMessageBubble = React.memo(function AiMessageBubble({
   group,
   historicalActivity,
   liveActivity,
@@ -309,11 +369,11 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
   copiedMessageId,
   selectedAgentId,
   allMessages,
-}) => {
+}: AiMessageBubbleProps) {
   // Tool message state
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
-  const toggleTool = (toolId: string) => {
+  const toggleTool = useCallback((toolId: string) => {
     setExpandedTools((prev) => {
       const newSet = new Set(prev);
       if (newSet.has(toolId)) {
@@ -323,7 +383,7 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
       }
       return newSet;
     });
-  };
+  }, []);
 
   // 判斷要顯示哪些 activity events，以及是否屬於 live loading message
   const activityForThisBubble =
@@ -389,7 +449,7 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
               {!shouldHideToolMessages && toolCalls.length > 0 && (
                 <div className="space-y-2">
                   {toolCalls.map((toolCall) => (
-                    <ToolMessageDisplay
+                    <MemoizedToolMessageDisplay
                       key={toolCall.id}
                       toolCall={toolCall}
                       toolMessage={
@@ -436,7 +496,7 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
       )}
     </div>
   );
-};
+});
 
 interface ChatMessagesViewProps {
   messages: Message[];
@@ -446,7 +506,8 @@ interface ChatMessagesViewProps {
     inputValue: string,
     effort: string,
     model: string,
-    agentId: string
+    agentId: string,
+    attachments: ProcessedImageAttachment[]
   ) => void;
   onCancel: () => void;
   liveActivityEvents: ProcessedEvent[];
@@ -467,19 +528,31 @@ export function ChatMessagesView({
   onAgentChange,
 }: ChatMessagesViewProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleCopy = async (text: string, messageId: string) => {
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleCopy = useCallback(async (text: string, messageId: string) => {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedMessageId(messageId);
-      setTimeout(() => setCopiedMessageId(null), 2000); // 2 秒後重置
+      if (copyTimerRef.current !== null) {
+        clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = setTimeout(() => setCopiedMessageId(null), 2000); // 2 秒後重置
     } catch (err) {
       console.error('複製文字失敗：', err);
     }
-  };
+  }, []);
 
   // 將 messages 分組，合併相關 AI responses 與 tool calls
-  const messageGroups = groupMessages(messages);
+  const messageGroups = useMemo(() => groupMessages(messages), [messages]);
 
   return (
     <div className="flex flex-col h-full min-h-0">

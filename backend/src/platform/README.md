@@ -18,7 +18,7 @@ BFF 建議承擔：
 
 ## LLM Gateway
 
-`llm-gateway.ts` 目前接 Gemini。後續可替換為公司內部 LLM Gateway。
+`llm-gateway.ts` 目前透過 Qwen／OpenAI-compatible Chat Completions、CCR 與本地 provider adapter 收斂模型呼叫。後續可替換為公司內部 LLM Gateway。
 
 LLM Gateway 建議承擔：
 

@@ -8,11 +8,11 @@
     "dev": "langgraphjs dev",
     "build": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "start": "langgraphjs dev"
+    "start": "langgraphjs dev",
+    "test": "vitest run"
   },
   "dependencies": {
     "@langchain/core": "^0.3.55",
-    "@langchain/google-genai": "^0.1.10",
     "@langchain/langgraph": "^0.2.67",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@modelcontextprotocol/server-filesystem": "^2026.1.14",
@@ -23,6 +23,7 @@
   "devDependencies": {
     "@langchain/langgraph-cli": "^0.0.36",
     "@types/node": "^22.15.17",
-    "typescript": "~5.7.2"
+    "typescript": "~5.7.2",
+    "vitest": "^4.1.8"
   }
 }

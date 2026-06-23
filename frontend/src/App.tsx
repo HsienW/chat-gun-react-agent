@@ -1,33 +1,48 @@
 import { useStream } from '@langchain/langgraph-sdk/react';
 import type { Message } from '@langchain/langgraph-sdk';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 
-import { ProcessedEvent } from '@/components/ActivityTimeline';
 import { WelcomeScreen } from '@/components/WelcomeScreen';
 import { ChatMessagesView } from '@/components/ChatMessagesView';
+import {
+  extractAgentRuntimeEvents,
+  runtimeEventToProcessedEvent,
+} from '@/lib/agent-runtime-events';
+import { getAgentRunConfig } from '@/lib/agent-run-config';
+import { FRONTEND_ERROR_MESSAGES } from '@/lib/error-messages';
+import {
+  createInitialStreamActivityState,
+  streamActivityReducer,
+} from '@/lib/stream-activity-state';
+import type { StreamActivityState } from '@/lib/stream-activity-state';
+import type { ProcessedImageAttachment } from '@/lib/image-upload';
 import { AgentId, DEFAULT_AGENT } from '@/types/agents';
+import { formatErrorEnvelope, parseErrorEnvelope } from '@/types/errors';
 import { getAgentById, isValidAgentId } from '@/lib/agents';
+import {
+  classifyStreamError,
+  isStreamAbortError,
+} from '@/lib/stream-error-classification';
 
-function stringifyEventData(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map(stringifyEventData).join(', ');
-  if (value && typeof value === 'object') return JSON.stringify(value);
-  return String(value ?? '');
-}
+const STREAM_ERROR_MESSAGE_ID = 'stream-error';
 
-function getNodeMessages(nodeValue: unknown): unknown[] {
-  if (!nodeValue || typeof nodeValue !== 'object') return [];
-  const messages = (nodeValue as { messages?: unknown }).messages;
-  return Array.isArray(messages) ? messages : [];
-}
+function formatStreamError(error: unknown): string {
+  const envelope =
+    parseErrorEnvelope(error) ||
+    parseErrorEnvelope(error instanceof Error ? error.message : String(error));
 
-function isAbortError(error: unknown): boolean {
-  if (!error) return false;
-  if (error instanceof DOMException && error.name === 'AbortError') return true;
-  if (error instanceof Error) {
-    return /abort|aborted/i.test(`${error.name} ${error.message}`);
+  if (envelope) {
+    return formatErrorEnvelope(envelope);
   }
-  return /abort|aborted/i.test(String(error));
+
+  return [
+    `${FRONTEND_ERROR_MESSAGES.errorEnvelope.source}: ${FRONTEND_ERROR_MESSAGES.stream.source}`,
+    `${FRONTEND_ERROR_MESSAGES.errorEnvelope.stage}: ${FRONTEND_ERROR_MESSAGES.stream.stage}`,
+    `${FRONTEND_ERROR_MESSAGES.errorEnvelope.code}: ${FRONTEND_ERROR_MESSAGES.stream.unknownCode}`,
+    `${FRONTEND_ERROR_MESSAGES.errorEnvelope.message}: ${
+      error instanceof Error ? error.message : String(error)
+    }`,
+  ].join('\n');
 }
 
 function getLangGraphApiUrl(): string {
@@ -37,92 +52,56 @@ function getLangGraphApiUrl(): string {
   return new URL('/api/langgraph', window.location.origin).toString();
 }
 
-function processDeepResearchEvent(
-  event: Record<string, unknown>
-): ProcessedEvent | null {
-  if ('plan_research' in event) {
-    return {
-      title: 'Research Plan',
-      data: 'Planned route and selected tools.',
-    };
-  }
+function createCancelledAssistantMessage(): Message {
+  return {
+    type: 'ai',
+    content: '已取消本次回覆。',
+    id: `local-cancelled-${crypto.randomUUID()}`,
+  } as Message;
+}
 
-  if ('targeted_tools' in event) {
-    const messages = getNodeMessages(event.targeted_tools);
-    const toolNames = messages
-      .map((message) => {
-        if (!message || typeof message !== 'object') return undefined;
-        return (message as { name?: string }).name;
-      })
-      .filter(Boolean);
-    return {
-      title: 'Targeted Tool Results',
-      data: toolNames.length ? toolNames.join(', ') : stringifyEventData(event.targeted_tools),
-    };
-  }
+function isTerminalStreamLifecycle(
+  lifecycle: StreamActivityState['lifecycle']
+): boolean {
+  return lifecycle === 'finished' || lifecycle === 'error' || lifecycle === 'cancelled';
+}
 
-  if ('search_web' in event) {
-    const messages = getNodeMessages(event.search_web);
-    const toolNames = messages
-      .map((message) => {
-        if (!message || typeof message !== 'object') return undefined;
-        return (message as { name?: string }).name;
-      })
-      .filter(Boolean);
+function findArchiveMessageId(
+  messages: Message[],
+  startIndex: number,
+  excludeMessageId?: string
+): string | undefined {
+  return messages.slice(startIndex).find((message) => {
+    return message.type === 'ai' && message.id && message.id !== excludeMessageId;
+  })?.id;
+}
 
-    return {
-      title: 'Web Search Results',
-      data: toolNames.length ? toolNames.join(', ') : stringifyEventData(event.search_web),
-    };
-  }
-
-  if ('rank_sources' in event) {
-    return {
-      title: 'Source Ranking',
-      data: 'Deduplicated and ranked candidate sources.',
-    };
-  }
-
-  if ('fetch_sources' in event) {
-    return {
-      title: 'Source Fetching',
-      data: 'Fetched selected source pages.',
-    };
-  }
-
-  if ('extract_evidence' in event) {
-    return {
-      title: 'Evidence Extraction',
-      data: 'Extracted source summaries and key claims.',
-    };
-  }
-
-  if ('verify_citations' in event) {
-    return {
-      title: 'Citation Verification',
-      data: 'Checked usable sources and warnings.',
-    };
-  }
-
-  if ('synthesize_answer' in event) {
-    return {
-      title: 'Final Answer',
-      data: 'Generated final answer from accumulated conversation and tool results.',
-    };
-  }
-
-  return null;
+function getCurrentFinalAssistantMessageId(messages: Message[]): string | undefined {
+  const lastMessage = messages[messages.length - 1];
+  return lastMessage?.type === 'ai' ? lastMessage.id : undefined;
 }
 
 export default function App() {
-  const [processedEventsTimeline, setProcessedEventsTimeline] = useState<
-    ProcessedEvent[]
-  >([]);
-  const [historicalActivities, setHistoricalActivities] = useState<
-    Record<string, ProcessedEvent[]>
-  >({});
+  const [streamActivityState, dispatchStreamActivity] = useReducer(
+    streamActivityReducer,
+    undefined,
+    createInitialStreamActivityState
+  );
   const [selectedAgentId, setSelectedAgentId] = useState(DEFAULT_AGENT);
+  const [streamErrorMessage, setStreamErrorMessage] = useState<string | null>(null);
+  const [cancelledMessage, setCancelledMessage] = useState<Message | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const selectedAgentIdRef = useRef(selectedAgentId);
+  const messagesRef = useRef<Message[]>([]);
+  const streamActivityStateRef = useRef(streamActivityState);
+
+  useEffect(() => {
+    selectedAgentIdRef.current = selectedAgentId;
+  }, [selectedAgentId]);
+
+  useEffect(() => {
+    streamActivityStateRef.current = streamActivityState;
+  }, [streamActivityState]);
 
   const validateAgentId = useCallback((agentId: string): string => {
     if (isValidAgentId(agentId)) {
@@ -137,8 +116,11 @@ export default function App() {
       const validAgentId = validateAgentId(newAgentId);
       if (validAgentId !== selectedAgentId) {
         setSelectedAgentId(validAgentId as AgentId);
-        setProcessedEventsTimeline([]);
-        setHistoricalActivities({});
+        dispatchStreamActivity({
+          type: 'resetForAgentOrSubmit',
+          clearHistorical: true,
+        });
+        setCancelledMessage(null);
       }
     },
     [selectedAgentId, validateAgentId]
@@ -152,6 +134,52 @@ export default function App() {
     [validateAgentId]
   );
 
+  const handleStreamError = useCallback((error: unknown) => {
+    // Best-effort fast path; reducer terminal idempotency is the primary guard.
+    if (
+      isStreamAbortError(error) &&
+      streamActivityStateRef.current.lifecycle === 'cancelled'
+    ) {
+      console.debug('Stream aborted by client action.');
+      return;
+    }
+    const message = formatStreamError(error);
+    setStreamErrorMessage(message);
+    dispatchStreamActivity({
+      type: 'streamFailed',
+      errorKind: classifyStreamError(error),
+      message,
+      messagesLengthAtTerminal: messagesRef.current.length,
+      archiveMessageId: STREAM_ERROR_MESSAGE_ID,
+    });
+    console.error('LangGraph stream error:', error);
+  }, []);
+
+  const handleStreamFinish = useCallback((event: unknown) => {
+    void event;
+    dispatchStreamActivity({
+      type: 'streamFinished',
+      messagesLengthAtTerminal: messagesRef.current.length,
+      archiveMessageId: getCurrentFinalAssistantMessageId(messagesRef.current),
+    });
+  }, []);
+
+  const handleStreamUpdate = useCallback((event: Record<string, unknown>) => {
+    const currentAgent = getAgentById(selectedAgentIdRef.current);
+    if (!currentAgent?.showActivityTimeline) return;
+
+    const processedEvents = extractAgentRuntimeEvents(event).map(
+      runtimeEventToProcessedEvent
+    );
+
+    if (processedEvents.length > 0) {
+      dispatchStreamActivity({
+        type: 'streamEventsReceived',
+        events: processedEvents,
+      });
+    }
+  }, []);
+
   const thread = useStream<{
     messages: Message[];
     initial_search_query_count: number;
@@ -161,42 +189,128 @@ export default function App() {
     apiUrl: getLangGraphApiUrl(),
     assistantId: selectedAgentId,
     messagesKey: 'messages',
-    onError: (error: unknown) => {
-      if (isAbortError(error)) {
-        console.debug('Stream aborted by client action.');
-        return;
-      }
-      console.error('LangGraph stream error:', error);
-    },
-    onFinish: (event: unknown) => {
-      console.log(event);
-    },
-    onUpdateEvent: (event: Record<string, unknown>) => {
-      const currentAgent = getAgentById(selectedAgentId);
-      if (!currentAgent?.showActivityTimeline) return;
-
-      let processedEvent: ProcessedEvent | null = null;
-
-      if (selectedAgentId === AgentId.DEEP_RESEARCHER) {
-        processedEvent = processDeepResearchEvent(event);
-      }
-
-      if ('tool_call_chunks' in event && Array.isArray(event.tool_call_chunks)) {
-        const toolChunks = event.tool_call_chunks as Array<{ name?: string }>;
-        processedEvent = {
-          title: 'Tool Call Streaming',
-          data: toolChunks.map((chunk) => chunk.name || 'tool').join(', '),
-        };
-      }
-
-      if (processedEvent) {
-        setProcessedEventsTimeline((prevEvents) => [
-          ...prevEvents,
-          processedEvent!,
-        ]);
-      }
-    },
+    onError: handleStreamError,
+    onFinish: handleStreamFinish,
+    onUpdateEvent: handleStreamUpdate,
   });
+
+  useEffect(() => {
+    messagesRef.current = thread.messages;
+  }, [thread.messages]);
+
+  useEffect(() => {
+    const pendingArchive = streamActivityState.pendingArchive;
+    if (!pendingArchive) return;
+
+    const archiveMessageId = findArchiveMessageId(
+      thread.messages,
+      pendingArchive.messagesLengthAtTerminal,
+      pendingArchive.excludeMessageId
+    );
+
+    if (!archiveMessageId) return;
+
+    dispatchStreamActivity({
+      type: 'archiveLiveActivity',
+      messageId: archiveMessageId,
+    });
+  }, [streamActivityState.pendingArchive, thread.messages]);
+
+  const handleSubmit = useCallback(
+    (
+      submittedInputValue: string,
+      effort: string,
+      model: string,
+      agentId: string,
+      attachments: ProcessedImageAttachment[]
+    ) => {
+      const validAgentId = validateAgentId(agentId);
+      if (!submittedInputValue.trim() && attachments.length === 0) return;
+
+      handleAgentSwitch(validAgentId);
+      dispatchStreamActivity({ type: 'resetForAgentOrSubmit' });
+      dispatchStreamActivity({ type: 'streamStarted' });
+      setStreamErrorMessage(null);
+      setCancelledMessage(null);
+
+      const messageContent: Message['content'] =
+        attachments.length > 0
+          ? [
+              ...(submittedInputValue.trim()
+                ? [{ type: 'text' as const, text: submittedInputValue.trim() }]
+                : [{ type: 'text' as const, text: 'Analyze the uploaded image attachments.' }]),
+              ...attachments.map((attachment) => ({
+                type: 'image_url' as const,
+                image_url: {
+                  url: attachment.dataUrl,
+                  detail: 'auto' as const,
+                },
+                fileName: attachment.fileName,
+                mimeType: attachment.mimeType,
+                sizeBytes: attachment.processedBytes,
+                width: attachment.width,
+                height: attachment.height,
+              })),
+            ]
+          : submittedInputValue;
+
+      const newMessages: Message[] = [
+        {
+          type: 'human',
+          content: messageContent,
+          id: crypto.randomUUID(),
+        },
+      ];
+
+      if (validAgentId === AgentId.DEEP_RESEARCHER) {
+        const runConfig = getAgentRunConfig(validAgentId, effort);
+
+        thread.submit({
+          messages: newMessages,
+          ...runConfig,
+          reasoning_model: model,
+        });
+      } else {
+        thread.submit({
+          messages: newMessages,
+        });
+      }
+    },
+    [validateAgentId, handleAgentSwitch, thread]
+  );
+
+  const handleCancel = useCallback(() => {
+    const localCancelledMessage = createCancelledAssistantMessage();
+    dispatchStreamActivity({
+      type: 'streamCancelled',
+      messagesLengthAtTerminal: messagesRef.current.length,
+      archiveMessageId: localCancelledMessage.id,
+    });
+    thread.stop();
+    setCancelledMessage(localCancelledMessage);
+  }, [thread]);
+
+  const messagesWithStreamError = useMemo(
+    () =>
+      streamErrorMessage
+        ? [
+            ...thread.messages,
+            {
+              type: 'ai',
+              content: streamErrorMessage,
+              id: STREAM_ERROR_MESSAGE_ID,
+            } as Message,
+          ]
+        : thread.messages,
+    [thread.messages, streamErrorMessage]
+  );
+  const displayMessages = useMemo(
+    () =>
+      cancelledMessage
+        ? [...messagesWithStreamError, cancelledMessage]
+        : messagesWithStreamError,
+    [messagesWithStreamError, cancelledMessage]
+  );
 
   useEffect(() => {
     if (scrollAreaRef.current) {
@@ -207,95 +321,17 @@ export default function App() {
         scrollViewport.scrollTop = scrollViewport.scrollHeight;
       }
     }
-  }, [thread.messages]);
-
-  useEffect(() => {
-    if (thread.isLoading || processedEventsTimeline.length === 0) return;
-
-    const lastMessage = thread.messages[thread.messages.length - 1];
-    if (lastMessage?.type === 'ai' && lastMessage.id) {
-      setHistoricalActivities((prev) => {
-        if (prev[lastMessage.id!]) return prev;
-        return {
-          ...prev,
-          [lastMessage.id!]: [...processedEventsTimeline],
-        };
-      });
-    }
-  }, [thread.messages, thread.isLoading, processedEventsTimeline]);
-
-  const handleSubmit = useCallback(
-    (
-      submittedInputValue: string,
-      effort: string,
-      model: string,
-      agentId: string
-    ) => {
-      const validAgentId = validateAgentId(agentId);
-      if (!submittedInputValue.trim()) return;
-
-      handleAgentSwitch(validAgentId);
-      setProcessedEventsTimeline([]);
-
-      const newMessages: Message[] = [
-        {
-          type: 'human',
-          content: submittedInputValue,
-          id: crypto.randomUUID(),
-        },
-      ];
-
-      if (validAgentId === AgentId.DEEP_RESEARCHER) {
-        let max_research_loops = 3;
-        let initial_search_query_count = 3;
-
-        switch (effort) {
-          case 'low':
-            max_research_loops = 2;
-            initial_search_query_count = 1;
-            break;
-          case 'medium':
-            max_research_loops = 6;
-            initial_search_query_count = 3;
-            break;
-          case 'high':
-            max_research_loops = 12;
-            initial_search_query_count = 5;
-            break;
-        }
-
-        thread.submit({
-          messages: newMessages,
-          initial_search_query_count,
-          max_research_loops,
-          reasoning_model: model,
-        }, {
-          onDisconnect: 'continue',
-        });
-      } else {
-        thread.submit({
-          messages: newMessages,
-        }, {
-          onDisconnect: 'continue',
-        });
-      }
-    },
-    [validateAgentId, handleAgentSwitch, thread]
-  );
-
-  const handleCancel = useCallback(() => {
-    thread.stop();
-  }, [thread]);
+  }, [displayMessages.length]);
 
   return (
     <div className="flex h-screen bg-background text-foreground font-sans antialiased">
       <main className="flex-1 flex flex-col max-w-4xl mx-auto w-full min-h-0">
         <div
           className={`flex-1 min-h-0 ${
-            thread.messages.length === 0 ? 'flex' : ''
+            displayMessages.length === 0 ? 'flex' : ''
           }`}
         >
-          {thread.messages.length === 0 ? (
+          {displayMessages.length === 0 ? (
             <WelcomeScreen
               handleSubmit={handleSubmit}
               isLoading={thread.isLoading}
@@ -305,13 +341,17 @@ export default function App() {
             />
           ) : (
             <ChatMessagesView
-              messages={thread.messages}
+              messages={displayMessages}
               isLoading={thread.isLoading}
               scrollAreaRef={scrollAreaRef}
               onSubmit={handleSubmit}
               onCancel={handleCancel}
-              liveActivityEvents={processedEventsTimeline}
-              historicalActivities={historicalActivities}
+              liveActivityEvents={
+                isTerminalStreamLifecycle(streamActivityState.lifecycle)
+                  ? []
+                  : streamActivityState.liveActivityEvents
+              }
+              historicalActivities={streamActivityState.historicalActivities}
               selectedAgentId={selectedAgentId}
               onAgentChange={handleAgentChange}
             />

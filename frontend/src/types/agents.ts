@@ -18,23 +18,23 @@ export const AVAILABLE_AGENTS: Agent[] = [
   {
     id: AgentId.DEEP_RESEARCHER,
     name: 'Deep Researcher',
-    description: '進階 deep research 與強化分析',
+    description: '可進行深度研究、工具調用與圖片理解的 Agent',
     icon: 'search',
-    capabilities: ['進階 Web Research', 'Deep Analysis'],
+    capabilities: ['Web Research', 'Deep Analysis', 'Image Understanding'],
     showActivityTimeline: true,
   },
   {
     id: AgentId.CHATBOT,
     name: 'Chat Assistant',
-    description: '簡單的 conversational assistant',
+    description: '一般對話助理',
     icon: 'message-circle',
-    capabilities: ['一般 Chat', '快速 Responses'],
+    capabilities: ['Chat', 'General Responses'],
     showActivityTimeline: false,
   },
   {
     id: AgentId.MATH_AGENT,
     name: 'Math Solver',
-    description: '進階數學解題與 calculations',
+    description: '數學與運算任務助理',
     icon: 'calculator',
     capabilities: [
       'Mathematical Calculations',
@@ -46,11 +46,11 @@ export const AVAILABLE_AGENTS: Agent[] = [
   {
     id: AgentId.MCP_AGENT,
     name: 'MCP Agent',
-    description: '整合外部 tools 的 Model Context Protocol agent',
+    description: '可調用 Model Context Protocol 工具的 Agent',
     icon: 'wrench',
     capabilities: ['Model Context Protocol (MCP)'],
     showActivityTimeline: false,
   },
 ];
 
-export const DEFAULT_AGENT = AgentId.CHATBOT;
+export const DEFAULT_AGENT = AgentId.DEEP_RESEARCHER;

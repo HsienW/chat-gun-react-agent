@@ -4,7 +4,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-JS-06B6D4)](https://langchain-ai.github.io/langgraphjs/)
 [![Source](https://img.shields.io/badge/Source-Ylang--Labs%2Flanggraph--react--agent--studio-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
 
-🤖 Chat Gun React Agent 是一個以 React、TypeScript、LangGraph JS、Gemini、原生工具與選用 MCP tools 組成的 Fullstack AI agent studio。
+Chat Gun React Agent 是一個以 React、TypeScript、LangGraph JS、Qwen / OpenAI-compatible 模型供應商、原生 tools 與選用 MCP tools 組成的 Fullstack AI agent studio。
 
 💡 本專案僅做個人研究使用 (This project is for personal research use only)。
 
@@ -67,14 +67,28 @@ LangGraph graph ID 定義在 `backend/langgraph.json`：
 前端預設 agent 由 `frontend/src/types/agents.ts` 設定，目前是：
 
 ```text
-chatbot
+deep_researcher
+```
+
+前端模型選單由 `frontend/src/types/models.ts` 設定，目前提供：
+
+```text
+Qwen Plus
+Qwen Max
+Qwen Turbo
+```
+
+預設模型是：
+
+```text
+qwen-plus
 ```
 
 ## 需求
 
-- Node.js 20+
-- npm
-- Gemini API Key
+- Node.js 22 建議用於本機開發。LangGraph / Docker runtime 仍有 Node 20 路徑，請以各 package `package.json` 與 Dockerfile 為準。
+- npm 10.x 或 Node.js 22 內建 npm
+- Qwen / Alibaba Cloud Bailian API Key，或相容的 OpenAI-compatible / CCR runtime 設定
 - 選用：Tavily API Key，供 `deep_researcher` 的 `web_search` 使用
 - 選用：Docker / Docker Compose
 - 選用：make
@@ -97,7 +111,7 @@ npm install
 PowerShell：
 
 ```powershell
-cd chat-gun-react-agent\backend
+cd you-path\chat-gun-react-agent\backend
 npm install
 
 cd ..\bff
@@ -125,14 +139,53 @@ cd backend
 Copy-Item .env.example .env
 ```
 
-Gemini 相關設定：
+預設 backend runtime 使用 Qwen / Alibaba Cloud Bailian OpenAI-compatible endpoint：
 
 ```env
-GEMINI_API_KEY=your_gemini_api_key
-DEFAULT_MODEL=gemini-2.5-flash
-CHAT_MODEL=gemini-2.5-flash
-MATH_MODEL=gemini-2.5-flash
-MCP_AGENT_MODEL=gemini-2.5-flash
+LLM_PROVIDER=qwen
+QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_API_KEY=your_qwen_api_key
+QWEN_CHAT_MODEL=qwen-plus
+QWEN_RESEARCH_MODEL=qwen-plus
+QWEN_VISION_MODEL=qwen-vl-plus
+QWEN_TOOL_MODEL=qwen-plus
+DEFAULT_MODEL=qwen-plus
+CHAT_MODEL=qwen-plus
+MATH_MODEL=qwen-plus
+MCP_AGENT_MODEL=qwen-plus
+```
+
+Live smoke 預設關閉：
+
+```env
+RUN_QWEN_LIVE_SMOKE=false
+```
+
+如果要讓 backend planner / synthesis 走 CCR，必須設定 backend 的 `.env`，只設定 Codex/CCR 編排層不會自動影響 LangGraph backend：
+
+```env
+LLM_PROVIDER=ccr
+CCR_BASE_URL=http://127.0.0.1:3456/v1
+CCR_API_KEY=
+CCR_PROVIDER=deepseek
+CCR_MODEL=your_ccr_model
+```
+
+真正的 OpenAI-compatible endpoint 可使用：
+
+```env
+LLM_PROVIDER=openai-compatible
+OPENAI_COMPATIBLE_BASE_URL=https://your-compatible-endpoint/v1
+OPENAI_COMPATIBLE_API_KEY=your_api_key
+OPENAI_COMPATIBLE_MODEL=your_model
+```
+
+目前 backend 支援的 `LLM_PROVIDER` 為：
+
+```text
+qwen
+ccr
+openai-compatible
 ```
 
 `deep_researcher` 使用原生 `web_search` 時需要：
@@ -141,7 +194,30 @@ MCP_AGENT_MODEL=gemini-2.5-flash
 TAVILY_API_KEY=your_tavily_api_key
 ```
 
-如果 backend 所在網路無法直連 Gemini API，可以在啟動 backend 前設定 proxy：
+Image upload / recognition preflight 相關設定：
+
+```env
+BACKEND_IMAGE_UPLOAD_MAX_FILES=6
+BACKEND_IMAGE_UPLOAD_MAX_BYTES=5242880
+BACKEND_IMAGE_UPLOAD_MAX_PIXELS=24000000
+BACKEND_IMAGE_UPLOAD_ALLOWED_EXTENSIONS=.png,.jpg,.jpeg,.webp
+BACKEND_IMAGE_UPLOAD_ALLOWED_MIME_TYPES=image/png,image/jpeg,image/webp
+BACKEND_IMAGE_UPLOAD_S3_BUCKET_URL=
+```
+
+Tool governance 相關設定：
+
+```env
+TOOL_AUDIT_ENABLED=true
+TOOL_ALLOWLIST=
+TOOL_DENYLIST=
+TOOL_TIMEOUT_MS=15000
+TOOL_MAX_INPUT_CHARS=8000
+TOOL_MAX_OUTPUT_CHARS=24000
+WEB_FETCH_ALLOWED_PORTS=80,443
+```
+
+如果 backend 所在網路無法直連模型供應商或外部 tool API，可以在啟動 backend 前設定 proxy：
 
 ```env
 HTTPS_PROXY=http://127.0.0.1:7890
@@ -169,10 +245,16 @@ BFF_FRONTEND_DIST=../frontend/dist
 BFF_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 BFF_REQUIRE_AUTH=false
 BFF_API_KEYS=
-BFF_MAX_BODY_BYTES=1048576
+BFF_MAX_BODY_BYTES=52428800
 BFF_UPSTREAM_TIMEOUT_MS=120000
 BFF_RATE_LIMIT_WINDOW_MS=60000
 BFF_RATE_LIMIT_MAX_REQUESTS=120
+BFF_IMAGE_UPLOAD_MAX_FILES=6
+BFF_IMAGE_UPLOAD_MAX_BYTES=5242880
+BFF_IMAGE_UPLOAD_MAX_PIXELS=24000000
+BFF_IMAGE_UPLOAD_ALLOWED_EXTENSIONS=.png,.jpg,.jpeg,.webp
+BFF_IMAGE_UPLOAD_ALLOWED_MIME_TYPES=image/png,image/jpeg,image/webp
+BFF_IMAGE_UPLOAD_S3_BUCKET_URL=
 ```
 
 BFF 目前提供：
@@ -183,6 +265,7 @@ BFF 目前提供：
 - CORS allowlist
 - optional API key auth
 - request body size limit
+- image upload / recognition preflight limits
 - upstream timeout
 - in-memory rate limit
 - JSON audit log
@@ -257,12 +340,14 @@ make dev
 
 在 Windows / PowerShell 環境下，建議三個服務分別用三個 terminal 啟動，除錯會比較清楚。
 
-## Build / Typecheck
+## Build / Test / Typecheck
 
 Backend：
 
 ```bash
 cd backend
+npm run lint
+npm run test
 npm run build
 ```
 
@@ -270,6 +355,7 @@ BFF：
 
 ```bash
 cd bff
+npm run test
 npm run build
 ```
 
@@ -277,6 +363,8 @@ Frontend：
 
 ```bash
 cd frontend
+npm run lint
+npm run test
 npm run build
 ```
 
@@ -309,7 +397,12 @@ PowerShell 範例：
 
 ```powershell
 cd <project-root>
-$env:GEMINI_API_KEY="your_gemini_api_key"
+$env:LLM_PROVIDER="qwen"
+$env:QWEN_API_KEY="your_qwen_api_key"
+$env:QWEN_CHAT_MODEL="qwen-plus"
+$env:QWEN_RESEARCH_MODEL="qwen-plus"
+$env:QWEN_VISION_MODEL="qwen-vl-plus"
+$env:QWEN_TOOL_MODEL="qwen-plus"
 $env:LANGSMITH_API_KEY=""
 $env:MCP_LOAD_ON_START="false"
 $env:DEEP_RESEARCHER_MCP_ENABLED="false"
@@ -353,8 +446,87 @@ Browser
 
 - `web_search` 使用 Tavily API，需要 `TAVILY_API_KEY`。
 - `current_weather` 使用 Open-Meteo，不需要 API key。
-- `web_fetch` 目前只做基本 HTTP/HTTPS 檢查，不是完整 SSRF sandbox。
+- `web_fetch` 目前限制 HTTP/HTTPS 與允許 port，但不是完整 SSRF sandbox。
 - MCP tools 是選用功能，透過 backend env flags 控制。
+- Tool governance 可透過 `TOOL_ALLOWLIST`、`TOOL_DENYLIST`、`TOOL_TIMEOUT_MS`、`TOOL_MAX_INPUT_CHARS`、`TOOL_MAX_OUTPUT_CHARS` 控制。
+
+### Weather location resolution
+
+`current_weather` 使用 Open-Meteo geocoding 與 Open-Meteo current weather，不需要 API key。
+
+Weather flow 會接收 planner 輸出的地點，保留使用者原始文字於 `requestedLocation.raw`，並只做 trim、Unicode NFKC、空白清理與控制字元移除等不改變語意的 normalization。地理事實仍由 geocoding provider 候選決定。
+
+Tool 會回傳 structured `WeatherToolResult`：
+
+- `status: "success"`：已解析地點並取得目前天氣觀測。
+- `status: "needs_clarification"`：地點有多個合理候選，需要使用者補充 country、region 或其他辨識資訊。
+- `status: "not_found"`：provider 沒有可用候選，不捏造座標。
+- `status: "error"`：穩定錯誤碼，例如 `weather_geocoding_provider_error`、`weather_forecast_provider_error`、`weather_timeout`、`weather_cancelled`。
+
+中文與混合中文地名由 planner 可選輸出 `weather.queryName`，例如 `台北` 搭配 `Taipei`、`北京市` 搭配 `Beijing`。`queryName` 只是 provider query hint：
+
+- 不覆蓋 `weather.location` 或 `requestedLocation.raw`。
+- 不進入 `WeatherToolResult`。
+- 不作為地理事實來源。
+- Resolver 仍必須送到 Open-Meteo geocoding，由 provider candidate 與 scoring 決定結果。
+
+本專案不得以固定 CJK→Latin 城市 mapping、城市白名單、keyword regex 或 phrase stripping 作為主要解析策略。允許的小型封閉清單僅限 weather code label、country code display name、wind direction label 等穩定 domain constants。
+
+目前 live smoke 已涵蓋的 CJK queryName 情境包含：
+
+- `台北` + `queryName: "Taipei"`。
+- `臺北` + `queryName: "Taipei"`，與 `台北` 解析到相容地理實體。
+- `高雄鳳山` + `queryName: "Fengshan"` + `region: "Kaohsiung"` + `country: "Taiwan"`。
+- `北京市` + `queryName: "Beijing"` + `country: "China"`。
+- `新加坡` + `queryName: "Singapore"` + `country: "Singapore"`。
+
+天氣相關 backend 設定：
+
+```env
+WEATHER_STRUCTURED_RESULT_ENABLED=true
+WEATHER_LOCATION_MAX_CHARS=160
+WEATHER_GEOCODING_MAX_QUERIES=6
+WEATHER_GEOCODING_MAX_CANDIDATES=10
+WEATHER_GEOCODING_MIN_SCORE=35
+WEATHER_GEOCODING_AMBIGUITY_DELTA=8
+WEATHER_GEOCODING_TIMEOUT_MS=5000
+WEATHER_FORECAST_TIMEOUT_MS=8000
+# Dev/test-only; ignored when NODE_ENV or APP_ENV is production.
+WEATHER_TEST_FORCE_GEOCODING_ERROR=false
+WEATHER_TEST_FORCE_FORECAST_ERROR=false
+```
+
+Provider failure 手動檢查可在重啟 backend 前只設定其中一個 dev/test fault switch：
+
+- `WEATHER_TEST_FORCE_GEOCODING_ERROR=true` 必須回傳 `status: "error"` 與 `code: "weather_geocoding_provider_error"`，不能回傳 `weather_location_not_found`。
+- `WEATHER_TEST_FORCE_FORECAST_ERROR=true` 必須先完成 geocoding，再回傳 `status: "error"` 與 `code: "weather_forecast_provider_error"`，frontend tool panel 必須進入 terminal 狀態。
+
+當 `NODE_ENV=production` 或 `APP_ENV=production` 時，這些 fault switches 會被忽略。
+
+測試預設使用 mock geocoding 與 weather data，不需要 Open-Meteo 網路連線：
+
+```bash
+cd backend
+npm run test
+
+cd ../frontend
+npm run test
+```
+
+Live smoke 是 opt-in，需要明確設定環境變數才會打到真實 provider：
+
+```powershell
+cd backend
+$env:OPEN_METEO_LIVE_SMOKE="true"
+npm run test -- src/tools/weather.live-smoke.test.ts
+```
+
+限制：
+
+- 目前工具回報最新 current observation，不承諾完整日預報、週末預報或天氣建議。
+- 歧義地點需要使用者補充 country、region 或其他辨識資訊。
+- Provider error 與 timeout 會回報為服務失敗，不會被包裝成地點不存在。
+- Cancellation 應以 `weather_cancelled` 結束，frontend 不應停留在 running 狀態。
 
 ## MCP
 
@@ -365,6 +537,7 @@ MCP_LOAD_ON_START=false
 DEEP_RESEARCHER_MCP_ENABLED=false
 MCP_FILESYSTEM_ENABLED=true
 MCP_FILESYSTEM_PATH=your_filesystem_path
+MCP_FILESYSTEM_ALLOWED_ROOTS=
 MCP_BRAVE_SEARCH_ENABLED=false
 BRAVE_API_KEY=your_brave_api_key_here
 ```
@@ -373,6 +546,7 @@ BRAVE_API_KEY=your_brave_api_key_here
 
 - `mcp_agent` 會依設定載入 MCP tools。
 - `deep_researcher` 只有在 `DEEP_RESEARCHER_MCP_ENABLED=true` 時才會包含 MCP tools。
+- filesystem MCP 應設定 `MCP_FILESYSTEM_ALLOWED_ROOTS` 限制可存取根目錄；多個 root 依作業系統 path delimiter 分隔。
 - 生產環境建議把 MCP execution 拆到獨立 Tool Service / container，並加上權限、沙箱、egress policy、timeout 與 audit。
 
 ## 疑難排解
@@ -405,17 +579,45 @@ Invoke-RestMethod http://127.0.0.1:8787/api/ready
 Invoke-RestMethod http://localhost:2024/ok
 ```
 
-### `Research synthesis failed ... Gemini ... fetch failed`
+### `Research synthesis failed ... fetch failed`
 
-這表示 frontend、BFF、LangGraph 已經通了，但 backend 連不到 Gemini。
+這表示 frontend、BFF、LangGraph 已經通了，但 backend 連不到目前設定的模型供應商或外部 tool provider。
+
+如果使用 Qwen / Alibaba Cloud Bailian，先檢查：
+
+```powershell
+Test-NetConnection dashscope.aliyuncs.com -Port 443
+```
+
+如果使用自訂 OpenAI-compatible endpoint，請檢查你的 `OPENAI_COMPATIBLE_BASE_URL` host。若網路需要 proxy，請在啟動 `backend` 前設定 `HTTPS_PROXY` / `HTTP_PROXY`。
+
+### Deep Research 回覆「請提供要查詢天氣的城市或地區」
+
+如果 history 裡的 `plan.rationale` 顯示 `Planner unavailable; weather intent detected...`，表示 backend planner LLM 沒有成功執行。天氣地點抽取必須由 planner 輸出 `weather.location`，系統不會用固定 keyword 或標點刪字把完整問句猜成地點。
 
 檢查：
 
-```powershell
-Test-NetConnection generativelanguage.googleapis.com -Port 443
+```env
+# Qwen path
+LLM_PROVIDER=qwen
+QWEN_API_KEY=...
+QWEN_CHAT_MODEL=qwen-plus
+QWEN_RESEARCH_MODEL=qwen-plus
+
+# or CCR path
+LLM_PROVIDER=ccr
+CCR_BASE_URL=http://127.0.0.1:3456/v1
+CCR_PROVIDER=deepseek
+CCR_MODEL=...
+
+# or OpenAI-compatible path
+LLM_PROVIDER=openai-compatible
+OPENAI_COMPATIBLE_BASE_URL=https://your-compatible-endpoint/v1
+OPENAI_COMPATIBLE_API_KEY=...
+OPENAI_COMPATIBLE_MODEL=...
 ```
 
-如果你的網路需要 proxy，請在啟動 `backend` 前設定 `HTTPS_PROXY` / `HTTP_PROXY`。
+調整 `.env` 後需要重啟 backend。
 
 ## 更多文件
 

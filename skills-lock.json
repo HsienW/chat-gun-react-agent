@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "skills": {
+    "api-and-interface-design": {
+      "source": "addyosmani/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/api-and-interface-design/SKILL.md",
+      "computedHash": "0fabf9c3fc2577eab57833f660efef943b78d5c6ae5f0d8e82b600cc22563dbc"
+    },
+    "code-review-and-quality": {
+      "source": "addyosmani/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/code-review-and-quality/SKILL.md",
+      "computedHash": "31afa3c52991ed84a1f0b97d5a9dc9f1ada08307108e88c3102de7c41a50c0a4"
+    },
+    "coding-standards": {
+      "source": "affaan-m/ECC",
+      "sourceType": "github",
+      "skillPath": "skills/coding-standards/SKILL.md",
+      "computedHash": "4fa4d991ccc71cd6d1be14e112f95d0c83b2d6b860e74d378284d6da865c0cad"
+    },
+    "debugging-and-error-recovery": {
+      "source": "addyosmani/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/debugging-and-error-recovery/SKILL.md",
+      "computedHash": "46facf7328efeb51e32cb25835a83f4ec4e69b600c818a255e88645cfca1d0c4"
+    },
+    "frontend-ui-engineering": {
+      "source": "addyosmani/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/frontend-ui-engineering/SKILL.md",
+      "computedHash": "195659873a8fe0bac6947e44731c3e23b97ec2caf2c124ce4c808658c555f98d"
+    },
+    "incremental-implementation": {
+      "source": "addyosmani/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/incremental-implementation/SKILL.md",
+      "computedHash": "27a55fa6a8ca32d2f16198ad0585511ba41c489a527c9a4b51c96ad7f1a3ffce"
+    },
+    "langgraph-fundamentals": {
+      "source": "langchain-ai/langchain-skills",
+      "sourceType": "github",
+      "skillPath": "config/skills/langgraph-fundamentals/SKILL.md",
+      "computedHash": "581ea3bb684f4cd2c3eeee3f9b357f3988032d1f40fb5afc2ce217ec2ecbcdaa"
+    },
+    "langgraph-human-in-the-loop": {
+      "source": "langchain-ai/langchain-skills",
+      "sourceType": "github",
+      "skillPath": "config/skills/langgraph-human-in-the-loop/SKILL.md",
+      "computedHash": "f98bc8e16c416b859bebf6126009d637b72a26d510d234c296a774d79736ead9"
+    },
+    "langgraph-persistence": {
+      "source": "langchain-ai/langchain-skills",
+      "sourceType": "github",
+      "skillPath": "config/skills/langgraph-persistence/SKILL.md",
+      "computedHash": "7538756e423b3da5ce25b6c7f99070792214a9c7a51510e9579a40a190e88ccd"
+    },
+    "observability-and-instrumentation": {
+      "source": "addyosmani/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/observability-and-instrumentation/SKILL.md",
+      "computedHash": "ae5ddba4019fc5057796bf022e5fd348cbb88376a3a5f39debf8380789e4601d"
+    },
+    "performance-optimization": {
+      "source": "addyosmani/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/performance-optimization/SKILL.md",
+      "computedHash": "e143bfc3b19f8009b3399bdd96deba13e4edb6cdbd9f7f30b570ba5ea49e3613"
+    },
+    "security-and-hardening": {
+      "source": "addyosmani/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/security-and-hardening/SKILL.md",
+      "computedHash": "149ac0ecdf73998b17ba8edb51aaf614771dd576e50924058bf3bdedff3329f4"
+    },
+    "test-driven-development": {
+      "source": "addyosmani/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/test-driven-development/SKILL.md",
+      "computedHash": "909cbc5298acd30d064ba014463ebdecbabc253caf7986ba8cc25633af86f3df"
+    }
+  }
+}

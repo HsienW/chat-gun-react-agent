@@ -1,0 +1,27 @@
+{
+  "model": {
+    "name": "qwen3.7-plus"
+  },
+  "tools": {
+    "approvalMode": "plan"
+  },
+  "permissions": {
+    "deny": [
+      "Edit",
+      "Write",
+      "Bash",
+      "WebFetch"
+    ],
+    "allow": [
+      "Agent(general-purpose)"
+    ]
+  },
+  "memory": {
+    "enableManagedAutoMemory": false,
+    "enableManagedAutoDream": false
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "$version": 4
+}
