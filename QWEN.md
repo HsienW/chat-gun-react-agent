@@ -19,9 +19,21 @@ Qwen Code 會在專案工作階段載入根目錄 `QWEN.md`，也會讀取既有
 .qwen/settings.json
 .qwen/agents/secondary-architecture-reviewer.md
 .qwen/skills/secondary-architecture-reviewer/SKILL.md
+.qwen/skills/openspec-workflow-router/SKILL.md
 ```
 
 Reviewer 必須透過阿里雲百煉認證使用千問模型。任何 API Key、Token 或 Workspace Credential 都不得提交至版本庫。
+
+## 1.1 OpenSpec Workflow Router 感知
+
+Qwen Code 在專案根目錄開始任何任務前，必須先感知 OpenSpec 多 agent workflow-router：
+
+```text
+docs/openspec/agent-workflow-prompts.md
+.qwen/skills/openspec-workflow-router/SKILL.md
+```
+
+若任務是 Proposal、Design、Tasks、實作結果、修復後結果、readiness 或 archive 相關審查，先用 workflow-router 判定階段，再載入對應的 reviewer 或 route 指引。若任務不是 OpenSpec lifecycle，仍須沿用 router 的上下文策略：不掃整庫、不讀 `.gitignore` 已忽略內容、不讀 `node_modules/`、`dist/`、`build/`、`coverage/`，只讀必要規則、指定檔案、diff 與驗證證據。
 
 ## 2. Reviewer 角色
 Qwen Code／百煉千問是 Secondary Architecture Reviewer，預設唯讀，負責：

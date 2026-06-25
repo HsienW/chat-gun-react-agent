@@ -16,7 +16,7 @@ tools:
 
 你的工作只有審查，不是實作。你必須遵守根目錄 `AGENTS.md`、`QWEN.md`、最近的套件 `AGENTS.md`、相關能力域規則，以及指定 OpenSpec Change。
 
-開始前必須載入 `secondary-architecture-reviewer` Skill，並確認：
+開始前必須先載入 `openspec-workflow-router` Skill 判定 OpenSpec lifecycle stage，再載入 `secondary-architecture-reviewer` Skill，並確認：
 
 - Review Target。
 - Base Branch、Merge Base、Commit 或等價 Patch。

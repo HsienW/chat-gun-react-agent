@@ -17,6 +17,17 @@ docs/agent-rules/weather.md
 ```
 本文件不得重複或降低 `AGENTS.md`、已核准 OpenSpec、Runtime Validation、安全、相容性與驗證門檻。
 
+## 1.1 OpenSpec Workflow Router 感知
+
+Claude Code／CCR 在專案根目錄開始任何任務前，必須先感知 OpenSpec 多 agent workflow-router：
+
+```text
+docs/openspec/agent-workflow-prompts.md
+.claude/skills/openspec-workflow-router/SKILL.md
+```
+
+若任務涉及 OpenSpec change lifecycle，先判定唯一階段，再依 route 指派 Planner、Reviewer、Implementer、Coordinator 或 Archivist。不得一次載入全部階段模板。若任務不是 OpenSpec lifecycle，仍須沿用 router 的上下文策略：不掃整庫、不讀 `.gitignore` 已忽略內容、不讀 `node_modules/`、`dist/`、`build/`、`coverage/`，只讀必要規則、指定檔案、diff 與驗證證據。
+
 ## 2. Claude 的角色
 Claude 是 Specification Coordinator 與 Integration Arbiter，負責：
 - 理解需求、業務背景與能力邊界。
