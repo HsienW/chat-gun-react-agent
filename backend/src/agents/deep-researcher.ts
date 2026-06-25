@@ -1,7 +1,8 @@
 import { AIMessage, BaseMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { RunnableConfig } from "@langchain/core/runnables";
 import { StructuredToolInterface } from "@langchain/core/tools";
-import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
+import { Annotation, Command, END, START, StateGraph, interrupt } from "@langchain/langgraph";
+import { MemorySaver } from "@langchain/langgraph-checkpoint";
 
 import { getBooleanEnv } from "../platform/env.js";
 import { BACKEND_ERROR_MESSAGES } from "../platform/error-messages.js";
@@ -36,6 +37,10 @@ import { normalizeAiMessageForStream } from "./message-normalization.js";
 import type {
   WeatherToolResult,
   WeatherExecutionState,
+  WeatherClarificationInterrupt,
+  WeatherClarificationResolution,
+  WeatherClarificationState,
+  LocationCandidate,
   LocationQuery,
   WeatherCapability,
   WeatherTimeRange,
@@ -44,6 +49,7 @@ import type {
 const DEFAULT_RESEARCH_MODEL = "";
 const DEFAULT_SEARCH_QUERY_COUNT = 3;
 const DEFAULT_MAX_FETCHED_SOURCES = 5;
+const DEFAULT_WEATHER_CLARIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 const DEEP_RESEARCH_GRAPH_NODES = {
   validateUploads: "validate_uploads",
@@ -51,6 +57,8 @@ const DEEP_RESEARCH_GRAPH_NODES = {
   analyzeImages: "analyze_images",
   planResearch: "plan_research",
   targetedTools: "targeted_tools",
+  clarifyInterrupt: "clarify_interrupt",
+  resumeClarify: "resume_clarify",
   searchWeb: "search_web",
   rankSources: "rank_sources",
   fetchSources: "fetch_sources",
@@ -63,6 +71,8 @@ const DEEP_RESEARCH_GRAPH_ROUTES = {
   buildContextPack: "build_context_pack",
   analyzeImages: "analyze_images",
   targetedTools: "targeted_tools",
+  clarifyInterrupt: "clarify_interrupt",
+  resumeClarify: "resume_clarify",
   searchWeb: "search_web",
   synthesize: "synthesize",
   rank: "rank",
@@ -89,6 +99,7 @@ type WeatherRequest = {
   region?: string;
   weatherCapability?: WeatherCapability;
   timeRange?: WeatherTimeRange;
+  resolvedCandidate?: LocationCandidate;
   units?: "metric";
   locale?: string;
 };
@@ -205,6 +216,10 @@ const DeepResearchState = Annotation.Root({
     default: () => [],
   }),
   weatherExecution: Annotation<WeatherExecutionState | undefined>({
+    reducer: (_left, right) => right,
+    default: () => undefined,
+  }),
+  clarification: Annotation<WeatherClarificationState | undefined>({
     reducer: (_left, right) => right,
     default: () => undefined,
   }),
@@ -765,7 +780,7 @@ function sanitizeJsonForDiagnostics(value: unknown, depth = 0): unknown {
 }
 
 async function recordWeatherLlmDiagnostic(payload: {
-  phase: "planner" | "planner_extraction" | "repair";
+  phase: "planner" | "planner_extraction" | "repair" | "clarification_resolution";
   resultStatus?: string;
   failureCode?: WeatherLlmDiagnosticFailureCode;
   responseContentLength?: number;
@@ -1266,6 +1281,9 @@ async function targetedTools(
     if (rawRequest.timeRange) {
       input.timeRange = rawRequest.timeRange;
     }
+    if (rawRequest.resolvedCandidate) {
+      input.resolvedCandidate = rawRequest.resolvedCandidate;
+    }
     if (rawRequest.units) {
       input.units = rawRequest.units;
     }
@@ -1387,6 +1405,563 @@ async function targetedTools(
 /**
  * Check if the raw request was already repaired to avoid infinite loops — Task 5.11
  */
+function getConfigString(config: RunnableConfig | undefined, key: string): string {
+  const configurable = config?.configurable as Record<string, unknown> | undefined;
+  const value = configurable?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function getConfigNumber(config: RunnableConfig | undefined, key: string): number | undefined {
+  const configurable = config?.configurable as Record<string, unknown> | undefined;
+  const value = configurable?.[key];
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : undefined;
+  }
+  return undefined;
+}
+
+function getClarificationTimeoutMs(config: RunnableConfig | undefined): number {
+  return (
+    getConfigNumber(config, "weatherClarificationTimeoutMs") ??
+    getConfigNumber(config, "weather_clarification_timeout_ms") ??
+    DEFAULT_WEATHER_CLARIFICATION_TIMEOUT_MS
+  );
+}
+
+function getRunId(config: RunnableConfig | undefined): string {
+  const runId = (config as { runId?: unknown } | undefined)?.runId;
+  return typeof runId === "string" && runId.trim() ? runId.trim() : "";
+}
+
+function isClarificationTimedOut(
+  clarification: WeatherClarificationState,
+  config: RunnableConfig | undefined,
+  nowMs = Date.now()
+): boolean {
+  const startedAt = Number(clarification.interruptCheckpointStep);
+  return Number.isFinite(startedAt) && nowMs - startedAt > getClarificationTimeoutMs(config);
+}
+
+function getWeatherCapabilityForClarification(
+  state: typeof DeepResearchState.State,
+  result: WeatherToolResult
+): WeatherCapability {
+  if (result.tool === "weather_forecast" && result.status === "needs_clarification") {
+    return state.plan?.weather?.weatherCapability === "hourly" || state.plan?.weather?.weatherCapability === "daily"
+      ? state.plan.weather.weatherCapability
+      : "daily";
+  }
+  return "current";
+}
+
+function canResumeCandidate(candidate: unknown): candidate is LocationCandidate {
+  return (
+    isRecord(candidate) &&
+    typeof candidate.name === "string" &&
+    typeof candidate.displayName === "string" &&
+    typeof candidate.latitude === "number" &&
+    typeof candidate.longitude === "number"
+  );
+}
+
+function getClarificationCandidates(result: WeatherToolResult): LocationCandidate[] {
+  if (result.status !== "needs_clarification") {
+    return [];
+  }
+
+  return result.candidates
+    .filter(canResumeCandidate)
+    .slice(0, 5)
+    .map((candidate) => ({
+      provider: "open-meteo",
+      providerId: typeof candidate.providerId === "string" ? candidate.providerId : undefined,
+      name: candidate.name,
+      displayName: candidate.displayName,
+      country: typeof candidate.country === "string" ? candidate.country : undefined,
+      countryCode: typeof candidate.countryCode === "string" ? candidate.countryCode : undefined,
+      admin1: typeof candidate.admin1 === "string" ? candidate.admin1 : undefined,
+      admin2: typeof candidate.admin2 === "string" ? candidate.admin2 : undefined,
+      latitude: candidate.latitude,
+      longitude: candidate.longitude,
+      timezone: typeof candidate.timezone === "string" ? candidate.timezone : undefined,
+    }));
+}
+
+function buildClarificationState(
+  state: typeof DeepResearchState.State,
+  config: RunnableConfig | undefined
+): WeatherClarificationState | undefined {
+  const exec = state.weatherExecution;
+  if (exec?.status !== "needs_clarification" || exec.result.status !== "needs_clarification") {
+    return undefined;
+  }
+
+  const candidates = getClarificationCandidates(exec.result);
+  if (candidates.length < 2) {
+    return undefined;
+  }
+
+  return {
+    status: "awaiting_user_input",
+    candidates,
+    originalQuery: exec.result.requestedLocation,
+    weatherCapability: getWeatherCapabilityForClarification(state, exec.result),
+    timeRange: state.plan?.weather?.timeRange,
+    summary: exec.result.summary,
+    interruptCheckpointStep: Number(Date.now()),
+    rounds: state.clarification?.rounds ?? 0,
+  };
+}
+
+function buildClarificationInterrupt(
+  clarification: WeatherClarificationState,
+  state: typeof DeepResearchState.State,
+  config: RunnableConfig | undefined
+): WeatherClarificationInterrupt | undefined {
+  const exec = state.weatherExecution;
+  if (exec?.status !== "needs_clarification") {
+    return undefined;
+  }
+
+  return {
+    type: "weather_clarification",
+    threadId: getConfigString(config, "thread_id"),
+    runId: getRunId(config),
+    candidates: clarification.candidates.map((candidate, index) => ({
+      ...candidate,
+      index: index + 1,
+    })),
+    originalQuery: clarification.originalQuery,
+    weatherCapability: clarification.weatherCapability,
+    ...(clarification.timeRange ? { timeRange: clarification.timeRange } : {}),
+    summary: clarification.summary,
+    weatherExecution: exec,
+  };
+}
+
+function parseClarificationResumeInput(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (isRecord(value)) {
+    if (typeof value.userReply === "string") {
+      return value.userReply;
+    }
+    if (value.cancel === true) {
+      return "cancel";
+    }
+  }
+  return undefined;
+}
+
+function routeAfterTargetedTools(state: typeof DeepResearchState.State): string {
+  const exec = state.weatherExecution;
+  if (exec?.status === "needs_clarification" && exec.result.status === "needs_clarification") {
+    return getClarificationCandidates(exec.result).length >= 2
+      ? DEEP_RESEARCH_GRAPH_ROUTES.clarifyInterrupt
+      : DEEP_RESEARCH_GRAPH_ROUTES.synthesize;
+  }
+  return DEEP_RESEARCH_GRAPH_ROUTES.synthesize;
+}
+
+async function clarifyInterrupt(
+  state: typeof DeepResearchState.State,
+  config: RunnableConfig
+) {
+  const clarification = buildClarificationState(state, config);
+  if (!clarification) {
+    return new Command({ goto: DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer });
+  }
+
+  const payload = buildClarificationInterrupt(clarification, state, config);
+  if (!payload) {
+    return new Command({ goto: DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer });
+  }
+
+  const resumeValue = interrupt<WeatherClarificationInterrupt, unknown>(payload);
+  const userReply = parseClarificationResumeInput(resumeValue);
+
+  return new Command({
+    update: {
+      clarification: {
+        ...clarification,
+        status: "resuming",
+        userReply,
+      },
+    },
+    goto: DEEP_RESEARCH_GRAPH_NODES.resumeClarify,
+  });
+}
+
+type WeatherClarificationResolutionResponse = {
+  resolutionType?: unknown;
+  candidateIndex?: unknown;
+  filter?: unknown;
+  newLocationText?: unknown;
+  cancel?: unknown;
+} & Record<string, unknown>;
+
+function coerceClarificationResolution(
+  value: WeatherClarificationResolutionResponse | undefined
+): WeatherClarificationResolution | undefined {
+  if (!value || !isRecord(value)) {
+    return undefined;
+  }
+
+  if (value.resolutionType === "select_candidate" && typeof value.candidateIndex === "number") {
+    return {
+      resolutionType: "select_candidate",
+      candidateIndex: Math.trunc(value.candidateIndex),
+    };
+  }
+
+  if (value.resolutionType === "filter_candidates" && isRecord(value.filter)) {
+    return {
+      resolutionType: "filter_candidates",
+      filter: {
+        country: typeof value.filter.country === "string" ? value.filter.country : undefined,
+        region: typeof value.filter.region === "string" ? value.filter.region : undefined,
+        name: typeof value.filter.name === "string" ? value.filter.name : undefined,
+      },
+    };
+  }
+
+  if (value.resolutionType === "new_location" && typeof value.newLocationText === "string" && value.newLocationText.trim()) {
+    return {
+      resolutionType: "new_location",
+      newLocationText: value.newLocationText.trim(),
+    };
+  }
+
+  if (value.resolutionType === "cancel" || value.cancel === true) {
+    return {
+      resolutionType: "cancel",
+      cancel: true,
+    };
+  }
+
+  if (value.resolutionType === "unrecognized") {
+    return { resolutionType: "unrecognized" };
+  }
+
+  return undefined;
+}
+
+async function resolveClarificationWithPlanner(
+  clarification: WeatherClarificationState,
+  userReply: string,
+  state: typeof DeepResearchState.State
+): Promise<WeatherClarificationResolution> {
+  const prompt = [
+    "Return only JSON. Do not use markdown.",
+    "Resolve a weather location clarification reply using only the pending candidates and the user's reply.",
+    "Do not invent candidates, coordinates, provider IDs, URLs, or tool calls.",
+    "Classify the reply as one of: select_candidate, filter_candidates, new_location, cancel, unrecognized.",
+    'JSON schema: {"resolutionType":"select_candidate|filter_candidates|new_location|cancel|unrecognized","candidateIndex":1,"filter":{"country":"string optional","region":"string optional","name":"string optional"},"newLocationText":"string optional","cancel":false}',
+    `Original query: ${JSON.stringify(clarification.originalQuery)}`,
+    `Weather capability: ${JSON.stringify(clarification.weatherCapability)}`,
+    `Time range: ${JSON.stringify(clarification.timeRange ?? null)}`,
+    `Pending candidates: ${JSON.stringify(clarification.candidates.map((candidate, index) => ({
+      index: index + 1,
+      displayName: candidate.displayName,
+      country: candidate.country,
+      admin1: candidate.admin1,
+      admin2: candidate.admin2,
+    })))}`,
+    `User reply: ${JSON.stringify(userReply)}`,
+  ].join("\n");
+
+  try {
+    const model = state.reasoning_model.trim() || undefined;
+    const llm = llmGateway.createChatModel({
+      purpose: "research",
+      model,
+      temperature: 0,
+      responseFormat: { type: "json_object" },
+    });
+    const response = await llm.invoke(prompt);
+    const parsedResult = parseJsonObjectWithDiagnostics<WeatherClarificationResolutionResponse>(
+      messageContentToString(response)
+    );
+    const resolution = coerceClarificationResolution(parsedResult.parsed);
+    await recordWeatherLlmDiagnostic({
+      phase: "clarification_resolution",
+      resultStatus: resolution?.resolutionType ?? "rejected",
+      failureCode: resolution ? undefined : (parsedResult.failureCode ?? "schema_rejected"),
+      responseContentLength: parsedResult.responseContentLength,
+      plannerJson: parsedResult.parsed,
+    });
+    return resolution ?? { resolutionType: "unrecognized" };
+  } catch {
+    await recordWeatherLlmDiagnostic({
+      phase: "clarification_resolution",
+      failureCode: "llm_unavailable",
+    });
+    return { resolutionType: "unrecognized" };
+  }
+}
+
+function createWeatherClarificationErrorResult(
+  clarification: WeatherClarificationState,
+  code: "weather_cancelled" | "weather_timeout" | "weather_unknown_error",
+  summary: string
+): WeatherToolResult {
+  const base = {
+    requestedLocation: clarification.originalQuery,
+    status: "error" as const,
+    code,
+    retryable: false,
+    message: summary,
+    summary,
+  };
+  if (clarification.weatherCapability === "hourly" || clarification.weatherCapability === "daily") {
+    return {
+      schemaVersion: "1.1",
+      tool: "weather_forecast",
+      ...base,
+    };
+  }
+  return {
+    schemaVersion: "1.0",
+    tool: "current_weather",
+    ...base,
+  };
+}
+
+function buildPlanFromClarificationCandidate(
+  state: typeof DeepResearchState.State,
+  clarification: WeatherClarificationState,
+  candidate: LocationCandidate
+): ResearchPlan {
+  return {
+    question: state.plan?.question ?? getResearchTopic(state.messages),
+    answerMode: "weather",
+    rationale: "Weather clarification selected a provider-backed candidate.",
+    queries: [],
+    urls: [],
+    weather: {
+      location: candidate.displayName,
+      country: candidate.country,
+      region: candidate.admin1,
+      weatherCapability: clarification.weatherCapability,
+      ...(clarification.timeRange ? { timeRange: clarification.timeRange } : {}),
+      resolvedCandidate: candidate,
+      units: "metric",
+    },
+    requiredSourceCount: 1,
+  };
+}
+
+function candidateMatchesFilter(
+  candidate: LocationCandidate,
+  filter: Extract<WeatherClarificationResolution, { resolutionType: "filter_candidates" }>["filter"]
+): boolean {
+  const needles = [filter.country, filter.region, filter.name]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map((value) => value.trim().toLowerCase());
+  if (needles.length === 0) {
+    return false;
+  }
+  const haystack = [
+    candidate.name,
+    candidate.displayName,
+    candidate.country,
+    candidate.countryCode,
+    candidate.admin1,
+    candidate.admin2,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ")
+    .toLowerCase();
+  return needles.every((needle) => haystack.includes(needle));
+}
+
+function buildClarificationResultFromCandidates(
+  clarification: WeatherClarificationState,
+  candidates: LocationCandidate[]
+): WeatherToolResult {
+  const base = {
+    status: "needs_clarification" as const,
+    requestedLocation: clarification.originalQuery,
+    candidates,
+    message: `Location "${clarification.originalQuery.location}" is still ambiguous. Please provide a more specific country or region.`,
+    summary: `Location "${clarification.originalQuery.location}" still matches multiple candidates. Please specify a country or region.`,
+  };
+  if (clarification.weatherCapability === "hourly" || clarification.weatherCapability === "daily") {
+    return {
+      schemaVersion: "1.1",
+      tool: "weather_forecast",
+      ...base,
+    };
+  }
+  return {
+    schemaVersion: "1.0",
+    tool: "current_weather",
+    ...base,
+  };
+}
+
+async function resumeClarify(
+  state: typeof DeepResearchState.State,
+  config: RunnableConfig
+): Promise<Partial<typeof DeepResearchState.State>> {
+  const clarification = state.clarification;
+  if (clarification && isClarificationTimedOut(clarification, config)) {
+    const result = createWeatherClarificationErrorResult(
+      clarification,
+      "weather_timeout",
+      "Weather clarification timed out."
+    );
+    return {
+      clarification: { ...clarification, status: "timeout" },
+      weatherExecution: { status: "failed", result },
+      messages: [createToolMessage(result.tool, JSON.stringify(result))],
+    };
+  }
+
+  const userReply = clarification?.userReply?.trim();
+  if (!clarification || !userReply) {
+    const fallback = clarification
+      ? createWeatherClarificationErrorResult(clarification, "weather_unknown_error", "Clarification reply is required.")
+      : undefined;
+    return fallback
+      ? { weatherExecution: { status: "failed", result: fallback }, messages: [createToolMessage(fallback.tool, JSON.stringify(fallback))] }
+      : {};
+  }
+
+  if (userReply.length > 500) {
+    const result = createWeatherClarificationErrorResult(
+      clarification,
+      "weather_unknown_error",
+      "Clarification reply must be 500 characters or fewer."
+    );
+    return {
+      clarification: { ...clarification, status: "exhausted" },
+      weatherExecution: { status: "failed", result },
+      messages: [createToolMessage(result.tool, JSON.stringify(result))],
+    };
+  }
+
+  const resolution = await resolveClarificationWithPlanner(clarification, userReply, state);
+
+  if (resolution.resolutionType === "cancel") {
+    const result = createWeatherClarificationErrorResult(
+      clarification,
+      "weather_cancelled",
+      "Weather clarification was cancelled."
+    );
+    return {
+      clarification: { ...clarification, status: "cancelled", resolution },
+      weatherExecution: { status: "failed", result },
+      messages: [createToolMessage(result.tool, JSON.stringify(result))],
+    };
+  }
+
+  if (resolution.resolutionType === "select_candidate") {
+    const selected = clarification.candidates[resolution.candidateIndex - 1];
+    if (selected) {
+      return {
+        clarification: { ...clarification, status: "resolved", resolution },
+        plan: buildPlanFromClarificationCandidate(state, clarification, selected),
+        weatherExecution: { status: "running", requestedLocation: clarification.originalQuery },
+      };
+    }
+  }
+
+  if (resolution.resolutionType === "filter_candidates") {
+    const matchingCandidates = clarification.candidates.filter((candidate) =>
+      candidateMatchesFilter(candidate, resolution.filter)
+    );
+    if (matchingCandidates.length === 1) {
+      return {
+        clarification: { ...clarification, status: "resolved", resolution },
+        plan: buildPlanFromClarificationCandidate(state, clarification, matchingCandidates[0]),
+        weatherExecution: { status: "running", requestedLocation: clarification.originalQuery },
+      };
+    }
+    if (matchingCandidates.length > 1 && clarification.rounds < 1) {
+      const narrowed = {
+        ...clarification,
+        status: "awaiting_user_input" as const,
+        candidates: matchingCandidates,
+        rounds: clarification.rounds + 1,
+        resolution,
+        userReply: undefined,
+      };
+      const result = buildClarificationResultFromCandidates(narrowed, matchingCandidates);
+      return {
+        clarification: narrowed,
+        weatherExecution: { status: "needs_clarification", result },
+        messages: [createToolMessage(result.tool, JSON.stringify(result))],
+      };
+    }
+  }
+
+  if (resolution.resolutionType === "new_location") {
+    return {
+      clarification: { ...clarification, status: "resolved", resolution },
+      plan: {
+        question: state.plan?.question ?? resolution.newLocationText,
+        answerMode: "weather",
+        rationale: "Weather clarification changed to a new location.",
+        queries: [],
+        urls: [],
+        weather: {
+          location: resolution.newLocationText,
+          weatherCapability: clarification.weatherCapability,
+          ...(clarification.timeRange ? { timeRange: clarification.timeRange } : {}),
+          units: "metric",
+        },
+        requiredSourceCount: 1,
+      },
+      weatherExecution: {
+        status: "running",
+        requestedLocation: { raw: resolution.newLocationText, location: resolution.newLocationText },
+      },
+    };
+  }
+
+  if (clarification.rounds < 1) {
+    const result = buildClarificationResultFromCandidates(clarification, clarification.candidates);
+    return {
+      clarification: {
+        ...clarification,
+        status: "awaiting_user_input",
+        rounds: clarification.rounds + 1,
+        resolution,
+        userReply: undefined,
+      },
+      weatherExecution: { status: "needs_clarification", result },
+      messages: [createToolMessage(result.tool, JSON.stringify(result))],
+    };
+  }
+
+  const exhausted = createWeatherClarificationErrorResult(
+    clarification,
+    "weather_unknown_error",
+    "Weather clarification could not be resolved after two attempts."
+  );
+  return {
+    clarification: { ...clarification, status: "exhausted", resolution },
+    weatherExecution: { status: "failed", result: exhausted },
+    messages: [createToolMessage(exhausted.tool, JSON.stringify(exhausted))],
+  };
+}
+
+function routeAfterResumeClarify(state: typeof DeepResearchState.State): string {
+  if (state.weatherExecution?.status === "needs_clarification") {
+    return DEEP_RESEARCH_GRAPH_ROUTES.clarifyInterrupt;
+  }
+  if (state.plan?.answerMode === "weather" && state.weatherExecution?.status === "running") {
+    return DEEP_RESEARCH_GRAPH_ROUTES.targetedTools;
+  }
+  return DEEP_RESEARCH_GRAPH_ROUTES.synthesize;
+}
+
 function requestWasAlreadyRepaired(
   request: LocationQuery,
   state: typeof DeepResearchState.State
@@ -1843,6 +2418,13 @@ export const deepResearcherWeatherTestInternals = {
   repairWeatherRequest,
   buildWeatherToolAnswer,
   targetedTools,
+  routeAfterTargetedTools,
+  clarifyInterrupt,
+  resumeClarify,
+  routeAfterResumeClarify,
+  buildClarificationState,
+  buildClarificationInterrupt,
+  coerceClarificationResolution,
 };
 
 export const deepResearcherQueryContractTestInternals = {
@@ -1968,6 +2550,10 @@ const builder = new StateGraph(DeepResearchState)
   .addNode(DEEP_RESEARCH_GRAPH_NODES.analyzeImages, analyzeImages)
   .addNode(DEEP_RESEARCH_GRAPH_NODES.planResearch, planResearch)
   .addNode(DEEP_RESEARCH_GRAPH_NODES.targetedTools, targetedTools)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.clarifyInterrupt, clarifyInterrupt, {
+    ends: [DEEP_RESEARCH_GRAPH_NODES.resumeClarify, DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer],
+  })
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.resumeClarify, resumeClarify)
   .addNode(DEEP_RESEARCH_GRAPH_NODES.searchWeb, searchWeb)
   .addNode(DEEP_RESEARCH_GRAPH_NODES.rankSources, rankSources)
   .addNode(DEEP_RESEARCH_GRAPH_NODES.fetchSources, fetchSources)
@@ -1987,7 +2573,15 @@ const builder = new StateGraph(DeepResearchState)
     [DEEP_RESEARCH_GRAPH_ROUTES.searchWeb]: DEEP_RESEARCH_GRAPH_NODES.searchWeb,
     [DEEP_RESEARCH_GRAPH_ROUTES.synthesize]: DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer,
   })
-  .addEdge(DEEP_RESEARCH_GRAPH_NODES.targetedTools, DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer)
+  .addConditionalEdges(DEEP_RESEARCH_GRAPH_NODES.targetedTools, routeAfterTargetedTools, {
+    [DEEP_RESEARCH_GRAPH_ROUTES.clarifyInterrupt]: DEEP_RESEARCH_GRAPH_NODES.clarifyInterrupt,
+    [DEEP_RESEARCH_GRAPH_ROUTES.synthesize]: DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer,
+  })
+  .addConditionalEdges(DEEP_RESEARCH_GRAPH_NODES.resumeClarify, routeAfterResumeClarify, {
+    [DEEP_RESEARCH_GRAPH_ROUTES.targetedTools]: DEEP_RESEARCH_GRAPH_NODES.targetedTools,
+    [DEEP_RESEARCH_GRAPH_ROUTES.clarifyInterrupt]: DEEP_RESEARCH_GRAPH_NODES.clarifyInterrupt,
+    [DEEP_RESEARCH_GRAPH_ROUTES.synthesize]: DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer,
+  })
   .addConditionalEdges(DEEP_RESEARCH_GRAPH_NODES.searchWeb, routeAfterSearch, {
     [DEEP_RESEARCH_GRAPH_ROUTES.rank]: DEEP_RESEARCH_GRAPH_NODES.rankSources,
     [DEEP_RESEARCH_GRAPH_ROUTES.verify]: DEEP_RESEARCH_GRAPH_NODES.verifyCitations,
@@ -2001,5 +2595,9 @@ const builder = new StateGraph(DeepResearchState)
   .addEdge(DEEP_RESEARCH_GRAPH_NODES.verifyCitations, DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer)
   .addEdge(DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer, END);
 
-export const deepResearcherGraph = builder.compile();
+const deepResearcherCheckpointer = new MemorySaver();
+
+export const deepResearcherGraph = builder.compile({
+  checkpointer: deepResearcherCheckpointer,
+});
 

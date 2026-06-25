@@ -8,6 +8,9 @@ import type { WeatherToolResult } from "../tools/weather-types.js";
 type WeatherState = Parameters<
   typeof deepResearcherWeatherTestInternals.buildWeatherToolAnswer
 >[0];
+type ResumeClarifyState = Parameters<
+  typeof deepResearcherWeatherTestInternals.resumeClarify
+>[0];
 
 const MISSING_WEATHER_LOCATION =
   "\u8acb\u63d0\u4f9b\u8981\u67e5\u8a62\u5929\u6c23\u7684\u57ce\u5e02\u6216\u5730\u5340\u3002";
@@ -22,8 +25,54 @@ function stateWithWeather(result: WeatherToolResult): WeatherState {
         ? { status: "success", result }
         : result.status === "needs_clarification"
           ? { status: "needs_clarification", result }
-          : { status: "failed", result },
+      : { status: "failed", result },
   } as WeatherState;
+}
+
+function stateWithSpringfieldClarification(
+  userReply: string | undefined,
+  overrides: Partial<NonNullable<ResumeClarifyState["clarification"]>> = {}
+): ResumeClarifyState {
+  return ({
+    messages: [],
+    reasoning_model: "qwen-plus",
+    clarification: {
+      status: "resuming",
+      candidates: [
+        {
+          provider: "open-meteo",
+          providerId: "geo-1",
+          name: "Springfield",
+          displayName: "Springfield, Illinois, United States",
+          country: "United States",
+          countryCode: "US",
+          admin1: "Illinois",
+          latitude: 39.7817,
+          longitude: -89.6501,
+          timezone: "America/Chicago",
+        },
+        {
+          provider: "open-meteo",
+          providerId: "geo-2",
+          name: "Springfield",
+          displayName: "Springfield, Missouri, United States",
+          country: "United States",
+          countryCode: "US",
+          admin1: "Missouri",
+          latitude: 37.209,
+          longitude: -93.2923,
+          timezone: "America/Chicago",
+        },
+      ],
+      originalQuery: { raw: "Springfield", location: "Springfield" },
+      weatherCapability: "current",
+      summary: "Location Springfield matches multiple candidates.",
+      interruptCheckpointStep: Date.now(),
+      rounds: 0,
+      userReply,
+      ...overrides,
+    },
+  } as unknown) as ResumeClarifyState;
 }
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
@@ -384,6 +433,226 @@ describe("Deep Research weather structured result integration", () => {
     );
 
     expect(String(answer?.content)).toContain("could not retrieve weather");
+  });
+
+  it("routes provider-backed clarification candidates to LangGraph interrupt", () => {
+    const result: WeatherToolResult = {
+      schemaVersion: "1.0",
+      tool: "current_weather",
+      status: "needs_clarification",
+      requestedLocation: { raw: "Springfield", location: "Springfield" },
+      candidates: [
+        {
+          name: "Springfield",
+          displayName: "Springfield, Illinois, United States",
+          country: "United States",
+          countryCode: "US",
+          admin1: "Illinois",
+          providerId: "geo-1",
+          latitude: 39.7817,
+          longitude: -89.6501,
+          timezone: "America/Chicago",
+        },
+        {
+          name: "Springfield",
+          displayName: "Springfield, Missouri, United States",
+          country: "United States",
+          countryCode: "US",
+          admin1: "Missouri",
+          providerId: "geo-2",
+          latitude: 37.209,
+          longitude: -93.2923,
+          timezone: "America/Chicago",
+        },
+      ],
+      message: "Location is ambiguous.",
+      summary: "Location Springfield matches multiple candidates.",
+    };
+    const state = {
+      ...stateWithWeather(result),
+      plan: {
+        question: "Springfield weather",
+        answerMode: "weather",
+        rationale: "weather",
+        queries: [],
+        urls: [],
+        weather: { location: "Springfield" },
+        requiredSourceCount: 1,
+      },
+      clarification: undefined,
+    } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterTargetedTools>[0];
+
+    expect(deepResearcherWeatherTestInternals.routeAfterTargetedTools(state)).toBe("clarify_interrupt");
+
+    const config = { configurable: { thread_id: "thread-weather" }, runId: "run-weather" } as never;
+    const clarification = deepResearcherWeatherTestInternals.buildClarificationState(state, config);
+    expect(clarification?.weatherCapability).toBe("current");
+    expect(clarification?.candidates).toHaveLength(2);
+
+    const payload = clarification
+      ? deepResearcherWeatherTestInternals.buildClarificationInterrupt(clarification, state, config)
+      : undefined;
+    expect(payload?.type).toBe("weather_clarification");
+    expect(payload?.threadId).toBe("thread-weather");
+    expect(payload?.candidates[1].index).toBe(2);
+    expect(payload?.candidates[1].providerId).toBe("geo-2");
+  });
+
+  it("does not interrupt legacy clarification candidates without coordinates", () => {
+    const result: WeatherToolResult = {
+      schemaVersion: "1.0",
+      tool: "current_weather",
+      status: "needs_clarification",
+      requestedLocation: { raw: "Springfield", location: "Springfield" },
+      candidates: [
+        { name: "Springfield", displayName: "Springfield, Illinois", country: "United States", admin1: "Illinois" },
+        { name: "Springfield", displayName: "Springfield, Missouri", country: "United States", admin1: "Missouri" },
+      ],
+      message: "Location is ambiguous.",
+      summary: "Location Springfield matches multiple candidates.",
+    };
+
+    const state = {
+      ...stateWithWeather(result),
+      clarification: undefined,
+    } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterTargetedTools>[0];
+
+    expect(deepResearcherWeatherTestInternals.routeAfterTargetedTools(state)).toBe("synthesize");
+  });
+
+  it("validates structured clarification resolution output", () => {
+    expect(
+      deepResearcherWeatherTestInternals.coerceClarificationResolution({
+        resolutionType: "select_candidate",
+        candidateIndex: 2,
+      })
+    ).toEqual({ resolutionType: "select_candidate", candidateIndex: 2 });
+    expect(
+      deepResearcherWeatherTestInternals.coerceClarificationResolution({
+        resolutionType: "cancel",
+        cancel: true,
+      })
+    ).toEqual({ resolutionType: "cancel", cancel: true });
+    expect(
+      deepResearcherWeatherTestInternals.coerceClarificationResolution({
+        resolutionType: "select_candidate",
+        candidateIndex: "second",
+      })
+    ).toBeUndefined();
+  });
+
+  it("dispatches clarification candidate index selection without repeating geocoding", async () => {
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(JSON.stringify({ resolutionType: "select_candidate", candidateIndex: 2 }))
+      ),
+    });
+
+    const result = await deepResearcherWeatherTestInternals.resumeClarify(
+      stateWithSpringfieldClarification("2"),
+      {}
+    );
+
+    expect(result.clarification?.status).toBe("resolved");
+    expect(result.weatherExecution?.status).toBe("running");
+    expect(result.plan?.weather?.resolvedCandidate?.providerId).toBe("geo-2");
+  });
+
+  it("dispatches clarification region filters to a single provider-backed candidate", async () => {
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(JSON.stringify({ resolutionType: "filter_candidates", filter: { region: "Illinois" } }))
+      ),
+    });
+
+    const result = await deepResearcherWeatherTestInternals.resumeClarify(
+      stateWithSpringfieldClarification("Illinois"),
+      {}
+    );
+
+    expect(result.clarification?.status).toBe("resolved");
+    expect(result.plan?.weather?.resolvedCandidate?.providerId).toBe("geo-1");
+  });
+
+  it("dispatches clarification location changes as fresh weather requests", async () => {
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(JSON.stringify({ resolutionType: "new_location", newLocationText: "Tokyo" }))
+      ),
+    });
+
+    const result = await deepResearcherWeatherTestInternals.resumeClarify(
+      stateWithSpringfieldClarification("actually Tokyo"),
+      {}
+    );
+
+    expect(result.clarification?.status).toBe("resolved");
+    expect(result.weatherExecution?.status).toBe("running");
+    expect(result.plan?.weather?.location).toBe("Tokyo");
+    expect(result.plan?.weather?.resolvedCandidate).toBeUndefined();
+  });
+
+  it("dispatches clarification cancellation to a terminal cancelled weather result", async () => {
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(JSON.stringify({ resolutionType: "cancel", cancel: true }))
+      ),
+    });
+
+    const result = await deepResearcherWeatherTestInternals.resumeClarify(
+      stateWithSpringfieldClarification("cancel"),
+      {}
+    );
+
+    expect(result.clarification?.status).toBe("cancelled");
+    expect(result.weatherExecution?.status).toBe("failed");
+    if (result.weatherExecution?.status === "failed" && result.weatherExecution.result.status === "error") {
+      expect(result.weatherExecution.result.code).toBe("weather_cancelled");
+    }
+  });
+
+  it("rejects empty, over-length, and exhausted unrecognized clarification replies", async () => {
+    const empty = await deepResearcherWeatherTestInternals.resumeClarify(
+      stateWithSpringfieldClarification("   "),
+      {}
+    );
+    expect(empty.weatherExecution?.status).toBe("failed");
+
+    const overLength = await deepResearcherWeatherTestInternals.resumeClarify(
+      stateWithSpringfieldClarification("x".repeat(501)),
+      {}
+    );
+    expect(overLength.clarification?.status).toBe("exhausted");
+
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(JSON.stringify({ resolutionType: "unrecognized" }))
+      ),
+    });
+    const exhausted = await deepResearcherWeatherTestInternals.resumeClarify(
+      stateWithSpringfieldClarification("not enough", { rounds: 1 }),
+      {}
+    );
+
+    expect(exhausted.clarification?.status).toBe("exhausted");
+    expect(exhausted.weatherExecution?.status).toBe("failed");
+  });
+
+  it("terminates clarification resume as weather_timeout after the configured timeout", async () => {
+    const state = stateWithSpringfieldClarification("1", { interruptCheckpointStep: 0 });
+
+    const result = await deepResearcherWeatherTestInternals.resumeClarify(state, {
+      configurable: { weatherClarificationTimeoutMs: 1 },
+    });
+
+    expect(result.clarification?.status).toBe("timeout");
+    expect(result.weatherExecution?.status).toBe("failed");
+    if (result.weatherExecution?.status === "failed") {
+      expect(result.weatherExecution.result.status).toBe("error");
+      if (result.weatherExecution.result.status === "error") {
+        expect(result.weatherExecution.result.code).toBe("weather_timeout");
+      }
+    }
   });
 
   it("propagates RunnableConfig AbortSignal to current_weather", async () => {

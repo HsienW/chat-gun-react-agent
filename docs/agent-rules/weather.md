@@ -211,6 +211,20 @@ invalid_input
 
 ---
 
+### Phase 3 clarification support
+
+Multi-turn weather clarification is supported for provider-backed ambiguous location candidates.
+
+- Backend owns the LangGraph `interrupt()` and resume workflow.
+- Clarification state must remain serializable and checkpoint-safe.
+- Candidate selection by index must use provider-backed candidate coordinates directly and must not repeat geocoding.
+- Region supplement may filter existing provider candidates; if multiple candidates remain, the workflow may ask one more clarification round.
+- Location change must be treated as a fresh provider-backed weather request.
+- Cancel must terminate with `weather_cancelled`, not `not_found`.
+- Unrecognized clarification replies may ask again once and must terminate after the maximum clarification rounds.
+- Frontend may render candidate choices and editable reply controls, but must not infer geography or bypass backend resolution.
+- BFF must pass LangGraph interrupt and unknown stream events through without filtering or rewriting.
+
 ## 8. Golden Regression Matrix
 
 天氣能力變更必須維護可重現的 Golden Regression Matrix。矩陣至少分成三層：

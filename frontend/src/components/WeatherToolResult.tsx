@@ -7,11 +7,15 @@ import {
   getWeatherSummary,
   getWeatherErrorLabel,
 } from '@/types/weather';
-import { MapPin, AlertTriangle, SearchX, Clock, CheckCircle, HelpCircle, CloudSun } from 'lucide-react';
+import { useState, type KeyboardEvent } from 'react';
+import { MapPin, AlertTriangle, SearchX, Clock, CheckCircle, HelpCircle, CloudSun, Send, XCircle } from 'lucide-react';
 import type { WeatherForecastSuccessResult, WeatherSuccessResult, WeatherToolResult } from '@/types/weather';
 
 interface WeatherToolResultCardProps {
   content: string;
+  isResuming?: boolean;
+  onClarificationReply?: (replyText: string) => void;
+  onClarificationCancel?: () => void;
 }
 
 /**
@@ -68,7 +72,12 @@ function isForecastWeatherSuccess(result: WeatherToolResult | undefined): result
   return result?.status === 'success' && result.tool === 'weather_forecast';
 }
 
-export function WeatherToolResultCard({ content }: WeatherToolResultCardProps) {
+export function WeatherToolResultCard({
+  content,
+  isResuming = false,
+  onClarificationReply,
+  onClarificationCancel,
+}: WeatherToolResultCardProps) {
   const result = parseWeatherToolResult(content);
   const displayStatus = getWeatherDisplayStatus(result);
   const config = STATUS_CONFIG[displayStatus] ?? STATUS_CONFIG.unknown;
@@ -98,7 +107,16 @@ export function WeatherToolResultCard({ content }: WeatherToolResultCardProps) {
 
         {/* Task 6.3, 6.4: Clarification — show candidates */}
         {displayStatus === 'needs_clarification' && result?.status === 'needs_clarification' && (
-          <WeatherClarificationDisplay result={result} />
+          onClarificationReply ? (
+            <WeatherClarificationInteractive
+              result={result}
+              isResuming={isResuming}
+              onReply={onClarificationReply}
+              onCancel={onClarificationCancel}
+            />
+          ) : (
+            <WeatherClarificationDisplay result={result} />
+          )
         )}
 
         {/* Unknown status or schema — safe fallback (Task 6.6, 6.7) */}
@@ -280,6 +298,109 @@ function WeatherForecastSuccessDisplay({ result }: { result: WeatherForecastSucc
 
       <div className="text-[10px] text-muted-foreground/60 mt-1">
         Source: Open-Meteo
+      </div>
+    </div>
+  );
+}
+
+export function WeatherClarificationInteractive({
+  result,
+  isResuming,
+  onReply,
+  onCancel,
+}: {
+  result: NonNullable<ReturnType<typeof parseWeatherToolResult>> & { status: 'needs_clarification' };
+  isResuming: boolean;
+  onReply: (replyText: string) => void;
+  onCancel?: () => void;
+}) {
+  const candidates = result.candidates.slice(0, 5);
+  const [replyText, setReplyText] = useState('');
+  const trimmedReply = replyText.trim();
+  const canSubmit = Boolean(trimmedReply) && !isResuming;
+
+  const submitReply = () => {
+    if (!canSubmit) return;
+    onReply(trimmedReply);
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      submitReply();
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="text-xs text-muted-foreground">
+        {result.message || result.summary}
+      </div>
+
+      {candidates.length > 0 ? (
+        <div className="space-y-1.5">
+          {candidates.map((candidate, index) => {
+            const isSelected = replyText === candidate.displayName;
+            return (
+              <button
+                key={`${candidate.name}-${candidate.countryCode ?? 'unknown'}-${index}`}
+                type="button"
+                disabled={isResuming}
+                onClick={() => setReplyText(candidate.displayName)}
+                className={`w-full text-left text-xs px-2 py-2 rounded border transition-colors ${
+                  isSelected
+                    ? 'bg-blue-500/15 border-blue-400/50'
+                    : 'bg-[#2B1C17]/40 border-[#5A4036]/30 hover:border-blue-400/40 focus:border-blue-400/50'
+                } disabled:opacity-60 disabled:cursor-not-allowed`}
+              >
+                <div className="flex items-start gap-2">
+                  <MapPin className="h-3 w-3 mt-0.5 text-primary flex-shrink-0" />
+                  <div className="min-w-0">
+                    <div className="font-medium break-words">{candidate.displayName}</div>
+                    <div className="text-muted-foreground/70 break-words">
+                      {[candidate.country, candidate.admin1, candidate.admin2]
+                        .filter(Boolean)
+                        .join(', ')}
+                    </div>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="text-xs text-muted-foreground">
+          Please enter a more specific location.
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <input
+          value={replyText}
+          disabled={isResuming}
+          onChange={(event) => setReplyText(event.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Enter a more specific location"
+          className="min-w-0 flex-1 rounded border border-[#5A4036]/60 bg-[#1a1a1a]/70 px-3 py-2 text-xs text-[#F8F1E7] outline-none focus:border-blue-400/60 disabled:opacity-60"
+        />
+        <button
+          type="button"
+          disabled={!canSubmit}
+          onClick={submitReply}
+          className="inline-flex items-center justify-center gap-1.5 rounded border border-blue-400/40 bg-blue-500/15 px-3 py-2 text-xs text-blue-100 transition-colors hover:bg-blue-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Send className="h-3 w-3" />
+          Submit
+        </button>
+        <button
+          type="button"
+          disabled={isResuming}
+          onClick={onCancel}
+          className="inline-flex items-center justify-center gap-1.5 rounded border border-[#5A4036]/60 bg-[#2B1C17]/40 px-3 py-2 text-xs text-muted-foreground transition-colors hover:text-[#F8F1E7] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <XCircle className="h-3 w-3" />
+          Cancel
+        </button>
       </div>
     </div>
   );

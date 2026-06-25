@@ -5,6 +5,8 @@ import {
   extractDirectAgentRuntimeEvents,
   extractNestedAgentRuntimeEvents,
   extractNodeAdapterRuntimeEvents,
+  extractWeatherClarificationInterruptToolResult,
+  isLangGraphInterruptEvent,
   runtimeEventToProcessedEvent,
 } from '@/lib/agent-runtime-events';
 
@@ -114,6 +116,52 @@ describe('agent runtime event extraction', () => {
         payload: { status: 'future' },
       },
       eventType: 'agent.unknown',
+    });
+  });
+
+  it('recognizes LangGraph interrupt updates without treating unknown events as failures', () => {
+    expect(isLangGraphInterruptEvent({ event: 'interrupt', data: {} })).toBe(true);
+    expect(isLangGraphInterruptEvent({ __interrupt__: [{ value: { type: 'weather_clarification' } }] })).toBe(true);
+    expect(isLangGraphInterruptEvent({ nested: { __interrupt__: [{ value: {} }] } })).toBe(true);
+    expect(isLangGraphInterruptEvent({ event: 'langgraph_future_event', data: {} })).toBe(false);
+  });
+
+  it('extracts weather clarification interrupt payloads as renderable tool results', () => {
+    const result = extractWeatherClarificationInterruptToolResult({
+      __interrupt__: [
+        {
+          value: {
+            type: 'weather_clarification',
+            weatherCapability: 'current',
+            weatherExecution: {
+              status: 'needs_clarification',
+              result: {
+                schemaVersion: '1.0',
+                tool: 'current_weather',
+                status: 'needs_clarification',
+                requestedLocation: { raw: 'Springfield', location: 'Springfield' },
+                candidates: [
+                  {
+                    name: 'Springfield',
+                    displayName: 'Springfield, Illinois, United States',
+                    latitude: 39.78,
+                    longitude: -89.65,
+                  },
+                ],
+                message: 'Location is ambiguous.',
+                summary: 'Location Springfield matches multiple candidates.',
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    expect(result?.toolName).toBe('current_weather');
+    expect(result?.toolCallId).toBe('weather-clarification-interrupt');
+    expect(JSON.parse(result?.content ?? '{}')).toMatchObject({
+      tool: 'current_weather',
+      status: 'needs_clarification',
     });
   });
 });

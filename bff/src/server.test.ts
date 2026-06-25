@@ -95,6 +95,38 @@ describe("BFF LangGraph stream proxy", () => {
     );
   });
 
+  it("passes LangGraph interrupt and unknown SSE events through unchanged", async () => {
+    const interruptFrame = [
+      "event: interrupt",
+      'data: {"__interrupt__":[{"value":{"type":"weather_clarification"}}]}',
+      "",
+      "",
+    ].join("\n");
+    const unknownFrame = [
+      "event: langgraph_future_event",
+      'data: {"payload":{"status":"waiting"}}',
+      "",
+      "",
+    ].join("\n");
+
+    await withServer(
+      (_req, res) => {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(interruptFrame);
+        res.end(unknownFrame);
+      },
+      async (upstream) => {
+        await withBff(createTestConfig(upstream.url), async (bff) => {
+          const response = await fetch(`${bff.url}/api/langgraph/runs/stream`);
+          const text = await response.text();
+
+          assert.equal(response.status, 200);
+          assert.equal(text, `${interruptFrame}${unknownFrame}`);
+        });
+      }
+    );
+  });
+
   it("returns bff_timeout when upstream exceeds BFF_UPSTREAM_TIMEOUT_MS", async () => {
     await withServer(
       (_req, _res) => {

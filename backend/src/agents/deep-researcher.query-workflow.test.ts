@@ -24,6 +24,7 @@ function stateWithPlan(
     uploadError: undefined,
     imageObservations: [],
     weatherExecution: undefined,
+    clarification: undefined,
   };
 }
 

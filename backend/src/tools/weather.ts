@@ -121,6 +121,47 @@ function validateOptionalQueryName(
   return { queryName: normalizeLocation(rawQueryName) };
 }
 
+const resolvedCandidateSchema = z.object({
+  provider: z.literal("open-meteo").optional(),
+  providerId: z.string().optional(),
+  name: z.string().min(1),
+  displayName: z.string().min(1),
+  country: z.string().optional(),
+  countryCode: z.string().optional(),
+  admin1: z.string().optional(),
+  admin2: z.string().optional(),
+  latitude: z.number(),
+  longitude: z.number(),
+  timezone: z.string().optional(),
+  population: z.number().optional(),
+});
+
+function coerceResolvedCandidate(value: unknown): LocationCandidate | undefined {
+  const parsed = resolvedCandidateSchema.safeParse(value);
+  if (!parsed.success) {
+    return undefined;
+  }
+  return {
+    provider: "open-meteo",
+    ...parsed.data,
+  };
+}
+
+function toClarificationCandidate(candidate: LocationCandidate) {
+  return {
+    name: candidate.name,
+    displayName: candidate.displayName,
+    country: candidate.country,
+    countryCode: candidate.countryCode,
+    admin1: candidate.admin1,
+    admin2: candidate.admin2,
+    providerId: candidate.providerId,
+    latitude: candidate.latitude,
+    longitude: candidate.longitude,
+    timezone: candidate.timezone,
+  };
+}
+
 export function describeWeatherCode(code: number | undefined): string {
   switch (code) {
     case 0:
@@ -664,6 +705,7 @@ export const weatherForecastTool = tool(
       raw,
       weatherCapability,
       timeRange,
+      resolvedCandidate,
     },
     config?: RunnableConfig
   ) => {
@@ -710,6 +752,7 @@ export const weatherForecastTool = tool(
       ...buildLocationQuery(location, country, region),
       raw: typeof raw === "string" && raw.trim() ? raw : location,
     };
+    const directCandidate = coerceResolvedCandidate(resolvedCandidate);
     const providerQueryName = queryNameValidation.queryName;
     await auditLogger.record("weather.forecast.location.resolve.start", {
       raw: query.raw,
@@ -718,6 +761,7 @@ export const weatherForecastTool = tool(
       capability: weatherCapability,
       timeRangeKind: timeRangeValidation.timeRange.kind,
       queryNameProvided: Boolean(providerQueryName),
+      directCandidateProvided: Boolean(directCandidate),
     });
 
     if (weatherConfig.forceGeocodingError) {
@@ -736,16 +780,25 @@ export const weatherForecastTool = tool(
 
     let resolutionResult;
     try {
-      resolutionResult = await resolveLocation(query, geocodingProvider, {
-        ...DEFAULT_RESOLVER_OPTIONS,
-        minScore: weatherConfig.geocodingMinScore,
-        ambiguityDelta: weatherConfig.geocodingAmbiguityDelta,
-        maxCandidates: weatherConfig.geocodingMaxCandidates,
-        maxQueries: weatherConfig.geocodingMaxQueries,
-        signal: runSignal,
-        strategy,
-        queryName: providerQueryName,
-      });
+      resolutionResult = directCandidate
+        ? {
+            status: "resolved" as const,
+            query,
+            candidate: directCandidate,
+            confidence: 100,
+            strategy: "contextual" as const,
+            attemptedQueries: [],
+          }
+        : await resolveLocation(query, geocodingProvider, {
+            ...DEFAULT_RESOLVER_OPTIONS,
+            minScore: weatherConfig.geocodingMinScore,
+            ambiguityDelta: weatherConfig.geocodingAmbiguityDelta,
+            maxCandidates: weatherConfig.geocodingMaxCandidates,
+            maxQueries: weatherConfig.geocodingMaxQueries,
+            signal: runSignal,
+            strategy,
+            queryName: providerQueryName,
+          });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const result: WeatherForecastResult = {
@@ -768,14 +821,7 @@ export const weatherForecastTool = tool(
     }
 
     if (resolutionResult.status === "ambiguous") {
-      const candidates = resolutionResult.candidates.slice(0, 5).map((candidate) => ({
-        name: candidate.name,
-        displayName: candidate.displayName,
-        country: candidate.country,
-        countryCode: candidate.countryCode,
-        admin1: candidate.admin1,
-        admin2: candidate.admin2,
-      }));
+      const candidates = resolutionResult.candidates.slice(0, 5).map(toClarificationCandidate);
       const result: WeatherForecastResult = {
         schemaVersion: "1.1",
         tool: "weather_forecast",
@@ -944,12 +990,15 @@ export const weatherForecastTool = tool(
         .string()
         .optional()
         .describe("Internal original user location text preserved across one-time repair."),
+      resolvedCandidate: resolvedCandidateSchema
+        .optional()
+        .describe("Internal resolved geocoding candidate for checkpoint resume; callers should normally omit this."),
     }),
   }
 );
 
 export const weatherTool = tool(
-  async ({ location, country, region, queryName, resolutionStrategy, raw }, config?: RunnableConfig) => {
+  async ({ location, country, region, queryName, resolutionStrategy, raw, resolvedCandidate }, config?: RunnableConfig) => {
     const startTime = Date.now();
     const weatherConfig = getWeatherConfig();
     const runSignal = getRunnableSignal(config);
@@ -1009,12 +1058,14 @@ export const weatherTool = tool(
       ...buildLocationQuery(location, country, region),
       raw: typeof raw === "string" && raw.trim() ? raw : location,
     };
+    const directCandidate = coerceResolvedCandidate(resolvedCandidate);
     const providerQueryName = queryNameValidation.queryName;
     await auditLogger.record("weather.location.resolve.start", {
       raw: query.raw,
       location: query.location,
       country: query.country,
       queryNameProvided: Boolean(providerQueryName),
+      directCandidateProvided: Boolean(directCandidate),
     });
 
     if (weatherConfig.forceGeocodingError) {
@@ -1043,16 +1094,25 @@ export const weatherTool = tool(
     // Resolve location through the geocoding pipeline
     let resolutionResult;
     try {
-      resolutionResult = await resolveLocation(query, geocodingProvider, {
-        ...DEFAULT_RESOLVER_OPTIONS,
-        minScore: weatherConfig.geocodingMinScore,
-        ambiguityDelta: weatherConfig.geocodingAmbiguityDelta,
-        maxCandidates: weatherConfig.geocodingMaxCandidates,
-        maxQueries: weatherConfig.geocodingMaxQueries,
-        signal: runSignal,
-        strategy,
-        queryName: providerQueryName,
-      });
+      resolutionResult = directCandidate
+        ? {
+            status: "resolved" as const,
+            query,
+            candidate: directCandidate,
+            confidence: 100,
+            strategy: "contextual" as const,
+            attemptedQueries: [],
+          }
+        : await resolveLocation(query, geocodingProvider, {
+            ...DEFAULT_RESOLVER_OPTIONS,
+            minScore: weatherConfig.geocodingMinScore,
+            ambiguityDelta: weatherConfig.geocodingAmbiguityDelta,
+            maxCandidates: weatherConfig.geocodingMaxCandidates,
+            maxQueries: weatherConfig.geocodingMaxQueries,
+            signal: runSignal,
+            strategy,
+            queryName: providerQueryName,
+          });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const result: WeatherToolResult = {
@@ -1079,14 +1139,7 @@ export const weatherTool = tool(
 
     // Handle non-resolved statuses
     if (resolutionResult.status === "ambiguous") {
-      const candidates = resolutionResult.candidates.slice(0, 5).map((c) => ({
-        name: c.name,
-        displayName: c.displayName,
-        country: c.country,
-        countryCode: c.countryCode,
-        admin1: c.admin1,
-        admin2: c.admin2,
-      }));
+      const candidates = resolutionResult.candidates.slice(0, 5).map(toClarificationCandidate);
       const result: WeatherToolResult = {
         schemaVersion: "1.0",
         tool: "current_weather",
@@ -1300,6 +1353,9 @@ export const weatherTool = tool(
         .string()
         .optional()
         .describe("Optional geocoding-friendly Latin name for Chinese or mixed-Chinese locations."),
+      resolvedCandidate: resolvedCandidateSchema
+        .optional()
+        .describe("Internal resolved geocoding candidate for checkpoint resume; callers should normally omit this."),
     }),
   }
 );

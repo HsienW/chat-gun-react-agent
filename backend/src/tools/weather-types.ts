@@ -127,7 +127,8 @@ export type WeatherClarificationResult = {
   status: "needs_clarification";
   requestedLocation: LocationQuery;
   candidates: Array<
-    Pick<LocationCandidate, "name" | "displayName" | "country" | "countryCode" | "admin1" | "admin2">
+    Pick<LocationCandidate, "name" | "displayName" | "country" | "countryCode" | "admin1" | "admin2"> &
+      Partial<Pick<LocationCandidate, "providerId" | "latitude" | "longitude" | "timezone">>
   >;
   message: string;
   summary: string;
@@ -212,7 +213,8 @@ export type WeatherForecastClarificationResult = {
   status: "needs_clarification";
   requestedLocation: LocationQuery;
   candidates: Array<
-    Pick<LocationCandidate, "name" | "displayName" | "country" | "countryCode" | "admin1" | "admin2">
+    Pick<LocationCandidate, "name" | "displayName" | "country" | "countryCode" | "admin1" | "admin2"> &
+      Partial<Pick<LocationCandidate, "providerId" | "latitude" | "longitude" | "timezone">>
   >;
   message: string;
   summary: string;
@@ -269,3 +271,57 @@ export type WeatherExecutionState =
   | { status: "success"; result: WeatherToolResult }
   | { status: "needs_clarification"; result: WeatherToolResult }
   | { status: "failed"; result: WeatherToolResult };
+
+export type WeatherClarificationCandidate = Pick<
+  LocationCandidate,
+  | "provider"
+  | "providerId"
+  | "name"
+  | "displayName"
+  | "country"
+  | "countryCode"
+  | "admin1"
+  | "admin2"
+  | "latitude"
+  | "longitude"
+  | "timezone"
+>;
+
+export type WeatherClarificationInterrupt = {
+  type: "weather_clarification";
+  threadId: string;
+  runId: string;
+  candidates: Array<WeatherClarificationCandidate & { index: number }>;
+  originalQuery: LocationQuery;
+  weatherCapability: WeatherCapability;
+  timeRange?: WeatherTimeRange;
+  summary: string;
+  weatherExecution: Extract<WeatherExecutionState, { status: "needs_clarification" }>;
+};
+
+export type WeatherClarificationResolution =
+  | { resolutionType: "select_candidate"; candidateIndex: number }
+  | {
+      resolutionType: "filter_candidates";
+      filter: {
+        country?: string;
+        region?: string;
+        name?: string;
+      };
+    }
+  | { resolutionType: "new_location"; newLocationText: string }
+  | { resolutionType: "cancel"; cancel: true }
+  | { resolutionType: "unrecognized" };
+
+export type WeatherClarificationState = {
+  status: "awaiting_user_input" | "resuming" | "resolved" | "cancelled" | "timeout" | "exhausted";
+  candidates: WeatherClarificationCandidate[];
+  originalQuery: LocationQuery;
+  weatherCapability: WeatherCapability;
+  timeRange?: WeatherTimeRange;
+  summary: string;
+  interruptCheckpointStep: number;
+  rounds: number;
+  userReply?: string;
+  resolution?: WeatherClarificationResolution;
+};

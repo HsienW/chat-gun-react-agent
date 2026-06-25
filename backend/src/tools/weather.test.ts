@@ -309,6 +309,56 @@ describe("WeatherToolResult contract (Task 4.1-4.8)", () => {
     expect(JSON.stringify(result)).not.toContain("queryName");
   });
 
+  it("uses an internal resolvedCandidate without repeating geocoding", async () => {
+    const fetchSpy = vi.fn((input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
+      if (url.hostname === "geocoding-api.open-meteo.com") {
+        throw new Error("geocoding should not be called for resolvedCandidate");
+      }
+      if (url.hostname === "api.open-meteo.com") {
+        return Promise.resolve(jsonResponse({
+          latitude: 37.209,
+          longitude: -93.2923,
+          timezone: "America/Chicago",
+          current: {
+            time: "2026-06-25T12:00",
+            temperature_2m: 22,
+            weather_code: 1,
+          },
+          current_units: {
+            temperature_2m: "\u00b0C",
+          },
+        }));
+      }
+      throw new Error(`Unexpected fetch: ${url.toString()}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const raw = await weatherTool.invoke({
+      location: "Springfield, Missouri, United States",
+      resolvedCandidate: {
+        provider: "open-meteo",
+        providerId: "geo-2",
+        name: "Springfield",
+        displayName: "Springfield, Missouri, United States",
+        country: "United States",
+        countryCode: "US",
+        admin1: "Missouri",
+        latitude: 37.209,
+        longitude: -93.2923,
+        timezone: "America/Chicago",
+      },
+    });
+    const result = JSON.parse(String(raw)) as WeatherToolResult;
+
+    expect(result.status).toBe("success");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    if (result.status === "success" && result.tool === "current_weather") {
+      expect(result.resolvedLocation.providerId).toBe("geo-2");
+      expect(result.current.temperature).toBe(22);
+    }
+  });
+
   it("rejects queryName that exceeds the configured location length", async () => {
     const originalMaxChars = process.env.WEATHER_LOCATION_MAX_CHARS;
     process.env.WEATHER_LOCATION_MAX_CHARS = "5";
