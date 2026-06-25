@@ -4,8 +4,8 @@ export type WeatherGoldenEvalMode = "deterministic" | "mock_integration" | "live
 
 export type WeatherGoldenCapabilityCategory =
   | "current_observation"
-  | "forecast_like_gap"
-  | "weather_advice_gap"
+  | "daily_forecast"
+  | "hourly_forecast"
   | "ambiguous_location"
   | "missing_location"
   | "provider_error"
@@ -65,7 +65,7 @@ export type WeatherGoldenEvalSummary = {
 };
 
 export const WEATHER_GOLDEN_BASELINE_REPORT_PATH =
-  "openspec/changes/weather-golden-eval/baseline-report.md";
+  "openspec/changes/archive/2026-06-23-weather-golden-eval/baseline-report.md";
 
 export const WEATHER_GOLDEN_EVAL_CASES: WeatherGoldenEvalCase[] = [
   {
@@ -241,32 +241,43 @@ export const WEATHER_GOLDEN_EVAL_CASES: WeatherGoldenEvalCase[] = [
     diagnosticTags: ["synthesis", "terminal", "tool-success"],
   },
   {
-    id: "WGE-FORECAST-TOMORROW-KNOWN-GAP",
+    id: "WGE-FORECAST-TOMORROW",
     mode: "deterministic",
-    capabilityCategory: "forecast_like_gap",
+    capabilityCategory: "daily_forecast",
     input: {
       prompt: "明天會下雨嗎？",
     },
     expected: {
-      classification: "known_gap",
-      owner: "Phase 2",
-      summary: "Forecast-like tomorrow question is represented as a known Phase 2 capability gap.",
+      status: "success",
+      summary: "Tomorrow forecast request is routed to daily weather_forecast capability.",
     },
-    diagnosticTags: ["forecast-like", "tomorrow", "known-gap"],
+    diagnosticTags: ["forecast", "tomorrow", "daily"],
   },
   {
-    id: "WGE-ADVICE-WEEKEND-KNOWN-GAP",
+    id: "WGE-FORECAST-TONIGHT",
     mode: "deterministic",
-    capabilityCategory: "weather_advice_gap",
+    capabilityCategory: "hourly_forecast",
     input: {
-      prompt: "週末適合爬山嗎？",
+      prompt: "今晚會變冷嗎？",
     },
     expected: {
-      classification: "known_gap",
-      owner: "Phase 2",
-      summary: "Weather advice requires forecast capability and is a known Phase 2+ gap.",
+      status: "success",
+      summary: "Tonight forecast request is routed to hourly weather_forecast capability.",
     },
-    diagnosticTags: ["advice", "weekend", "known-gap"],
+    diagnosticTags: ["forecast", "tonight", "hourly"],
+  },
+  {
+    id: "WGE-FORECAST-WEEKEND",
+    mode: "deterministic",
+    capabilityCategory: "daily_forecast",
+    input: {
+      prompt: "週末天氣如何？",
+    },
+    expected: {
+      status: "success",
+      summary: "Weekend forecast request is routed to daily weather_forecast capability.",
+    },
+    diagnosticTags: ["forecast", "weekend", "daily"],
   },
   {
     id: "WGE-MULTITURN-CANDIDATE-KNOWN-GAP",

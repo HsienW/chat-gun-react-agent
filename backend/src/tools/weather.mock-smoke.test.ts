@@ -421,7 +421,7 @@ describe("mock smoke acceptance for weather manual matrix", () => {
     const result = await invokeWeather({ location });
 
     expect(result.status).toBe("success");
-    if (result.status === "success") {
+    if (result.status === "success" && result.tool === "current_weather") {
       expect(result.resolvedLocation.name).toBe(expectedName);
       expect(result.current.temperature).toBe(24);
       expect(result.sourceUrl).toContain("api.open-meteo.com");
@@ -440,7 +440,7 @@ describe("mock smoke acceptance for weather manual matrix", () => {
     const result = await invokeWeather({ location, queryName });
 
     expect(result.status).toBe("success");
-    if (result.status === "success") {
+    if (result.status === "success" && result.tool === "current_weather") {
       expect(result.requestedLocation.raw).toBe(location);
       expect(result.requestedLocation.location).toBe(location);
       expect(result.resolvedLocation.name).toBe(expectedName);

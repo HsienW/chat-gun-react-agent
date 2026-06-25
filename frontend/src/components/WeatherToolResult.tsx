@@ -8,6 +8,7 @@ import {
   getWeatherErrorLabel,
 } from '@/types/weather';
 import { MapPin, AlertTriangle, SearchX, Clock, CheckCircle, HelpCircle, CloudSun } from 'lucide-react';
+import type { WeatherForecastSuccessResult, WeatherSuccessResult, WeatherToolResult } from '@/types/weather';
 
 interface WeatherToolResultCardProps {
   content: string;
@@ -42,12 +43,30 @@ const STATUS_CONFIG: Record<string, { label: string; className: string; icon: Re
     className: 'bg-red-500/10 text-red-400 border-red-500/20',
     icon: <AlertTriangle className="h-3 w-3 mr-1" />,
   },
+  timeout: {
+    label: '逾時',
+    className: 'bg-red-500/10 text-red-400 border-red-500/20',
+    icon: <Clock className="h-3 w-3 mr-1" />,
+  },
+  cancelled: {
+    label: '已取消',
+    className: 'bg-gray-500/10 text-gray-400 border-gray-500/20',
+    icon: <AlertTriangle className="h-3 w-3 mr-1" />,
+  },
   unknown: {
     label: '完成',
     className: 'bg-gray-500/10 text-gray-400 border-gray-500/20',
     icon: <CloudSun className="h-3 w-3 mr-1" />,
   },
 };
+
+function isCurrentWeatherSuccess(result: WeatherToolResult | undefined): result is WeatherSuccessResult {
+  return result?.status === 'success' && result.tool === 'current_weather';
+}
+
+function isForecastWeatherSuccess(result: WeatherToolResult | undefined): result is WeatherForecastSuccessResult {
+  return result?.status === 'success' && result.tool === 'weather_forecast';
+}
 
 export function WeatherToolResultCard({ content }: WeatherToolResultCardProps) {
   const result = parseWeatherToolResult(content);
@@ -69,8 +88,12 @@ export function WeatherToolResultCard({ content }: WeatherToolResultCardProps) {
       {/* Content based on status */}
       <div className="px-4 py-3 space-y-2">
         {/* Task 6.5: Success — show weather data */}
-        {displayStatus === 'success' && result?.status === 'success' && (
+        {displayStatus === 'success' && isCurrentWeatherSuccess(result) && (
           <WeatherSuccessDisplay result={result} />
+        )}
+
+        {displayStatus === 'success' && isForecastWeatherSuccess(result) && (
+          <WeatherForecastSuccessDisplay result={result} />
         )}
 
         {/* Task 6.3, 6.4: Clarification — show candidates */}
@@ -86,7 +109,7 @@ export function WeatherToolResultCard({ content }: WeatherToolResultCardProps) {
         )}
 
         {/* Error display */}
-        {displayStatus === 'error' && result?.status === 'error' && (
+        {(displayStatus === 'error' || displayStatus === 'timeout' || displayStatus === 'cancelled') && result?.status === 'error' && (
           <WeatherErrorDisplay result={result} />
         )}
 
@@ -109,7 +132,7 @@ export function WeatherToolResultCard({ content }: WeatherToolResultCardProps) {
   );
 }
 
-function WeatherSuccessDisplay({ result }: { result: NonNullable<ReturnType<typeof parseWeatherToolResult>> & { status: 'success' } }) {
+function WeatherSuccessDisplay({ result }: { result: WeatherSuccessResult }) {
   const { current, resolvedLocation, observedAt, timezone, sourceUrl } = result;
   const units = result.units ?? {};
 
@@ -181,6 +204,83 @@ function WeatherSuccessDisplay({ result }: { result: NonNullable<ReturnType<type
           Source: Open-Meteo
         </div>
       )}
+    </div>
+  );
+}
+
+function WeatherForecastSuccessDisplay({ result }: { result: WeatherForecastSuccessResult }) {
+  const { resolvedLocation, timezone } = result;
+  const units = result.units ?? {};
+  const displayName = [resolvedLocation.name, resolvedLocation.admin2, resolvedLocation.admin1, resolvedLocation.country]
+    .filter(Boolean)
+    .join(', ');
+  const dailyEntries = result.daily?.slice(0, 7) ?? [];
+  const hourlyEntries = result.hourly?.slice(0, 8) ?? [];
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5 text-sm font-medium">
+        <MapPin className="h-3.5 w-3.5 text-primary" />
+        <span>{displayName}</span>
+      </div>
+
+      <div className="text-xs text-muted-foreground">
+        {result.timeRange.kind}{timezone ? ` (${timezone})` : ''}
+      </div>
+
+      {dailyEntries.length > 0 && (
+        <div className="space-y-1.5 mt-2">
+          {dailyEntries.map((entry) => (
+            <div key={entry.date} className="text-xs px-2 py-1.5 rounded bg-[#2B1C17]/40">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium">{entry.date}</span>
+                <span>{entry.conditionText ?? 'Unknown'}</span>
+              </div>
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground mt-1">
+                {(entry.temperatureMin !== undefined || entry.temperatureMax !== undefined) && (
+                  <span>
+                    {entry.temperatureMin ?? '?'}-{entry.temperatureMax ?? '?'}{units.temperature_2m_max ?? units.temperature_2m_min ?? ''}
+                  </span>
+                )}
+                {entry.precipitationProbabilityMax !== undefined && (
+                  <span>Rain {entry.precipitationProbabilityMax}{units.precipitation_probability_max ?? '%'}</span>
+                )}
+                {entry.precipitationSum !== undefined && (
+                  <span>{entry.precipitationSum}{units.precipitation_sum ?? 'mm'}</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {hourlyEntries.length > 0 && (
+        <div className="space-y-1.5 mt-2">
+          {hourlyEntries.map((entry) => (
+            <div key={entry.time} className="text-xs px-2 py-1.5 rounded bg-[#2B1C17]/40">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium">{entry.time}</span>
+                <span>{entry.conditionText ?? 'Unknown'}</span>
+              </div>
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground mt-1">
+                {entry.temperature !== undefined && (
+                  <span>{entry.temperature}{units.temperature_2m ?? ''}</span>
+                )}
+                {entry.precipitationProbability !== undefined && (
+                  <span>Rain {entry.precipitationProbability}{units.precipitation_probability ?? '%'}</span>
+                )}
+                {entry.precipitation !== undefined && (
+                  <span>{entry.precipitation}{units.precipitation ?? 'mm'}</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="text-[10px] text-muted-foreground/60 mt-1">
+        Source: Open-Meteo
+      </div>
     </div>
   );
 }

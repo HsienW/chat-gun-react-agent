@@ -69,7 +69,26 @@ export type WeatherToolResult =
   | WeatherSuccessResult
   | WeatherClarificationResult
   | WeatherNotFoundResult
-  | WeatherErrorResult;
+  | WeatherErrorResult
+  | WeatherForecastResult;
+
+export type WeatherCapability = "current" | "hourly" | "daily";
+
+export type WeatherTimeRangeKind =
+  | "now"
+  | "today"
+  | "tonight"
+  | "tomorrow"
+  | "weekend"
+  | "date_range";
+
+export type WeatherTimeRange = {
+  kind: WeatherTimeRangeKind;
+  startDate?: string;
+  endDate?: string;
+  timezone?: string;
+  granularity?: "hourly" | "daily";
+};
 
 export type WeatherSuccessResult = {
   schemaVersion: "1.0";
@@ -143,6 +162,83 @@ export type WeatherErrorCode =
   | "weather_timeout"
   | "weather_cancelled"
   | "weather_unknown_error";
+
+export type WeatherForecastResult =
+  | WeatherForecastSuccessResult
+  | WeatherForecastClarificationResult
+  | WeatherForecastNotFoundResult
+  | WeatherForecastErrorResult;
+
+export type WeatherForecastSuccessResult = {
+  schemaVersion: "1.1";
+  tool: "weather_forecast";
+  status: "success";
+  requestedLocation: LocationQuery;
+  resolvedLocation: LocationCandidate;
+  weatherCapability: Exclude<WeatherCapability, "current">;
+  timeRange: WeatherTimeRange;
+  generatedAt: string;
+  timezone: string;
+  daily?: WeatherDailyForecastEntry[];
+  hourly?: WeatherHourlyForecastEntry[];
+  units: Record<string, string>;
+  provider: "Open-Meteo";
+  sourceUrl: string;
+  summary: string;
+};
+
+export type WeatherDailyForecastEntry = {
+  date: string;
+  conditionCode?: number;
+  conditionText?: string;
+  temperatureMax?: number;
+  temperatureMin?: number;
+  precipitationProbabilityMax?: number;
+  precipitationSum?: number;
+};
+
+export type WeatherHourlyForecastEntry = {
+  time: string;
+  conditionCode?: number;
+  conditionText?: string;
+  temperature?: number;
+  precipitationProbability?: number;
+  precipitation?: number;
+};
+
+export type WeatherForecastClarificationResult = {
+  schemaVersion: "1.1";
+  tool: "weather_forecast";
+  status: "needs_clarification";
+  requestedLocation: LocationQuery;
+  candidates: Array<
+    Pick<LocationCandidate, "name" | "displayName" | "country" | "countryCode" | "admin1" | "admin2">
+  >;
+  message: string;
+  summary: string;
+};
+
+export type WeatherForecastNotFoundResult = {
+  schemaVersion: "1.1";
+  tool: "weather_forecast";
+  status: "not_found";
+  requestedLocation: LocationQuery;
+  code: "weather_location_not_found";
+  message: string;
+  summary: string;
+  attemptedQueries?: string[];
+};
+
+export type WeatherForecastErrorResult = {
+  schemaVersion: "1.1";
+  tool: "weather_forecast";
+  status: "error";
+  requestedLocation: LocationQuery;
+  code: WeatherErrorCode;
+  retryable: boolean;
+  message: string;
+  summary: string;
+};
 
 // Geocoding Provider Interface (Task 3.1)
 export interface GeocodingProvider {

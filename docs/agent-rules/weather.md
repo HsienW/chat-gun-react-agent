@@ -42,6 +42,10 @@ multi-turn follow-up
 - 明確回覆能力不支援；
 - 不得拿即時觀測冒充預報。
 
+Phase 2 起，`weather_forecast` 是正式 Forecast Tool，負責 `hourly forecast` 與
+`daily forecast`。`current_weather` 仍只負責 `current observation`，不得宣稱或代答預報。
+歷史天氣、氣候知識、獨立旅遊/穿搭/活動建議與多輪候選選擇仍不屬於 Phase 2 forecast tool 能力。
+
 ---
 
 ## 3. 跨層責任

@@ -94,6 +94,82 @@ function installTaipeiWeatherFetchMock(): void {
   );
 }
 
+function installTaipeiForecastFetchMock(): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+      );
+
+      if (url.hostname === "geocoding-api.open-meteo.com") {
+        return jsonResponse({
+          results: [
+            {
+              name: "Taipei",
+              latitude: 25.033,
+              longitude: 121.565,
+              country: "Taiwan",
+              country_code: "TW",
+              admin1: "Taipei City",
+              timezone: "Asia/Taipei",
+              population: 7_000_000,
+            },
+          ],
+        });
+      }
+
+      if (url.hostname === "api.open-meteo.com") {
+        if (url.searchParams.has("daily")) {
+          return jsonResponse({
+            latitude: 25.033,
+            longitude: 121.565,
+            timezone: "Asia/Taipei",
+            daily: {
+              time: ["2026-06-24", "2026-06-25"],
+              weather_code: [61, 1],
+              temperature_2m_max: [31, 33],
+              temperature_2m_min: [25, 26],
+              precipitation_probability_max: [80, 20],
+              precipitation_sum: [8, 0],
+            },
+            daily_units: {
+              temperature_2m_max: "\u00b0C",
+              temperature_2m_min: "\u00b0C",
+              precipitation_probability_max: "%",
+              precipitation_sum: "mm",
+            },
+          });
+        }
+
+        return jsonResponse({
+          latitude: 25.033,
+          longitude: 121.565,
+          timezone: "Asia/Taipei",
+          hourly: {
+            time: ["2026-06-23T18:00", "2026-06-23T21:00"],
+            temperature_2m: [27, 25],
+            precipitation_probability: [40, 70],
+            precipitation: [0.1, 2.4],
+            weather_code: [3, 61],
+          },
+          hourly_units: {
+            temperature_2m: "\u00b0C",
+            precipitation_probability: "%",
+            precipitation: "mm",
+          },
+        });
+      }
+
+      throw new Error(`Unexpected network call: ${url.toString()}`);
+    })
+  );
+}
+
 function installRepairWeatherFetchMock(): void {
   vi.stubGlobal(
     "fetch",
@@ -393,13 +469,201 @@ describe("Deep Research weather structured result integration", () => {
         ? toolResult.weatherExecution.result
         : undefined;
     expect(weatherResult?.status).toBe("success");
-    if (weatherResult?.status === "success") {
+    if (weatherResult?.status === "success" && weatherResult.tool === "current_weather") {
       expect(weatherResult.requestedLocation.raw).toBe("\u53f0\u5317");
       expect(weatherResult.requestedLocation.location).toBe("\u53f0\u5317");
       expect(JSON.stringify(weatherResult)).not.toContain("queryName");
       expect(weatherResult.resolvedLocation.name).toBe("Taipei");
       expect(weatherResult.current.temperature).toBe(24);
     }
+  });
+
+  it("routes tomorrow daily forecast to weather_forecast while preserving queryName", async () => {
+    installTaipeiForecastFetchMock();
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(
+          JSON.stringify({
+            question: "\u53f0\u5317\u660e\u5929\u6703\u4e0b\u96e8\u55ce\uFF1F",
+            answerMode: "weather",
+            rationale: "Forecast request with user-provided location.",
+            queries: [],
+            urls: [],
+            weather: {
+              location: "\u53f0\u5317",
+              queryName: "Taipei",
+              weatherCapability: "daily",
+              timeRange: { kind: "tomorrow", startDate: "2026-06-24", endDate: "2026-06-24", granularity: "daily" },
+              units: "metric",
+              locale: "zh-TW",
+            },
+            requiredSourceCount: 1,
+          })
+        )
+      ),
+    });
+
+    const state = makePlannerState([new HumanMessage("\u53f0\u5317\u660e\u5929\u6703\u4e0b\u96e8\u55ce\uFF1F")]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+
+    expect(planned.plan?.weather?.weatherCapability).toBe("daily");
+    expect(planned.plan?.weather?.timeRange?.kind).toBe("tomorrow");
+    expect((toolResult.messages?.[0] as { name?: string } | undefined)?.name).toBe("weather_forecast");
+    expect(toolResult.weatherExecution?.status).toBe("success");
+    const weatherResult = toolResult.weatherExecution?.status === "success"
+      ? toolResult.weatherExecution.result
+      : undefined;
+    expect(weatherResult?.tool).toBe("weather_forecast");
+    if (weatherResult?.status === "success" && weatherResult.tool === "weather_forecast") {
+      expect(weatherResult.weatherCapability).toBe("daily");
+      expect(weatherResult.daily?.[0]?.precipitationProbabilityMax).toBe(80);
+      expect(JSON.stringify(weatherResult)).not.toContain("queryName");
+    }
+  });
+
+  it("routes tonight hourly forecast to weather_forecast", async () => {
+    installTaipeiForecastFetchMock();
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(
+          JSON.stringify({
+            question: "\u53f0\u5317\u4eca\u665a\u6703\u8b8a\u51b7\u55ce\uFF1F",
+            answerMode: "weather",
+            rationale: "Hourly forecast request.",
+            queries: [],
+            urls: [],
+            weather: {
+              location: "\u53f0\u5317",
+              queryName: "Taipei",
+              weatherCapability: "hourly",
+              timeRange: { kind: "tonight", startDate: "2026-06-23", endDate: "2026-06-24", granularity: "hourly" },
+              units: "metric",
+            },
+            requiredSourceCount: 1,
+          })
+        )
+      ),
+    });
+
+    const state = makePlannerState([new HumanMessage("\u53f0\u5317\u4eca\u665a\u6703\u8b8a\u51b7\u55ce\uFF1F")]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+
+    expect(planned.plan?.weather?.weatherCapability).toBe("hourly");
+    expect((toolResult.messages?.[0] as { name?: string } | undefined)?.name).toBe("weather_forecast");
+    const weatherResult = toolResult.weatherExecution?.status === "success"
+      ? toolResult.weatherExecution.result
+      : undefined;
+    expect(weatherResult?.tool).toBe("weather_forecast");
+    if (weatherResult?.status === "success" && weatherResult.tool === "weather_forecast") {
+      expect(weatherResult.hourly?.[1]?.temperature).toBe(25);
+    }
+  });
+
+  it("accepts weekend daily timeRange without routing through current_weather", async () => {
+    installTaipeiForecastFetchMock();
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(
+          JSON.stringify({
+            question: "\u53f0\u5317\u9031\u672b\u5929\u6c23\u5982\u4f55\uFF1F",
+            answerMode: "weather",
+            rationale: "Weekend forecast request.",
+            queries: [],
+            urls: [],
+            weather: {
+              location: "\u53f0\u5317",
+              queryName: "Taipei",
+              weatherCapability: "daily",
+              timeRange: { kind: "weekend", granularity: "daily" },
+              units: "metric",
+            },
+            requiredSourceCount: 1,
+          })
+        )
+      ),
+    });
+
+    const state = makePlannerState([new HumanMessage("\u53f0\u5317\u9031\u672b\u5929\u6c23\u5982\u4f55\uFF1F")]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+
+    expect(planned.plan?.weather?.timeRange?.kind).toBe("weekend");
+    expect((toolResult.messages?.[0] as { name?: string } | undefined)?.name).toBe("weather_forecast");
+  });
+
+  it("rejects unknown weatherCapability before tool execution", async () => {
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(
+          JSON.stringify({
+            question: "Taipei historical weather",
+            answerMode: "weather",
+            rationale: "Unsupported weather capability.",
+            queries: [],
+            urls: [],
+            weather: {
+              location: "Taipei",
+              weatherCapability: "historical",
+              timeRange: { kind: "date_range", startDate: "2020-01-01", endDate: "2020-01-02" },
+            },
+            requiredSourceCount: 1,
+          })
+        )
+      ),
+    });
+
+    const state = makePlannerState([new HumanMessage("Taipei historical weather")]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+
+    expect(planned.plan?.answerMode).toBe("clarify");
+    expect(planned.plan?.clarification).toBe(MISSING_WEATHER_LOCATION);
+  });
+
+  it("does not invoke weather_forecast when forecast location is missing", async () => {
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+      invoke: vi.fn(async () =>
+        new AIMessage(
+          JSON.stringify({
+            question: "\u660e\u5929\u6703\u4e0b\u96e8\u55ce\uFF1F",
+            answerMode: "weather",
+            rationale: "Forecast request missing location.",
+            queries: [],
+            urls: [],
+            weather: {
+              weatherCapability: "daily",
+              timeRange: { kind: "tomorrow", granularity: "daily" },
+            },
+            requiredSourceCount: 1,
+          })
+        )
+      ),
+    });
+
+    const state = makePlannerState([new HumanMessage("\u660e\u5929\u6703\u4e0b\u96e8\u55ce\uFF1F")]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+
+    expect(planned.plan?.answerMode).toBe("clarify");
+    expect(planned.plan?.clarification).toBe(MISSING_WEATHER_LOCATION);
   });
 
   it("planner prompt documents optional queryName for Chinese and mixed-Chinese locations only", async () => {
@@ -570,7 +834,7 @@ describe("Deep Research weather structured result integration", () => {
         ? toolResult.weatherExecution.result
         : undefined;
     expect(weatherResult?.status).toBe("success");
-    if (weatherResult?.status === "success") {
+    if (weatherResult?.status === "success" && weatherResult.tool === "current_weather") {
       expect(weatherResult.requestedLocation.raw).toBe(KAOHSIUNG_FENGSHAN);
       expect(weatherResult.requestedLocation.location).toBe("Fengshan");
       expect(weatherResult.resolvedLocation.admin2).toBe("Fengshan District");

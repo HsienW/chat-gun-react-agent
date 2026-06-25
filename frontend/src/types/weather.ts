@@ -44,7 +44,18 @@ export type WeatherToolResult =
   | WeatherSuccessResult
   | WeatherClarificationResult
   | WeatherNotFoundResult
-  | WeatherErrorResult;
+  | WeatherErrorResult
+  | WeatherForecastResult;
+
+export type WeatherCapability = 'current' | 'hourly' | 'daily';
+
+export type WeatherTimeRange = {
+  kind: 'now' | 'today' | 'tonight' | 'tomorrow' | 'weekend' | 'date_range';
+  startDate?: string;
+  endDate?: string;
+  timezone?: string;
+  granularity?: 'hourly' | 'daily';
+};
 
 export type WeatherSuccessResult = {
   schemaVersion: string;
@@ -100,8 +111,78 @@ export type WeatherErrorResult = {
   summary: string;
 };
 
+export type WeatherForecastResult =
+  | WeatherForecastSuccessResult
+  | WeatherForecastClarificationResult
+  | WeatherForecastNotFoundResult
+  | WeatherForecastErrorResult;
+
+export type WeatherForecastSuccessResult = {
+  schemaVersion: string;
+  tool: string;
+  status: 'success';
+  requestedLocation: LocationQuery;
+  resolvedLocation: LocationCandidate;
+  weatherCapability: Exclude<WeatherCapability, 'current'>;
+  timeRange: WeatherTimeRange;
+  generatedAt: string;
+  timezone: string;
+  daily?: WeatherDailyForecastEntry[];
+  hourly?: WeatherHourlyForecastEntry[];
+  units: Record<string, string>;
+  provider: string;
+  sourceUrl: string;
+  summary: string;
+};
+
+export type WeatherDailyForecastEntry = {
+  date: string;
+  conditionCode?: number;
+  conditionText?: string;
+  temperatureMax?: number;
+  temperatureMin?: number;
+  precipitationProbabilityMax?: number;
+  precipitationSum?: number;
+};
+
+export type WeatherHourlyForecastEntry = {
+  time: string;
+  conditionCode?: number;
+  conditionText?: string;
+  temperature?: number;
+  precipitationProbability?: number;
+  precipitation?: number;
+};
+
+export type WeatherForecastClarificationResult = Omit<WeatherClarificationResult, 'schemaVersion' | 'tool'> & {
+  schemaVersion: string;
+  tool: string;
+};
+
+export type WeatherForecastNotFoundResult = Omit<WeatherNotFoundResult, 'schemaVersion' | 'tool'> & {
+  schemaVersion: string;
+  tool: string;
+};
+
+export type WeatherForecastErrorResult = Omit<WeatherErrorResult, 'schemaVersion' | 'tool'> & {
+  schemaVersion: string;
+  tool: string;
+};
+
 // Weather display status for the Tool Panel
-export type WeatherDisplayStatus = 'running' | 'success' | 'needs_clarification' | 'not_found' | 'error' | 'unknown';
+export type WeatherDisplayStatus =
+  | 'running'
+  | 'success'
+  | 'needs_clarification'
+  | 'not_found'
+  | 'error'
+  | 'timeout'
+  | 'cancelled'
+  | 'unknown';
+
+export function isWeatherToolName(toolName: string): boolean {
+  return toolName === 'current_weather' || toolName === 'weather_forecast';
+}
 
 /**
  * Parse raw tool content into WeatherToolResult — Task 6.1
@@ -115,13 +196,17 @@ export function parseWeatherToolResult(content: string): WeatherToolResult | und
       parsed &&
       typeof parsed === 'object' &&
       typeof parsed.schemaVersion === 'string' &&
-      parsed.tool === 'current_weather' &&
+      typeof parsed.tool === 'string' &&
+      isWeatherToolName(parsed.tool) &&
       typeof parsed.status === 'string'
     ) {
       // Validate based on status (forward-compatible: unknown schemaVersions still parse)
       const status = parsed.status;
-      if (status === 'success' && parsed.current && parsed.resolvedLocation) {
+      if (parsed.tool === 'current_weather' && status === 'success' && parsed.current && parsed.resolvedLocation) {
         return parsed as unknown as WeatherSuccessResult;
+      }
+      if (parsed.tool === 'weather_forecast' && status === 'success' && parsed.resolvedLocation && (parsed.daily || parsed.hourly)) {
+        return parsed as unknown as WeatherForecastSuccessResult;
       }
       if (status === 'needs_clarification' && parsed.candidates) {
         return parsed as unknown as WeatherClarificationResult;
@@ -165,6 +250,12 @@ export function getWeatherDisplayStatus(result?: WeatherToolResult): WeatherDisp
       case 'not_found':
         return 'not_found';
       case 'error':
+        if ('code' in result && result.code === 'weather_timeout') {
+          return 'timeout';
+        }
+        if ('code' in result && result.code === 'weather_cancelled') {
+          return 'cancelled';
+        }
         return 'error';
       default:
         return 'unknown';

@@ -198,13 +198,13 @@ describe("weather golden eval matrix", () => {
     vi.unstubAllEnvs();
   });
 
-  it("covers current, forecast-like, ambiguous, missing-location, failure, timeout, cancellation, and multi-turn boundaries", () => {
+  it("covers current, forecast, ambiguous, missing-location, failure, timeout, cancellation, and multi-turn boundaries", () => {
     const categories = new Set(WEATHER_GOLDEN_EVAL_CASES.map((testCase) => testCase.capabilityCategory));
     expect(categories).toEqual(
       new Set([
         "current_observation",
-        "forecast_like_gap",
-        "weather_advice_gap",
+        "daily_forecast",
+        "hourly_forecast",
         "ambiguous_location",
         "missing_location",
         "provider_error",
@@ -218,11 +218,19 @@ describe("weather golden eval matrix", () => {
     );
   });
 
-  it("classifies forecast-like and multi-turn cases as known gaps owned by later phases", () => {
+  it("classifies Phase 2 forecast cases as pass and keeps multi-turn as a Phase 3 known gap", () => {
     const results = [
-      evaluateWeatherGoldenCase(caseById("WGE-FORECAST-TOMORROW-KNOWN-GAP"), {
+      evaluateWeatherGoldenCase(caseById("WGE-FORECAST-TOMORROW"), {
         status: "success",
-        summary: "Current observation returned instead of forecast.",
+        summary: "Daily weather_forecast returned tomorrow precipitation probability.",
+      }),
+      evaluateWeatherGoldenCase(caseById("WGE-FORECAST-TONIGHT"), {
+        status: "success",
+        summary: "Hourly weather_forecast returned tonight temperature buckets.",
+      }),
+      evaluateWeatherGoldenCase(caseById("WGE-FORECAST-WEEKEND"), {
+        status: "success",
+        summary: "Daily weather_forecast returned weekend forecast entries.",
       }),
       evaluateWeatherGoldenCase(caseById("WGE-MULTITURN-CANDIDATE-KNOWN-GAP"), {
         status: "needs_clarification",
@@ -230,8 +238,8 @@ describe("weather golden eval matrix", () => {
       }),
     ];
 
-    expect(results.map((result) => result.classification)).toEqual(["known_gap", "known_gap"]);
-    expect(results.map((result) => result.owner)).toEqual(["Phase 2", "Phase 3"]);
+    expect(results.map((result) => result.classification)).toEqual(["pass", "pass", "pass", "known_gap"]);
+    expect(results.map((result) => result.owner)).toEqual([undefined, undefined, undefined, "Phase 3"]);
   });
 
   it("marks live smoke cases as skipped by default", () => {

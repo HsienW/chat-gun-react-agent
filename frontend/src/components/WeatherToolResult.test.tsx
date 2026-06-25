@@ -42,6 +42,90 @@ function createSuccessResult(overrides?: Partial<WeatherToolResult>): WeatherToo
   } as WeatherToolResult;
 }
 
+function createDailyForecastResult(overrides?: Partial<WeatherToolResult>): WeatherToolResult {
+  return {
+    schemaVersion: '1.1',
+    tool: 'weather_forecast',
+    status: 'success',
+    requestedLocation: { raw: '台北', location: '台北' },
+    resolvedLocation: {
+      provider: 'open-meteo',
+      name: 'Taipei',
+      displayName: 'Taipei, Taiwan',
+      country: 'Taiwan',
+      countryCode: 'TW',
+      admin1: 'Taipei City',
+      timezone: 'Asia/Taipei',
+    },
+    weatherCapability: 'daily',
+    timeRange: { kind: 'tomorrow', startDate: '2026-06-24', endDate: '2026-06-24', granularity: 'daily' },
+    generatedAt: '2026-06-23T12:00:00Z',
+    timezone: 'Asia/Taipei',
+    daily: [
+      {
+        date: '2026-06-24',
+        conditionCode: 61,
+        conditionText: 'rain',
+        temperatureMax: 31,
+        temperatureMin: 25,
+        precipitationProbabilityMax: 80,
+        precipitationSum: 8,
+      },
+    ],
+    units: {
+      temperature_2m_max: '°C',
+      temperature_2m_min: '°C',
+      precipitation_probability_max: '%',
+      precipitation_sum: 'mm',
+    },
+    provider: 'Open-Meteo',
+    sourceUrl: 'https://api.open-meteo.com/v1/forecast',
+    summary: 'Daily forecast for Taipei',
+    ...overrides,
+  } as WeatherToolResult;
+}
+
+function createHourlyForecastResult(overrides?: Partial<WeatherToolResult>): WeatherToolResult {
+  return {
+    schemaVersion: '1.1',
+    tool: 'weather_forecast',
+    status: 'success',
+    requestedLocation: { raw: '台北', location: '台北' },
+    resolvedLocation: {
+      provider: 'open-meteo',
+      name: 'Taipei',
+      displayName: 'Taipei, Taiwan',
+      country: 'Taiwan',
+      countryCode: 'TW',
+      admin1: 'Taipei City',
+      timezone: 'Asia/Taipei',
+    },
+    weatherCapability: 'hourly',
+    timeRange: { kind: 'tonight', startDate: '2026-06-23', endDate: '2026-06-24', granularity: 'hourly' },
+    generatedAt: '2026-06-23T12:00:00Z',
+    timezone: 'Asia/Taipei',
+    hourly: [
+      {
+        time: '2026-06-23T21:00',
+        conditionCode: 61,
+        conditionText: 'rain',
+        temperature: 25,
+        precipitationProbability: 70,
+        precipitation: 2.4,
+      },
+    ],
+    units: {
+      temperature_2m: '°C',
+      precipitation_probability: '%',
+      precipitation: 'mm',
+    },
+    provider: 'Open-Meteo',
+    sourceUrl: 'https://api.open-meteo.com/v1/forecast',
+    summary: 'Hourly forecast for Taipei',
+    ...overrides,
+  } as WeatherToolResult;
+}
+
 describe('WeatherToolResultCard', () => {
   // Task 6.9 — Component tests
 
@@ -52,6 +136,46 @@ describe('WeatherToolResultCard', () => {
     expect(screen.getByText('完成')).toBeTruthy();
     expect(screen.getByText('Tokyo')).toBeTruthy();
     expect(screen.getByText(/22/)).toBeTruthy();  // temperature
+  });
+
+  it('should parse and render daily forecast result from structured fields', () => {
+    const result = createDailyForecastResult();
+    const parsed = parseWeatherToolResult(JSON.stringify(result));
+
+    expect(parsed?.tool).toBe('weather_forecast');
+    render(<WeatherToolResultCard content={JSON.stringify(result)} />);
+
+    expect(screen.getByText('完成')).toBeTruthy();
+    expect(screen.getByText('Taipei, Taipei City, Taiwan')).toBeTruthy();
+    expect(screen.getByText('2026-06-24')).toBeTruthy();
+    expect(screen.getByText('rain')).toBeTruthy();
+    expect(screen.getByText('25-31°C')).toBeTruthy();
+    expect(screen.getByText('Rain 80%')).toBeTruthy();
+  });
+
+  it('should parse and render hourly forecast result from structured fields', () => {
+    const result = createHourlyForecastResult();
+    const parsed = parseWeatherToolResult(JSON.stringify(result));
+
+    expect(parsed?.tool).toBe('weather_forecast');
+    render(<WeatherToolResultCard content={JSON.stringify(result)} />);
+
+    expect(screen.getByText('2026-06-23T21:00')).toBeTruthy();
+    expect(screen.getByText('25°C')).toBeTruthy();
+    expect(screen.getByText('Rain 70%')).toBeTruthy();
+    expect(screen.getByText('2.4mm')).toBeTruthy();
+  });
+
+  it('should safely render forecast success with missing optional fields', () => {
+    const result = createDailyForecastResult({
+      daily: [{ date: '2026-06-24' }],
+      units: {},
+    } as Partial<WeatherToolResult>);
+
+    render(<WeatherToolResultCard content={JSON.stringify(result)} />);
+
+    expect(screen.getByText('2026-06-24')).toBeTruthy();
+    expect(screen.getByText('Unknown')).toBeTruthy();
   });
 
   it('should render needs_clarification with candidates (Task 6.3, 6.4)', () => {
@@ -175,6 +299,34 @@ describe('WeatherToolResultCard', () => {
     expect(screen.queryByText('Waiting for weather data...')).toBeNull();
   });
 
+  it('should display forecast timeout and cancellation as distinct terminal badges', () => {
+    const timeout = {
+      schemaVersion: '1.1',
+      tool: 'weather_forecast',
+      status: 'error',
+      requestedLocation: { raw: 'Taipei', location: 'Taipei' },
+      code: 'weather_timeout',
+      retryable: true,
+      message: 'weather_fetch_timeout',
+      summary: 'Weather forecast timed out.',
+    };
+    const cancelled = {
+      ...timeout,
+      code: 'weather_cancelled',
+      retryable: false,
+      message: 'weather_fetch_cancelled',
+      summary: 'Weather forecast was cancelled.',
+    };
+
+    const { rerender } = render(<WeatherToolResultCard content={JSON.stringify(timeout)} />);
+    expect(screen.getByText('逾時')).toBeTruthy();
+    expect(screen.getByText('Weather forecast timed out.')).toBeTruthy();
+
+    rerender(<WeatherToolResultCard content={JSON.stringify(cancelled)} />);
+    expect(screen.getByText('已取消')).toBeTruthy();
+    expect(screen.getByText('Weather forecast was cancelled.')).toBeTruthy();
+  });
+
   it('should not render sensitive provider details from hidden error message fields (Task 9.15)', () => {
     const result: WeatherToolResult = {
       schemaVersion: '1.0',
@@ -237,5 +389,34 @@ describe('WeatherToolResultCard', () => {
 
     expect(screen.getByText('未知結果')).toBeTruthy();
     warn.mockRestore();
+  });
+
+  it('should delegate weather_forecast structured output to weather renderer in ToolMessageDisplay', () => {
+    const toolCall: ToolCall = {
+      id: 'call-weather-forecast',
+      name: 'weather_forecast',
+      args: { location: '台北', weatherCapability: 'daily' },
+      type: 'tool_call',
+    };
+    const toolMessage: ToolMessage = {
+      id: 'tool-weather-forecast',
+      type: 'tool',
+      tool_call_id: 'call-weather-forecast',
+      name: 'weather_forecast',
+      content: JSON.stringify(createDailyForecastResult()),
+    };
+
+    render(
+      <ToolMessageDisplay
+        toolCall={toolCall}
+        toolMessage={toolMessage}
+        isExpanded
+        onToggle={() => undefined}
+      />
+    );
+
+    expect(screen.getAllByText('完成').length).toBeGreaterThan(0);
+    expect(screen.getByText('2026-06-24')).toBeTruthy();
+    expect(screen.getByText('Rain 80%')).toBeTruthy();
   });
 });
