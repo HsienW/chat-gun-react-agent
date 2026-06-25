@@ -3,11 +3,11 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { applyToolGovernance, auditToolLoad } from "../platform/tool-governance.js";
 import { calculatorTool } from "./calculator.js";
 import { loadMcpTools } from "./mcp-loader.js";
-import { weatherTool } from "./weather.js";
+import { weatherForecastTool, weatherTool } from "./weather.js";
 import { webFetchTool } from "./web-fetch.js";
 import { webSearchTool } from "./web-search.js";
 
-const baseTools = [calculatorTool, webSearchTool, webFetchTool, weatherTool];
+const baseTools = [calculatorTool, webSearchTool, webFetchTool, weatherTool, weatherForecastTool];
 
 export interface LoadAgentToolsOptions {
   includeMcp?: boolean;

@@ -1,15 +1,133 @@
 // Weather Tool Unit Tests — Task 4.13
 // Tests weather tool structured result contract, status handling, and error conditions.
 
-import { afterEach, describe, it, expect } from "vitest";
-import { describeWeatherCode, describeWindDirection, getWeatherConfig, weatherTool } from "./weather.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { describeWeatherCode, describeWindDirection, getWeatherConfig, weatherForecastTool, weatherTool } from "./weather.js";
 import {
   WeatherToolResult,
   WeatherSuccessResult,
   WeatherClarificationResult,
   WeatherNotFoundResult,
   WeatherErrorResult,
+  WeatherForecastResult,
 } from "./weather-types.js";
+
+function jsonResponse(body: unknown, init?: ResponseInit): Response {
+  return new Response(JSON.stringify(body), {
+    status: init?.status ?? 200,
+    statusText: init?.statusText,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function installForecastFetchMock(
+  scenario: "normal" | "ambiguous" | "geocoding_error" | "forecast_error" | "timeout" = "normal"
+): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
+      const signal = init?.signal;
+
+      if (scenario === "timeout") {
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+        });
+      }
+
+      if (url.hostname === "geocoding-api.open-meteo.com") {
+        if (scenario === "geocoding_error") {
+          return Promise.resolve(jsonResponse({ reason: "geocoding unavailable" }, { status: 503 }));
+        }
+        const name = (url.searchParams.get("name") ?? "").toLowerCase();
+        if (name === "springfield" || scenario === "ambiguous") {
+          return Promise.resolve(jsonResponse({
+            results: [
+              { name: "Springfield", latitude: 39.781, longitude: -89.65, country: "United States", country_code: "US", admin1: "Illinois", timezone: "America/Chicago", population: 114000 },
+              { name: "Springfield", latitude: 37.215, longitude: -93.298, country: "United States", country_code: "US", admin1: "Missouri", timezone: "America/Chicago", population: 168000 },
+            ],
+          }));
+        }
+        if (name === "missing place") {
+          return Promise.resolve(jsonResponse({ results: [] }));
+        }
+        return Promise.resolve(jsonResponse({
+          results: [
+            { name: "Taipei", latitude: 25.033, longitude: 121.565, country: "Taiwan", country_code: "TW", admin1: "Taipei City", timezone: "Asia/Taipei", population: 7000000 },
+          ],
+        }));
+      }
+
+      if (url.hostname === "api.open-meteo.com") {
+        if (scenario === "forecast_error") {
+          return Promise.resolve(jsonResponse({ reason: "forecast unavailable" }, { status: 503 }));
+        }
+        if (url.searchParams.has("daily")) {
+          return Promise.resolve(jsonResponse({
+            latitude: 25.033,
+            longitude: 121.565,
+            timezone: "Asia/Taipei",
+            daily: {
+              time: ["2026-06-24", "2026-06-25"],
+              weather_code: [61, 1],
+              temperature_2m_max: [31, 33],
+              temperature_2m_min: [25, 26],
+              precipitation_probability_max: [80, 20],
+              precipitation_sum: [8, 0],
+            },
+            daily_units: {
+              temperature_2m_max: "\u00b0C",
+              temperature_2m_min: "\u00b0C",
+              precipitation_probability_max: "%",
+              precipitation_sum: "mm",
+            },
+          }));
+        }
+        return Promise.resolve(jsonResponse({
+          latitude: 25.033,
+          longitude: 121.565,
+          timezone: "Asia/Taipei",
+          hourly: {
+            time: ["2026-06-23T18:00", "2026-06-23T21:00"],
+            temperature_2m: [27, 25],
+            precipitation_probability: [40, 70],
+            precipitation: [0.1, 2.4],
+            weather_code: [3, 61],
+          },
+          hourly_units: {
+            temperature_2m: "\u00b0C",
+            precipitation_probability: "%",
+            precipitation: "mm",
+          },
+        }));
+      }
+
+      return Promise.reject(new Error(`Unexpected network call: ${url.toString()}`));
+    })
+  );
+}
+
+type ForecastToolTestInput = {
+  location: string;
+  country?: string;
+  region?: string;
+  queryName?: string;
+  weatherCapability: "hourly" | "daily";
+  timeRange: {
+    kind: "today" | "tonight" | "tomorrow" | "weekend" | "date_range";
+    startDate?: string;
+    endDate?: string;
+    timezone?: string;
+    granularity?: "hourly" | "daily";
+  };
+  units?: "metric";
+  locale?: string;
+};
+
+async function invokeForecast(input: ForecastToolTestInput, signal?: AbortSignal): Promise<WeatherForecastResult> {
+  const raw = await weatherForecastTool.invoke(input, signal ? { signal } : undefined);
+  return JSON.parse(String(raw)) as WeatherForecastResult;
+}
 
 describe("Weather Code descriptions", () => {
   it("should describe clear sky (code 0)", () => {
@@ -214,6 +332,138 @@ describe("WeatherToolResult contract (Task 4.1-4.8)", () => {
         process.env.WEATHER_LOCATION_MAX_CHARS = originalMaxChars;
       }
     }
+  });
+});
+
+describe("weather_forecast tool contract", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("returns schemaVersion 1.1 daily forecast entries", async () => {
+    installForecastFetchMock();
+
+    const result = await invokeForecast({
+      location: "\u53f0\u5317",
+      queryName: "Taipei",
+      weatherCapability: "daily",
+      timeRange: { kind: "tomorrow", startDate: "2026-06-24", endDate: "2026-06-24", granularity: "daily" },
+      units: "metric",
+      locale: "zh-TW",
+    });
+
+    expect(result.schemaVersion).toBe("1.1");
+    expect(result.tool).toBe("weather_forecast");
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.weatherCapability).toBe("daily");
+      expect(result.daily?.[0]).toMatchObject({
+        date: "2026-06-24",
+        temperatureMax: 31,
+        temperatureMin: 25,
+        precipitationProbabilityMax: 80,
+        conditionText: "rain",
+      });
+      expect(JSON.stringify(result)).not.toContain("queryName");
+    }
+  });
+
+  it("returns schemaVersion 1.1 hourly forecast entries", async () => {
+    installForecastFetchMock();
+
+    const result = await invokeForecast({
+      location: "Taipei",
+      weatherCapability: "hourly",
+      timeRange: { kind: "tonight", startDate: "2026-06-23", endDate: "2026-06-24", granularity: "hourly" },
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.weatherCapability).toBe("hourly");
+      expect(result.hourly?.[1]).toMatchObject({
+        time: "2026-06-23T21:00",
+        temperature: 25,
+        precipitationProbability: 70,
+        conditionText: "rain",
+      });
+    }
+  });
+
+  it("rejects invalid time ranges before provider forecast calls", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const result = await invokeForecast({
+      location: "Taipei",
+      weatherCapability: "daily",
+      timeRange: { kind: "tomorrow", startDate: "not-a-date" },
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.code).toBe("weather_invalid_input");
+      expect(result.retryable).toBe(false);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps not_found and ambiguity distinct", async () => {
+    installForecastFetchMock();
+    const notFound = await invokeForecast({
+      location: "Missing Place",
+      weatherCapability: "daily",
+      timeRange: { kind: "tomorrow" },
+    });
+    const ambiguous = await invokeForecast({
+      location: "Springfield",
+      weatherCapability: "daily",
+      timeRange: { kind: "tomorrow" },
+    });
+
+    expect(notFound.status).toBe("not_found");
+    expect(ambiguous.status).toBe("needs_clarification");
+  });
+
+  it("keeps geocoding provider error, forecast provider error, timeout, and cancellation distinct", async () => {
+    installForecastFetchMock("geocoding_error");
+    const geocodingError = await invokeForecast({
+      location: "Taipei",
+      weatherCapability: "daily",
+      timeRange: { kind: "tomorrow" },
+    });
+
+    vi.unstubAllGlobals();
+    installForecastFetchMock("forecast_error");
+    const forecastError = await invokeForecast({
+      location: "Taipei",
+      weatherCapability: "daily",
+      timeRange: { kind: "tomorrow" },
+    });
+
+    vi.unstubAllGlobals();
+    vi.stubEnv("WEATHER_GEOCODING_TIMEOUT_MS", "1");
+    installForecastFetchMock("timeout");
+    const timeout = await invokeForecast({
+      location: "Taipei",
+      weatherCapability: "daily",
+      timeRange: { kind: "tomorrow" },
+    });
+
+    vi.unstubAllGlobals();
+    installForecastFetchMock();
+    const controller = new AbortController();
+    controller.abort();
+    const cancelled = await invokeForecast({
+      location: "Taipei",
+      weatherCapability: "daily",
+      timeRange: { kind: "tomorrow" },
+    }, controller.signal);
+
+    expect(geocodingError.status === "error" && geocodingError.code).toBe("weather_geocoding_provider_error");
+    expect(forecastError.status === "error" && forecastError.code).toBe("weather_forecast_provider_error");
+    expect(timeout.status === "error" && timeout.code).toBe("weather_timeout");
+    expect(cancelled.status === "error" && cancelled.code).toBe("weather_cancelled");
   });
 });
 

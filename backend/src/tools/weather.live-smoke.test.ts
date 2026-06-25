@@ -13,8 +13,8 @@
 
 import { describe, expect, it } from "vitest";
 
-import { weatherTool } from "./weather.js";
-import type { WeatherToolResult } from "./weather-types.js";
+import { weatherForecastTool, weatherTool } from "./weather.js";
+import type { WeatherForecastResult, WeatherToolResult } from "./weather-types.js";
 
 const LIVE_SMOKE = (process.env.OPEN_METEO_LIVE_SMOKE ?? "").toLowerCase() === "true";
 const LIVE_SMOKE_TEST_TIMEOUT_MS = 30_000;
@@ -27,6 +27,26 @@ async function invokeWeather(input: {
 }): Promise<WeatherToolResult> {
   const raw = await weatherTool.invoke(input);
   return JSON.parse(String(raw)) as WeatherToolResult;
+}
+
+async function invokeForecast(input: {
+  location: string;
+  queryName?: string;
+  country?: string;
+  region?: string;
+  weatherCapability: "hourly" | "daily";
+  timeRange: {
+    kind: "today" | "tonight" | "tomorrow" | "weekend" | "date_range";
+    startDate?: string;
+    endDate?: string;
+    timezone?: string;
+    granularity?: "hourly" | "daily";
+  };
+  units?: "metric";
+  locale?: string;
+}): Promise<WeatherForecastResult> {
+  const raw = await weatherForecastTool.invoke(input);
+  return JSON.parse(String(raw)) as WeatherForecastResult;
 }
 
 describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
@@ -90,6 +110,40 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
     expect(["success", "needs_clarification"]).toContain(result.status);
   }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
+  it("FORECAST daily: 台北明天會下雨嗎？ → returns Open-Meteo daily forecast", async () => {
+    const result = await invokeForecast({
+      location: "台北",
+      queryName: "Taipei",
+      weatherCapability: "daily",
+      timeRange: { kind: "tomorrow", granularity: "daily" },
+      units: "metric",
+      locale: "zh-TW",
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.tool).toBe("weather_forecast");
+      expect(result.daily?.length).toBeGreaterThan(0);
+    }
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
+
+  it("FORECAST hourly: 台北今晚會變冷嗎？ → returns Open-Meteo hourly forecast", async () => {
+    const result = await invokeForecast({
+      location: "台北",
+      queryName: "Taipei",
+      weatherCapability: "hourly",
+      timeRange: { kind: "tonight", granularity: "hourly" },
+      units: "metric",
+      locale: "zh-TW",
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.tool).toBe("weather_forecast");
+      expect(result.hourly?.length).toBeGreaterThan(0);
+    }
+  }, LIVE_SMOKE_TEST_TIMEOUT_MS);
+
   // 9.9: Springfield → needs_clarification
   it("9.9 Springfield weather → returns needs_clarification, no auto-selection", async () => {
     const result = await invokeWeather({ location: "Springfield" });
@@ -128,7 +182,7 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
 
     const raw = await weatherTool.invoke(
       { location: "Tokyo" },
-      { signal: controller.signal } as any
+      { signal: controller.signal }
     );
     const result = JSON.parse(String(raw)) as WeatherToolResult;
     expect(result.status).toBe("error");

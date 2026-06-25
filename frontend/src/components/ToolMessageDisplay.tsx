@@ -19,6 +19,7 @@ import { WeatherToolResultCard } from './WeatherToolResult';
 import {
   parseWeatherToolResult,
   getWeatherDisplayStatus,
+  isWeatherToolName,
 } from '@/types/weather';
 
 interface ToolMessageDisplayProps {
@@ -30,7 +31,7 @@ interface ToolMessageDisplayProps {
 
 const getStatusBadge = (toolCall: ToolCall, toolMessage?: ToolMessage) => {
   // Check for weather tool structured result
-  if (toolMessage && toolCall.name === 'current_weather') {
+  if (toolMessage && isWeatherToolName(toolCall.name)) {
     const weatherResult = parseWeatherToolResult(toolMessage.content);
     if (weatherResult) {
       const status = getWeatherDisplayStatus(weatherResult);
@@ -66,13 +67,15 @@ const getStatusBadge = (toolCall: ToolCall, toolMessage?: ToolMessage) => {
             </Badge>
           );
         case 'error':
+        case 'timeout':
+        case 'cancelled':
           return (
             <Badge
               variant="destructive"
               className="bg-red-500/10 text-red-400 border-red-500/20 text-xs font-medium"
             >
               <XCircle className="h-3 w-3 mr-1" />
-              錯誤
+              {status === 'timeout' ? '逾時' : status === 'cancelled' ? '已取消' : '錯誤'}
             </Badge>
           );
         case 'unknown':
@@ -92,7 +95,7 @@ const getStatusBadge = (toolCall: ToolCall, toolMessage?: ToolMessage) => {
   }
 
   // Handle legacy/unknown weather results — Task 6.6, 6.7
-  if (toolMessage && toolCall.name === 'current_weather' && !parseWeatherToolResult(toolMessage.content)) {
+  if (toolMessage && isWeatherToolName(toolCall.name) && !parseWeatherToolResult(toolMessage.content)) {
     // Legacy format — show as "完成" since the agent did get data
     return (
       <Badge
@@ -165,7 +168,7 @@ export function ToolMessageDisplay({
     : toolMessage?.content;
 
   // Check if this is a weather tool result that should use the WeatherToolResultCard
-  const isWeatherTool = toolCall.name === 'current_weather' && toolMessage;
+  const isWeatherTool = isWeatherToolName(toolCall.name) && toolMessage;
   const weatherResult = isWeatherTool ? parseWeatherToolResult(toolMessage!.content) : undefined;
   const isStructuredWeather = weatherResult !== undefined;
 

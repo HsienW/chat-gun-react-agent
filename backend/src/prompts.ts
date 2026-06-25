@@ -88,8 +88,8 @@ export function buildToolCallingResearchSystemMessage(maxToolCalls: number): str
 
 Core behavior:
 - 需要即時、近期、可變動、專門資料或需要來源佐證時，必須先使用工具，不要憑模型記憶回答。
-- 可用工具包含 web_search、web_fetch、current_weather、calculator_tool，以及環境啟用的 MCP tools。
-- web_search 用來找候選來源；web_fetch 用來讀取重要來源頁面；current_weather 用於即時天氣；calculator_tool 用於可驗算數值。
+- 可用工具包含 web_search、web_fetch、current_weather、weather_forecast、calculator_tool，以及環境啟用的 MCP tools。
+- web_search 用來找候選來源；web_fetch 用來讀取重要來源頁面；current_weather 用於即時天氣；weather_forecast 用於逐時或每日天氣預報；calculator_tool 用於可驗算數值。
 - 如果工具回傳 Error 或缺少 API key，要明確告知限制，不要編造資料。
 - 回答需要引用工具結果中的來源 URL、觀測時間或查詢時間。
 - 對同一任務最多規劃 ${maxToolCalls} 次 tool calls；優先選擇最能降低不確定性的工具。

@@ -17,6 +17,11 @@ import type {
   LocationCandidate,
   LocationQuery,
   ResolutionStrategy,
+  WeatherCapability,
+  WeatherForecastResult,
+  WeatherForecastSuccessResult,
+  WeatherTimeRange,
+  WeatherTimeRangeKind,
   WeatherToolResult,
 } from "./weather-types.js";
 
@@ -28,6 +33,17 @@ type ForecastResponse = {
   timezone: string;
   current?: Record<string, number | string>;
   current_units?: Record<string, string>;
+};
+
+type ForecastProviderResponse = {
+  latitude: number;
+  longitude: number;
+  timezone: string;
+  generationtime_ms?: number;
+  daily?: Record<string, unknown>;
+  daily_units?: Record<string, string>;
+  hourly?: Record<string, unknown>;
+  hourly_units?: Record<string, string>;
 };
 
 type WeatherConfig = {
@@ -331,12 +347,264 @@ function buildSuccessResult(
   };
 }
 
+const FORECAST_CAPABILITIES = ["hourly", "daily"] as const;
+const FORECAST_TIME_RANGE_KINDS = [
+  "today",
+  "tonight",
+  "tomorrow",
+  "weekend",
+  "date_range",
+] as const;
+
+function isForecastCapability(value: unknown): value is Exclude<WeatherCapability, "current"> {
+  return FORECAST_CAPABILITIES.includes(value as Exclude<WeatherCapability, "current">);
+}
+
+function isForecastTimeRangeKind(value: unknown): value is Exclude<WeatherTimeRangeKind, "now"> {
+  return FORECAST_TIME_RANGE_KINDS.includes(value as Exclude<WeatherTimeRangeKind, "now">);
+}
+
+function isIsoDateString(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function validateForecastTimeRange(rawTimeRange: unknown): { timeRange?: WeatherTimeRange; error?: string } {
+  if (!rawTimeRange || typeof rawTimeRange !== "object" || Array.isArray(rawTimeRange)) {
+    return { error: "timeRange must be an object for forecast requests." };
+  }
+
+  const value = rawTimeRange as Record<string, unknown>;
+  if (!isForecastTimeRangeKind(value.kind)) {
+    return { error: "timeRange.kind must be today, tonight, tomorrow, weekend, or date_range." };
+  }
+
+  const startDate = typeof value.startDate === "string" ? value.startDate : undefined;
+  const endDate = typeof value.endDate === "string" ? value.endDate : undefined;
+  if (startDate && !isIsoDateString(startDate)) {
+    return { error: "timeRange.startDate must be an ISO date string." };
+  }
+  if (endDate && !isIsoDateString(endDate)) {
+    return { error: "timeRange.endDate must be an ISO date string." };
+  }
+  if (startDate && endDate && startDate > endDate) {
+    return { error: "timeRange.startDate must be before or equal to endDate." };
+  }
+
+  const timezone = typeof value.timezone === "string" && value.timezone.trim()
+    ? value.timezone.trim()
+    : undefined;
+  const granularity =
+    value.granularity === "hourly" || value.granularity === "daily"
+      ? value.granularity
+      : undefined;
+
+  return {
+    timeRange: {
+      kind: value.kind,
+      ...(startDate ? { startDate } : {}),
+      ...(endDate ? { endDate } : {}),
+      ...(timezone ? { timezone } : {}),
+      ...(granularity ? { granularity } : {}),
+    },
+  };
+}
+
+function numberArray(section: Record<string, unknown>, key: string): number[] | undefined {
+  const value = section[key];
+  return Array.isArray(value) && value.every((entry) => typeof entry === "number")
+    ? value
+    : undefined;
+}
+
+function stringArray(section: Record<string, unknown>, key: string): string[] | undefined {
+  const value = section[key];
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string")
+    ? value
+    : undefined;
+}
+
+function buildDailyForecastEntries(daily: Record<string, unknown>): WeatherForecastSuccessResult["daily"] | undefined {
+  const dates = stringArray(daily, "time");
+  if (!dates?.length) {
+    return undefined;
+  }
+
+  const weatherCodes = numberArray(daily, "weather_code");
+  const temperatureMax = numberArray(daily, "temperature_2m_max");
+  const temperatureMin = numberArray(daily, "temperature_2m_min");
+  const precipitationProbabilityMax = numberArray(daily, "precipitation_probability_max");
+  const precipitationSum = numberArray(daily, "precipitation_sum");
+
+  return dates.map((date, index) => {
+    const conditionCode = weatherCodes?.[index];
+    return {
+      date,
+      conditionCode,
+      conditionText: describeWeatherCode(conditionCode),
+      temperatureMax: temperatureMax?.[index],
+      temperatureMin: temperatureMin?.[index],
+      precipitationProbabilityMax: precipitationProbabilityMax?.[index],
+      precipitationSum: precipitationSum?.[index],
+    };
+  });
+}
+
+function buildHourlyForecastEntries(hourly: Record<string, unknown>): WeatherForecastSuccessResult["hourly"] | undefined {
+  const times = stringArray(hourly, "time");
+  if (!times?.length) {
+    return undefined;
+  }
+
+  const weatherCodes = numberArray(hourly, "weather_code");
+  const temperature = numberArray(hourly, "temperature_2m");
+  const precipitationProbability = numberArray(hourly, "precipitation_probability");
+  const precipitation = numberArray(hourly, "precipitation");
+
+  return times.map((time, index) => {
+    const conditionCode = weatherCodes?.[index];
+    return {
+      time,
+      conditionCode,
+      conditionText: describeWeatherCode(conditionCode),
+      temperature: temperature?.[index],
+      precipitationProbability: precipitationProbability?.[index],
+      precipitation: precipitation?.[index],
+    };
+  });
+}
+
+function buildForecastSourceUrl(
+  place: LocationCandidate,
+  weatherCapability: Exclude<WeatherCapability, "current">,
+  timeRange: WeatherTimeRange
+): URL {
+  const forecastUrl = new URL("https://api.open-meteo.com/v1/forecast");
+  forecastUrl.searchParams.set("latitude", String(place.latitude));
+  forecastUrl.searchParams.set("longitude", String(place.longitude));
+  forecastUrl.searchParams.set("timezone", timeRange.timezone ?? place.timezone ?? "auto");
+
+  if (timeRange.startDate) {
+    forecastUrl.searchParams.set("start_date", timeRange.startDate);
+  }
+  if (timeRange.endDate) {
+    forecastUrl.searchParams.set("end_date", timeRange.endDate);
+  }
+  if (!timeRange.startDate && !timeRange.endDate) {
+    const forecastDaysByKind: Record<WeatherTimeRangeKind, string> = {
+      now: "1",
+      today: "1",
+      tonight: "2",
+      tomorrow: "2",
+      weekend: "7",
+      date_range: "7",
+    };
+    forecastUrl.searchParams.set("forecast_days", forecastDaysByKind[timeRange.kind]);
+  }
+
+  if (weatherCapability === "daily") {
+    forecastUrl.searchParams.set(
+      "daily",
+      [
+        "weather_code",
+        "temperature_2m_max",
+        "temperature_2m_min",
+        "precipitation_probability_max",
+        "precipitation_sum",
+      ].join(",")
+    );
+  } else {
+    forecastUrl.searchParams.set(
+      "hourly",
+      [
+        "temperature_2m",
+        "precipitation_probability",
+        "precipitation",
+        "weather_code",
+      ].join(",")
+    );
+  }
+
+  return forecastUrl;
+}
+
+function buildForecastSuccessResult(
+  query: LocationQuery,
+  candidate: LocationCandidate,
+  forecast: ForecastProviderResponse,
+  weatherCapability: Exclude<WeatherCapability, "current">,
+  timeRange: WeatherTimeRange,
+  sourceUrl: string
+): WeatherForecastSuccessResult | undefined {
+  const daily = forecast.daily && typeof forecast.daily === "object" && !Array.isArray(forecast.daily)
+    ? buildDailyForecastEntries(forecast.daily as Record<string, unknown>)
+    : undefined;
+  const hourly = forecast.hourly && typeof forecast.hourly === "object" && !Array.isArray(forecast.hourly)
+    ? buildHourlyForecastEntries(forecast.hourly as Record<string, unknown>)
+    : undefined;
+
+  if (weatherCapability === "daily" && !daily?.length) {
+    return undefined;
+  }
+  if (weatherCapability === "hourly" && !hourly?.length) {
+    return undefined;
+  }
+
+  const displayName = formatFallbackText(candidate);
+  const firstDaily = daily?.[0];
+  const firstHourly = hourly?.[0];
+  const summary = weatherCapability === "daily"
+    ? `Daily forecast for ${displayName}: ${firstDaily?.temperatureMin ?? "?"}-${firstDaily?.temperatureMax ?? "?"}${forecast.daily_units?.temperature_2m_max ?? ""}, ${firstDaily?.conditionText ?? "unknown weather condition"}.`
+    : `Hourly forecast for ${displayName}: ${firstHourly?.temperature ?? "?"}${forecast.hourly_units?.temperature_2m ?? ""}, ${firstHourly?.conditionText ?? "unknown weather condition"}.`;
+
+  return {
+    schemaVersion: "1.1",
+    tool: "weather_forecast",
+    status: "success",
+    requestedLocation: query,
+    resolvedLocation: candidate,
+    weatherCapability,
+    timeRange,
+    generatedAt: new Date().toISOString(),
+    timezone: forecast.timezone,
+    ...(daily?.length ? { daily } : {}),
+    ...(hourly?.length ? { hourly } : {}),
+    units: {
+      ...(forecast.daily_units ?? {}),
+      ...(forecast.hourly_units ?? {}),
+    },
+    provider: "Open-Meteo",
+    sourceUrl,
+    summary,
+  };
+}
+
+function createForecastInvalidInputResult(
+  location: unknown,
+  message: string
+): WeatherForecastResult {
+  const locationText = typeof location === "string" ? location : "";
+  return {
+    schemaVersion: "1.1",
+    tool: "weather_forecast",
+    status: "error",
+    requestedLocation: { raw: locationText, location: locationText },
+    code: "weather_invalid_input",
+    retryable: false,
+    message,
+    summary: "Invalid forecast input. Please provide a valid location and forecast time range.",
+  };
+}
+
 /**
  * Build a legacy text output from structured result — for backward compatibility
  * during the WEATHER_STRUCTURED_RESULT_ENABLED transition period.
  */
 function formatLegacyText(result: WeatherToolResult): string {
-  if (result.status === "success") {
+  if (result.status === "success" && result.tool === "current_weather") {
     const { current, resolvedLocation } = result;
     const displayName = formatFallbackText(resolvedLocation);
     const lines = [
@@ -384,6 +652,301 @@ function formatLegacyText(result: WeatherToolResult): string {
   // error
   return result.summary;
 }
+
+export const weatherForecastTool = tool(
+  async (
+    {
+      location,
+      country,
+      region,
+      queryName,
+      resolutionStrategy,
+      raw,
+      weatherCapability,
+      timeRange,
+    },
+    config?: RunnableConfig
+  ) => {
+    const startTime = Date.now();
+    const weatherConfig = getWeatherConfig();
+    const runSignal = getRunnableSignal(config);
+    const geocodingProvider = new OpenMeteoGeocodingProvider(weatherConfig.geocodingTimeoutMs);
+    const strategy: ResolutionStrategy | undefined =
+      resolutionStrategy === "llm_repair" ? "llm_repair" : undefined;
+
+    const validationError = validateLocationInput(location, weatherConfig.locationMaxChars);
+    if (validationError) {
+      return JSON.stringify(createForecastInvalidInputResult(location, validationError));
+    }
+
+    if (!isForecastCapability(weatherCapability)) {
+      return JSON.stringify(
+        createForecastInvalidInputResult(
+          location,
+          "weatherCapability must be hourly or daily for weather_forecast."
+        )
+      );
+    }
+
+    const timeRangeValidation = validateForecastTimeRange(timeRange);
+    if (timeRangeValidation.error || !timeRangeValidation.timeRange) {
+      return JSON.stringify(
+        createForecastInvalidInputResult(
+          location,
+          timeRangeValidation.error ?? "timeRange is required for forecast requests."
+        )
+      );
+    }
+
+    const queryNameValidation = validateOptionalQueryName(
+      queryName,
+      weatherConfig.locationMaxChars
+    );
+    if (queryNameValidation.error) {
+      return JSON.stringify(createForecastInvalidInputResult(location, queryNameValidation.error));
+    }
+
+    const query = {
+      ...buildLocationQuery(location, country, region),
+      raw: typeof raw === "string" && raw.trim() ? raw : location,
+    };
+    const providerQueryName = queryNameValidation.queryName;
+    await auditLogger.record("weather.forecast.location.resolve.start", {
+      raw: query.raw,
+      location: query.location,
+      country: query.country,
+      capability: weatherCapability,
+      timeRangeKind: timeRangeValidation.timeRange.kind,
+      queryNameProvided: Boolean(providerQueryName),
+    });
+
+    if (weatherConfig.forceGeocodingError) {
+      const result: WeatherForecastResult = {
+        schemaVersion: "1.1",
+        tool: "weather_forecast",
+        status: "error",
+        requestedLocation: query,
+        code: "weather_geocoding_provider_error",
+        retryable: true,
+        message: "Forced geocoding provider error for non-production manual verification.",
+        summary: "Weather geocoding service is temporarily unavailable.",
+      };
+      return JSON.stringify(result);
+    }
+
+    let resolutionResult;
+    try {
+      resolutionResult = await resolveLocation(query, geocodingProvider, {
+        ...DEFAULT_RESOLVER_OPTIONS,
+        minScore: weatherConfig.geocodingMinScore,
+        ambiguityDelta: weatherConfig.geocodingAmbiguityDelta,
+        maxCandidates: weatherConfig.geocodingMaxCandidates,
+        maxQueries: weatherConfig.geocodingMaxQueries,
+        signal: runSignal,
+        strategy,
+        queryName: providerQueryName,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const result: WeatherForecastResult = {
+        schemaVersion: "1.1",
+        tool: "weather_forecast",
+        status: "error",
+        requestedLocation: query,
+        code: isCancelError(errorMessage)
+          ? "weather_cancelled"
+          : isTimeoutError(errorMessage)
+            ? "weather_timeout"
+            : "weather_geocoding_provider_error",
+        retryable: !isCancelError(errorMessage) && isTimeoutError(errorMessage),
+        message: errorMessage,
+        summary: isCancelError(errorMessage)
+          ? "Weather forecast lookup was cancelled."
+          : "Weather geocoding service is temporarily unavailable.",
+      };
+      return JSON.stringify(result);
+    }
+
+    if (resolutionResult.status === "ambiguous") {
+      const candidates = resolutionResult.candidates.slice(0, 5).map((candidate) => ({
+        name: candidate.name,
+        displayName: candidate.displayName,
+        country: candidate.country,
+        countryCode: candidate.countryCode,
+        admin1: candidate.admin1,
+        admin2: candidate.admin2,
+      }));
+      const result: WeatherForecastResult = {
+        schemaVersion: "1.1",
+        tool: "weather_forecast",
+        status: "needs_clarification",
+        requestedLocation: query,
+        candidates,
+        message: `Location "${query.location}" is ambiguous. Please provide a more specific location with country or region.`,
+        summary: `Location "${query.location}" matches multiple candidates. Please specify a country or region.`,
+      };
+      return JSON.stringify(result);
+    }
+
+    if (resolutionResult.status === "not_found") {
+      const result: WeatherForecastResult = {
+        schemaVersion: "1.1",
+        tool: "weather_forecast",
+        status: "not_found",
+        requestedLocation: query,
+        code: "weather_location_not_found",
+        message: `Could not find location "${query.location}". Please provide a more specific location.`,
+        summary: `Could not find "${query.location}". Please provide a more specific location.`,
+        attemptedQueries: resolutionResult.attemptedQueries,
+      };
+      return JSON.stringify(result);
+    }
+
+    if (resolutionResult.status === "provider_error") {
+      const result: WeatherForecastResult = {
+        schemaVersion: "1.1",
+        tool: "weather_forecast",
+        status: "error",
+        requestedLocation: query,
+        code: resolutionResult.code === "weather_geocoding_cancelled"
+          ? "weather_cancelled"
+          : resolutionResult.code === "weather_geocoding_timeout"
+            ? "weather_timeout"
+            : "weather_geocoding_provider_error",
+        retryable: resolutionResult.retryable,
+        message: `Geocoding provider error: ${resolutionResult.code}`,
+        summary: resolutionResult.code === "weather_geocoding_cancelled"
+          ? "Weather forecast lookup was cancelled."
+          : "Weather geocoding service is temporarily unavailable.",
+      };
+      return JSON.stringify(result);
+    }
+
+    if (weatherConfig.forceForecastError) {
+      const result: WeatherForecastResult = {
+        schemaVersion: "1.1",
+        tool: "weather_forecast",
+        status: "error",
+        requestedLocation: query,
+        code: "weather_forecast_provider_error",
+        retryable: true,
+        message: "Forced forecast provider error for non-production manual verification.",
+        summary: "Weather forecast service is temporarily unavailable.",
+      };
+      return JSON.stringify(result);
+    }
+
+    const place = resolutionResult.candidate;
+    const forecastUrl = buildForecastSourceUrl(
+      place,
+      weatherCapability,
+      timeRangeValidation.timeRange
+    );
+
+    try {
+      const forecast = await fetchWithRetry<ForecastProviderResponse>(
+        forecastUrl,
+        weatherConfig.forecastTimeoutMs,
+        runSignal
+      );
+      const result = buildForecastSuccessResult(
+        query,
+        place,
+        forecast,
+        weatherCapability,
+        timeRangeValidation.timeRange,
+        forecastUrl.toString()
+      );
+
+      if (!result) {
+        const providerError: WeatherForecastResult = {
+          schemaVersion: "1.1",
+          tool: "weather_forecast",
+          status: "error",
+          requestedLocation: query,
+          code: "weather_forecast_provider_error",
+          retryable: false,
+          message: "Open-Meteo did not return valid forecast data.",
+          summary: "Weather forecast service did not return data for this request.",
+        };
+        return JSON.stringify(providerError);
+      }
+
+      await recordMetric("weather.provider.forecast.duration_ms", {
+        durationMs: Date.now() - startTime,
+      });
+      await auditLogger.record("weather.forecast.success", {
+        raw: query.raw,
+        provider: place.provider,
+        strategy: resolutionResult.strategy,
+        capability: weatherCapability,
+        durationMs: Date.now() - startTime,
+      });
+
+      return JSON.stringify(result);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const result: WeatherForecastResult = {
+        schemaVersion: "1.1",
+        tool: "weather_forecast",
+        status: "error",
+        requestedLocation: query,
+        code: isCancelError(errorMessage)
+          ? "weather_cancelled"
+          : isTimeoutError(errorMessage)
+            ? "weather_timeout"
+            : "weather_forecast_provider_error",
+        retryable: !isCancelError(errorMessage) && (isTimeoutError(errorMessage) || errorMessage.includes("fetch failed")),
+        message: errorMessage,
+        summary: isCancelError(errorMessage)
+          ? "Weather forecast lookup was cancelled."
+          : "Weather forecast service is temporarily unavailable.",
+      };
+      await recordMetric("weather.provider.forecast.failure.count", { count: 1 });
+      return JSON.stringify(result);
+    }
+  },
+  {
+    name: "weather_forecast",
+    description:
+      "Get hourly or daily weather forecast for a city or location using Open-Meteo. Use this for tomorrow, tonight, weekend, date range, rain probability, temperature trend, or other forecast-backed weather questions. Do not use it for historical weather, climate knowledge, or standalone advice.",
+    schema: z.object({
+      location: z.string().min(1).describe("City or location name."),
+      country: z
+        .string()
+        .optional()
+        .describe("Optional country hint, for example 'Taiwan', 'Japan', or 'United States'."),
+      region: z
+        .string()
+        .optional()
+        .describe("Optional state, province, or administrative region hint, for example 'New York'."),
+      queryName: z
+        .string()
+        .optional()
+        .describe("Optional geocoding-friendly Latin name for Chinese or mixed-Chinese locations."),
+      weatherCapability: z
+        .enum(["hourly", "daily"])
+        .describe("Forecast granularity requested by the planner."),
+      timeRange: z.object({
+        kind: z.enum(["today", "tonight", "tomorrow", "weekend", "date_range"]),
+        startDate: z.string().optional(),
+        endDate: z.string().optional(),
+        timezone: z.string().optional(),
+        granularity: z.enum(["hourly", "daily"]).optional(),
+      }),
+      units: z.enum(["metric"]).optional().describe("Forecast units. Metric is the only Phase 2 unit."),
+      locale: z.string().optional().describe("Optional user locale metadata for display/synthesis."),
+      resolutionStrategy: z
+        .enum(["llm_repair"])
+        .optional()
+        .describe("Internal marker for one-time LLM repair; callers should normally omit this."),
+      raw: z
+        .string()
+        .optional()
+        .describe("Internal original user location text preserved across one-time repair."),
+    }),
+  }
+);
 
 export const weatherTool = tool(
   async ({ location, country, region, queryName, resolutionStrategy, raw }, config?: RunnableConfig) => {
@@ -714,7 +1277,7 @@ export const weatherTool = tool(
   {
     name: "current_weather",
     description:
-      "Get real-time current weather for a city or location using Open-Meteo. Use this for current weather, temperature, humidity, rain, wind, or forecast questions. Provide country or region when the location is ambiguous. The tool does not contain built-in city aliases; pass the most geocoding-friendly place name you can infer.",
+      "Get real-time current weather for a city or location using Open-Meteo. Use this only for current weather, current temperature, humidity, current rain, or current wind questions. For tomorrow, tonight, weekend, date range, or rain probability forecast questions, use weather_forecast. Provide country or region when the location is ambiguous. The tool does not contain built-in city aliases; pass the most geocoding-friendly place name you can infer.",
     schema: z.object({
       location: z.string().min(1).describe("City or location name."),
       country: z
