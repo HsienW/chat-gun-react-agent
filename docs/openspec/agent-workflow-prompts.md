@@ -1,15 +1,18 @@
 ﻿# OpenSpec Agent Workflow Prompts
 
-本文件是本專案 OpenSpec 多 agent 流程的入口說明。完整 prompt 模板已下沉到 Codex skill：
+本文件是本專案 OpenSpec 多 agent 流程的入口說明。各 agent runtime 都必須在任務開始前感知本 workflow-router；完整階段模板目前由 Codex skill 保存，Qwen 與 Claude 以宿主專屬 wrapper 接入同一套路由。
 
 ```text
 .codex/skills/openspec-workflow-router/
+.qwen/skills/openspec-workflow-router/
+.claude/skills/openspec-workflow-router/
 ```
 
 目的：
 
 - 用短 prompt 觸發正確流程，避免每次載入 7 組完整模板。
 - 讓 Codex 依階段漸進讀取對應 reference。
+- 讓 Qwen 與 Claude 在自己的 runtime 入口先判斷 stage，再轉入 reviewer 或 coordinator 職責。
 - 讓 CCR、Qwen Reviewer、Codex 在 OpenSpec change lifecycle 中使用一致交接語言。
 
 ## 角色對應
@@ -54,6 +57,22 @@ Codex 摘要如下：
 ...
 驗證結果如下：
 ...
+```
+
+使用 Qwen Reviewer 時，優先用 Qwen router：
+
+```text
+使用 openspec-workflow-router，對 {change_name} 做 {stage} 唯讀審查。
+必要上下文如下：
+{context}
+```
+
+使用 Claude／CCR 時，優先用 Claude router：
+
+```text
+使用 openspec-workflow-router，對 {change_name} 做 {stage} 協調。
+必要上下文如下：
+{context}
 ```
 
 ## 上下文策略

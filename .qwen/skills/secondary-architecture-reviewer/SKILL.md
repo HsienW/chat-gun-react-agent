@@ -23,12 +23,13 @@ description: 對 OpenSpec、Git Diff、frontend、bff、backend、LangGraph、To
 
 1. 根目錄 `AGENTS.md`。
 2. 根目錄 `QWEN.md`。
-3. 受影響套件最近的 `AGENTS.md`。
-4. 相關能力域規則，例如 `docs/agent-rules/weather.md`。
-5. `openspec/config.yaml`。
-6. 指定 Change 的 Proposal、Specs、Design、Tasks。
-7. 受影響程式、測試、Schema 與文件。
-8. Coordinator 提供的 Base、Patch／Diff、Changed Files 與驗證結果。
+3. `.qwen/skills/openspec-workflow-router/SKILL.md`，用來判定 OpenSpec lifecycle stage 與上下文讀取策略。
+4. 受影響套件最近的 `AGENTS.md`。
+5. 相關能力域規則，例如 `docs/agent-rules/weather.md`。
+6. `openspec/config.yaml`。
+7. 指定 Change 的 Proposal、Specs、Design、Tasks。
+8. 受影響程式、測試、Schema 與文件。
+9. Coordinator 提供的 Base、Patch／Diff、Changed Files 與驗證結果。
 
 不得只讀摘要、`tasks.md` 或另一個 Reviewer 的結論。
 

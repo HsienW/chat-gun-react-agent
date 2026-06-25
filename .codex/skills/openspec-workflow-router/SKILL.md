@@ -1,18 +1,27 @@
 ---
 name: openspec-workflow-router
-description: Route OpenSpec change lifecycle work to token-efficient stage prompts for this repository. Use when the user asks Codex to plan, review, implement, fix, readiness-check, or archive an OpenSpec change, especially with CCR/Qwen/Codex handoffs.
+description: MUST be considered at task start in this repository to detect OpenSpec change lifecycle work and route it to token-efficient stage prompts. Use when the user asks Codex to plan, review, implement, fix, readiness-check, archive, or coordinate an OpenSpec change, especially with CCR/Qwen/Codex handoffs.
 ---
 
 # OpenSpec Workflow Router
 
 Use this skill as a routing layer. Do not load every reference. Pick one stage, then read only its reference file.
 
+## Task-Start Awareness
+
+At the start of every task in this repository:
+
+1. Decide whether the request belongs to the OpenSpec change lifecycle.
+2. If it does, select exactly one stage from the route table and read only that reference.
+3. If it does not, keep the context policy below in force and continue with the normal project rules.
+4. If another host is responsible for the stage, produce the handoff prompt or perform only the role requested by the user.
+
 ## Context Policy
 
 - Prefer user-provided summaries, diffs, verification results, and named files.
 - Read the minimum relevant OpenSpec artifacts and adjacent code/tests.
 - Do not scan the whole repo by default.
-- Ignore `.gitignore` content, `node_modules/`, `dist/`, `build/`, `coverage/`, and lockfiles unless dependency changes are in scope.
+- Ignore files and directories ignored by `.gitignore`, `node_modules/`, `dist/`, `build/`, `coverage/`, and lockfiles unless dependency changes are in scope.
 - Expand context only for contract conflicts, security concerns, unclear architecture, or test failures that cannot be localized.
 - Keep all user-facing output in Traditional Chinese.
 

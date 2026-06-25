@@ -28,6 +28,19 @@ backend/AGENTS.md
 docs/agent-rules/weather.md
 ```
 
+### OpenSpec Workflow Router 感知
+
+所有在專案根目錄啟動的 agent，包括 Codex、Qwen Code 與 Claude Code／CCR，在處理任何任務前都必須先感知本專案的 OpenSpec 多 agent workflow-router 約束：
+
+```text
+docs/openspec/agent-workflow-prompts.md
+.codex/skills/openspec-workflow-router/SKILL.md
+.qwen/skills/openspec-workflow-router/SKILL.md
+.claude/skills/openspec-workflow-router/SKILL.md
+```
+
+任務開始時先判斷是否屬於 OpenSpec change lifecycle。若屬於，依 workflow-router 判定唯一階段並只載入該階段 reference；不得一次載入全部階段模板。若不屬於 OpenSpec 任務，仍須沿用 router 的上下文策略：優先使用使用者提供的檔案、摘要、diff 與驗證結果，只讀必要規則與相鄰檔案，忽略 `.gitignore` 已忽略內容、`node_modules/`、`dist/`、`build/`、`coverage/` 與無關 lockfile。
+
 ---
 
 ## 2. 指令與規格優先順序
