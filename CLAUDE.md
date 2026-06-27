@@ -99,6 +99,9 @@ Claude 必須確保：
 - Tasks 可獨立施工、驗證並追溯至 Requirement。
 
 需求變更必須先更新 OpenSpec，再修改程式；不得讓實作反向成為未核准需求。
+### 特別約束
+- OpenSpect 產生的 design、proposal、tasks、spec 等約束文件，自然語言優先使用繁體中文
+- 技術單字、特殊命名等留使用英文
 
 ## 6. 多 Agent 角色
 ### Specification Coordinator
