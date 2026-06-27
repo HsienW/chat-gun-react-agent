@@ -129,52 +129,53 @@ describe("buildQueryVariants (Task 2.5, 2.6)", () => {
     expect(variants.some((variant) => variant.language === "en")).toBe(true);
   });
 
-  it("prioritizes queryName before the original CJK location while preserving fallback", () => {
-    const query: LocationQuery = { raw: "台北", location: "台北" };
+  it("prioritizes the complete original location before locale fallbacks", () => {
+    const query: LocationQuery = { raw: "高雄市大寮區", location: "高雄市大寮區" };
 
-    const variants = buildGeocodingQueryVariants(query, 6, "Taipei");
+    const variants = buildGeocodingQueryVariants(query, 6);
 
     expect(variants[0]).toEqual({
-      text: "Taipei",
+      text: "高雄市大寮區",
       strategy: "original",
     });
     expect(variants[1]).toEqual({
-      text: "台北",
-      strategy: "original",
+      text: "高雄市大寮區",
+      language: "zh",
+      strategy: "locale_fallback",
     });
-    expect(variants.map((variant) => variant.text)).toContain("台北");
+    expect(variants.map((variant) => variant.text)).not.toContain("Daliao");
   });
 
-  it("deduplicates queryName when it matches location", () => {
+  it("deduplicates repeated raw location variants", () => {
     const query: LocationQuery = { raw: "Tokyo", location: "Tokyo" };
     const baseline = buildGeocodingQueryVariants(query, 20);
 
-    const variants = buildGeocodingQueryVariants(query, 20, "Tokyo");
+    const variants = buildGeocodingQueryVariants(query, 20);
 
     expect(variants).toEqual(baseline);
     expect(variants[0]?.text).toBe("Tokyo");
   });
 
-  it("adds queryName with country context before locale fallbacks", () => {
+  it("adds country context without replacing the original location", () => {
     const query: LocationQuery = {
       raw: "北京市",
       location: "北京市",
       country: "China",
     };
 
-    const variants = buildGeocodingQueryVariants(query, 6, "Beijing");
+    const variants = buildGeocodingQueryVariants(query, 6);
 
     expect(variants.map((variant) => `${variant.text}|${variant.language ?? "default"}`)).toEqual([
-      "Beijing|default",
       "北京市|default",
-      "Beijing, China|default",
       "北京市, China|default",
-      "Beijing|zh",
       "北京市|zh",
+      "北京市, China|zh",
+      "北京市|en",
+      "北京市, China|en",
     ]);
   });
 
-  it("keeps existing variant order when queryName is absent", () => {
+  it("keeps raw and contextual variants before locale fallbacks", () => {
     const query: LocationQuery = {
       raw: "Fengshan",
       location: "Fengshan",
@@ -258,7 +259,7 @@ describe("scoreCandidate", () => {
     expect(scoreCandidate(taipei, query)).toBeGreaterThanOrEqual(100);
   });
 
-  it("scores provider candidates whose admin fields cover a multi-token Latin queryName", () => {
+  it("scores provider candidates whose admin fields cover a multi-token resolver variant", () => {
     const fengshan: LocationCandidate = {
       provider: "open-meteo",
       name: "Fengshan",
@@ -276,6 +277,28 @@ describe("scoreCandidate", () => {
     expect(scoreCandidate(fengshan, { raw: "高雄鳳山", location: "Kaohsiung Fengshan" }))
       .toBeGreaterThanOrEqual(DEFAULT_RESOLVER_OPTIONS.minScore);
   });
+
+  it.each(["高雄大寮", "高雄市大寮區"])(
+    "scores localized administrative fields for composite CJK input: %s",
+    (location) => {
+      const daliao: LocationCandidate = {
+        provider: "mapbox",
+        name: "大寮區",
+        displayName: "大寮區, 高雄市, 台灣",
+        country: "台灣",
+        countryCode: "TW",
+        admin1: "高雄市",
+        admin2: "大寮區",
+        latitude: 22.585,
+        longitude: 120.396,
+        timezone: "Asia/Taipei",
+        population: 110_000,
+      };
+
+      expect(scoreCandidate(daliao, { raw: location, location }))
+        .toBeGreaterThanOrEqual(DEFAULT_RESOLVER_OPTIONS.minScore);
+    }
+  );
 });
 
 // ──────────────────────────────────────────

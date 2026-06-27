@@ -1,6 +1,8 @@
 ﻿import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+process.env.WEATHER_TEST_GEOCODING_PROVIDER = "open-meteo";
+
 import { deepResearcherWeatherTestInternals } from "./deep-researcher.js";
 import { llmGateway } from "../platform/llm-gateway.js";
 import type { WeatherToolResult } from "../tools/weather-types.js";
@@ -99,10 +101,10 @@ function installTaipeiWeatherFetchMock(): void {
         const name = url.searchParams.get("name");
         return jsonResponse({
           results:
-            name === "Taipei"
+            name === "\u53f0\u5317"
               ? [
                   {
-                    name: "Taipei",
+                    name: "\u53f0\u5317",
                     latitude: 25.033,
                     longitude: 121.565,
                     country: "Taiwan",
@@ -159,7 +161,7 @@ function installTaipeiForecastFetchMock(): void {
         return jsonResponse({
           results: [
             {
-              name: "Taipei",
+              name: "\u53f0\u5317",
               latitude: 25.033,
               longitude: 121.565,
               country: "Taiwan",
@@ -261,7 +263,21 @@ function installRepairWeatherFetchMock(): void {
                     population: 350_000,
                   },
                 ]
-              : name === MUNCHEN
+              : name === "Daliao"
+                ? [
+                    {
+                      name: "Daliao",
+                      latitude: 22.585,
+                      longitude: 120.396,
+                      country: "Taiwan",
+                      country_code: "TW",
+                      admin1: "Kaohsiung City",
+                      admin2: "Fengshan District",
+                      timezone: "Asia/Taipei",
+                      population: 110_000,
+                    },
+                  ]
+                : name === MUNCHEN
                 ? [
                     {
                       name: MUNCHEN,
@@ -323,6 +339,110 @@ function installRepairWeatherFetchMock(): void {
             relative_humidity_2m: "%",
             wind_speed_10m: "km/h",
             wind_direction_10m: "\u00b0",
+          },
+        });
+      }
+
+      throw new Error(`Unexpected network call: ${url.toString()}`);
+    })
+  );
+}
+
+function installDaliaoWeatherFetchMock(geocodingQueries: string[]): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+      );
+
+      if (url.hostname === "geocoding-api.open-meteo.com") {
+        geocodingQueries.push(url.searchParams.get("name") ?? "");
+        return jsonResponse({
+          results: [
+            {
+              id: 1,
+              name: "大寮區",
+              latitude: 22.585,
+              longitude: 120.396,
+              country: "台灣",
+              country_code: "TW",
+              admin1: "高雄市",
+              admin2: "大寮區",
+              timezone: "Asia/Taipei",
+              population: 110_000,
+            },
+            {
+              id: 1,
+              name: "Daliao",
+              latitude: 22.585,
+              longitude: 120.396,
+              country: "Taiwan",
+              country_code: "TW",
+              admin1: "Kaohsiung",
+              admin2: "Daliao District",
+              timezone: "Asia/Taipei",
+              population: 110_000,
+            },
+            {
+              id: 2,
+              name: "Daliao",
+              latitude: 4.2,
+              longitude: -74.3,
+              country: "Colombia",
+              country_code: "CO",
+              admin1: "Cundinamarca",
+              timezone: "America/Bogota",
+              population: 500,
+            },
+          ],
+        });
+      }
+
+      if (url.hostname === "api.open-meteo.com" && url.searchParams.has("daily")) {
+        return jsonResponse({
+          latitude: 22.585,
+          longitude: 120.396,
+          timezone: "Asia/Taipei",
+          daily: {
+            time: ["2026-06-28"],
+            weather_code: [61],
+            temperature_2m_max: [31],
+            temperature_2m_min: [25],
+            precipitation_probability_max: [80],
+            precipitation_sum: [8],
+          },
+          daily_units: {
+            temperature_2m_max: "°C",
+            temperature_2m_min: "°C",
+            precipitation_probability_max: "%",
+            precipitation_sum: "mm",
+          },
+        });
+      }
+
+      if (url.hostname === "api.open-meteo.com") {
+        return jsonResponse({
+          latitude: 22.585,
+          longitude: 120.396,
+          timezone: "Asia/Taipei",
+          current: {
+            time: "2026-06-28T12:00",
+            temperature_2m: 30,
+            relative_humidity_2m: 75,
+            weather_code: 1,
+            wind_speed_10m: 8,
+            wind_direction_10m: 180,
+          },
+          current_units: {
+            temperature_2m: "°C",
+            relative_humidity_2m: "%",
+            wind_speed_10m: "km/h",
+            wind_direction_10m: "°",
           },
         });
       }
@@ -470,14 +590,16 @@ describe("Deep Research weather structured result integration", () => {
     };
     const state = {
       ...stateWithWeather(result),
-      plan: {
+      planningResult: {
+        schemaVersion: 2,
         question: "Springfield weather",
-        answerMode: "weather",
+        kind: "weather",
         rationale: "weather",
-        queries: [],
-        urls: [],
-        weather: { location: "Springfield" },
-        requiredSourceCount: 1,
+        weather: {
+          rawLocation: "Springfield",
+          weatherCapability: "current",
+          units: "metric",
+        },
       },
       clarification: undefined,
     } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterTargetedTools>[0];
@@ -555,7 +677,7 @@ describe("Deep Research weather structured result integration", () => {
 
     expect(result.clarification?.status).toBe("resolved");
     expect(result.weatherExecution?.status).toBe("running");
-    expect(result.plan?.weather?.resolvedCandidate?.providerId).toBe("geo-2");
+    expect(result.selectedWeatherCandidate?.providerId).toBe("geo-2");
   });
 
   it("dispatches clarification region filters to a single provider-backed candidate", async () => {
@@ -571,7 +693,7 @@ describe("Deep Research weather structured result integration", () => {
     );
 
     expect(result.clarification?.status).toBe("resolved");
-    expect(result.plan?.weather?.resolvedCandidate?.providerId).toBe("geo-1");
+    expect(result.selectedWeatherCandidate?.providerId).toBe("geo-1");
   });
 
   it("dispatches clarification location changes as fresh weather requests", async () => {
@@ -588,8 +710,12 @@ describe("Deep Research weather structured result integration", () => {
 
     expect(result.clarification?.status).toBe("resolved");
     expect(result.weatherExecution?.status).toBe("running");
-    expect(result.plan?.weather?.location).toBe("Tokyo");
-    expect(result.plan?.weather?.resolvedCandidate).toBeUndefined();
+    expect(
+      result.planningResult?.kind === "weather"
+        ? result.planningResult.weather.rawLocation
+        : undefined
+    ).toBe("Tokyo");
+    expect(result.selectedWeatherCandidate).toBeUndefined();
   });
 
   it("dispatches clarification cancellation to a terminal cancelled weather result", async () => {
@@ -661,14 +787,16 @@ describe("Deep Research weather structured result integration", () => {
 
     const result = await deepResearcherWeatherTestInternals.targetedTools(
       ({
-        plan: {
+        planningResult: {
+          schemaVersion: 2,
           question: "Tokyo weather now",
-          answerMode: "weather",
+          kind: "weather",
           rationale: "weather request",
-          queries: [],
-          urls: [],
-          weather: { location: "Tokyo" },
-          requiredSourceCount: 3,
+          weather: {
+            rawLocation: "Tokyo",
+            weatherCapability: "current",
+            units: "metric",
+          },
         },
         messages: [],
       } as unknown) as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
@@ -687,22 +815,114 @@ describe("Deep Research weather structured result integration", () => {
     }
   });
 
+  it.each([
+    {
+      question: "高雄大寮今天會下雨嗎",
+      rawLocation: "高雄大寮",
+      weatherCapability: "daily" as const,
+      timeRange: { kind: "today" as const, granularity: "daily" as const },
+      expectedTool: "weather_forecast",
+    },
+    {
+      question: "大寮天氣",
+      rawLocation: "大寮",
+      weatherCapability: "current" as const,
+      expectedTool: "current_weather",
+    },
+    {
+      question: "高雄市大寮區天氣",
+      rawLocation: "高雄市大寮區",
+      weatherCapability: "current" as const,
+      expectedTool: "current_weather",
+    },
+    {
+      question: "Daliao, Kaohsiung weather",
+      rawLocation: "Daliao, Kaohsiung",
+      weatherCapability: "current" as const,
+      expectedTool: "current_weather",
+    },
+  ])(
+    "preserves rawLocation and resolves Daliao in Taiwan: $question",
+    async ({ question, rawLocation, weatherCapability, timeRange, expectedTool }) => {
+      const geocodingQueries: string[] = [];
+      installDaliaoWeatherFetchMock(geocodingQueries);
+      vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
+        invoke: vi.fn(async () =>
+          new AIMessage(
+            JSON.stringify({
+              schemaVersion: 2,
+              question,
+              kind: "weather",
+              rationale: "Weather request with a complete user-provided location.",
+              weather: {
+                rawLocation,
+                weatherCapability,
+                ...(timeRange ? { timeRange } : {}),
+                units: "metric",
+              },
+            })
+          )
+        ),
+      });
+
+      const state = makePlannerState([new HumanMessage(question)]);
+      const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+
+      expect(planned.planningResult?.kind).toBe("weather");
+      expect(
+        planned.planningResult?.kind === "weather"
+          ? planned.planningResult.weather.rawLocation
+          : undefined
+      ).toBe(rawLocation);
+      expect(
+        deepResearcherWeatherTestInternals.routeAfterPlan({
+          ...state,
+          planningResult: planned.planningResult,
+        } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterPlan>[0])
+      ).toBe("targeted_tools");
+
+      const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+        {
+          ...state,
+          planningResult: planned.planningResult,
+        } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+        {}
+      );
+
+      expect((toolResult.messages?.[0] as { name?: string } | undefined)?.name).toBe(expectedTool);
+      expect(toolResult.weatherExecution?.status).toBe("success");
+      const weatherResult =
+        toolResult.weatherExecution?.status === "success"
+          ? toolResult.weatherExecution.result
+          : undefined;
+      expect(weatherResult?.requestedLocation.raw).toBe(rawLocation);
+      expect(weatherResult?.requestedLocation.location).toBe(rawLocation);
+      expect(weatherResult?.status).toBe("success");
+      if (weatherResult?.status === "success") {
+        expect(weatherResult.resolvedLocation.countryCode).toBe("TW");
+        expect(weatherResult.resolvedLocation.admin1).toMatch(/高雄|Kaohsiung/);
+        expect(weatherResult.resolvedLocation.latitude).toBeCloseTo(22.585);
+      }
+      expect(geocodingQueries[0]).toBe(rawLocation);
+      expect(JSON.stringify(planned.planningResult)).not.toContain("queryName");
+    }
+  );
+
   it("plans a full Taipei weather question into a location request before invoking current_weather", async () => {
     installTaipeiWeatherFetchMock();
     vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
       invoke: vi.fn(async () =>
         new AIMessage(
           JSON.stringify({
+            schemaVersion: 2,
             question: "\u53f0\u5317\u73fe\u5728\u5929\u6c23\u5982\u4f55\uFF1F",
-            answerMode: "weather",
+            kind: "weather",
             rationale: "Weather intent with user-provided location.",
-            queries: [],
-            urls: [],
             weather: {
-              location: "\u53f0\u5317",
-              queryName: "Taipei",
+              rawLocation: "\u53f0\u5317",
+              weatherCapability: "current",
+              units: "metric",
             },
-            requiredSourceCount: 1,
           })
         )
       ),
@@ -720,14 +940,17 @@ describe("Deep Research weather structured result integration", () => {
 
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
 
-    expect(planned.plan?.answerMode).toBe("weather");
-    expect(planned.plan?.weather?.location).toBe("\u53f0\u5317");
-    expect(planned.plan?.weather?.queryName).toBe("Taipei");
+    expect(planned.planningResult?.kind).toBe("weather");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.rawLocation
+        : undefined
+    ).toBe("\u53f0\u5317");
 
     const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
       {
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
       {}
     );
@@ -742,31 +965,28 @@ describe("Deep Research weather structured result integration", () => {
       expect(weatherResult.requestedLocation.raw).toBe("\u53f0\u5317");
       expect(weatherResult.requestedLocation.location).toBe("\u53f0\u5317");
       expect(JSON.stringify(weatherResult)).not.toContain("queryName");
-      expect(weatherResult.resolvedLocation.name).toBe("Taipei");
+      expect(weatherResult.resolvedLocation.name).toBe("\u53f0\u5317");
       expect(weatherResult.current.temperature).toBe(24);
     }
   });
 
-  it("routes tomorrow daily forecast to weather_forecast while preserving queryName", async () => {
+  it("routes tomorrow daily forecast to weather_forecast while preserving rawLocation", async () => {
     installTaipeiForecastFetchMock();
     vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
       invoke: vi.fn(async () =>
         new AIMessage(
           JSON.stringify({
+            schemaVersion: 2,
             question: "\u53f0\u5317\u660e\u5929\u6703\u4e0b\u96e8\u55ce\uFF1F",
-            answerMode: "weather",
+            kind: "weather",
             rationale: "Forecast request with user-provided location.",
-            queries: [],
-            urls: [],
             weather: {
-              location: "\u53f0\u5317",
-              queryName: "Taipei",
+              rawLocation: "\u53f0\u5317",
               weatherCapability: "daily",
               timeRange: { kind: "tomorrow", startDate: "2026-06-24", endDate: "2026-06-24", granularity: "daily" },
               units: "metric",
               locale: "zh-TW",
             },
-            requiredSourceCount: 1,
           })
         )
       ),
@@ -777,13 +997,21 @@ describe("Deep Research weather structured result integration", () => {
     const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
       {
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
       {}
     );
 
-    expect(planned.plan?.weather?.weatherCapability).toBe("daily");
-    expect(planned.plan?.weather?.timeRange?.kind).toBe("tomorrow");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.weatherCapability
+        : undefined
+    ).toBe("daily");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.timeRange?.kind
+        : undefined
+    ).toBe("tomorrow");
     expect((toolResult.messages?.[0] as { name?: string } | undefined)?.name).toBe("weather_forecast");
     expect(toolResult.weatherExecution?.status).toBe("success");
     const weatherResult = toolResult.weatherExecution?.status === "success"
@@ -803,19 +1031,16 @@ describe("Deep Research weather structured result integration", () => {
       invoke: vi.fn(async () =>
         new AIMessage(
           JSON.stringify({
+            schemaVersion: 2,
             question: "\u53f0\u5317\u4eca\u665a\u6703\u8b8a\u51b7\u55ce\uFF1F",
-            answerMode: "weather",
+            kind: "weather",
             rationale: "Hourly forecast request.",
-            queries: [],
-            urls: [],
             weather: {
-              location: "\u53f0\u5317",
-              queryName: "Taipei",
+              rawLocation: "\u53f0\u5317",
               weatherCapability: "hourly",
               timeRange: { kind: "tonight", startDate: "2026-06-23", endDate: "2026-06-24", granularity: "hourly" },
               units: "metric",
             },
-            requiredSourceCount: 1,
           })
         )
       ),
@@ -826,12 +1051,16 @@ describe("Deep Research weather structured result integration", () => {
     const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
       {
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
       {}
     );
 
-    expect(planned.plan?.weather?.weatherCapability).toBe("hourly");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.weatherCapability
+        : undefined
+    ).toBe("hourly");
     expect((toolResult.messages?.[0] as { name?: string } | undefined)?.name).toBe("weather_forecast");
     const weatherResult = toolResult.weatherExecution?.status === "success"
       ? toolResult.weatherExecution.result
@@ -848,19 +1077,16 @@ describe("Deep Research weather structured result integration", () => {
       invoke: vi.fn(async () =>
         new AIMessage(
           JSON.stringify({
+            schemaVersion: 2,
             question: "\u53f0\u5317\u9031\u672b\u5929\u6c23\u5982\u4f55\uFF1F",
-            answerMode: "weather",
+            kind: "weather",
             rationale: "Weekend forecast request.",
-            queries: [],
-            urls: [],
             weather: {
-              location: "\u53f0\u5317",
-              queryName: "Taipei",
+              rawLocation: "\u53f0\u5317",
               weatherCapability: "daily",
               timeRange: { kind: "weekend", granularity: "daily" },
               units: "metric",
             },
-            requiredSourceCount: 1,
           })
         )
       ),
@@ -871,12 +1097,16 @@ describe("Deep Research weather structured result integration", () => {
     const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
       {
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
       {}
     );
 
-    expect(planned.plan?.weather?.timeRange?.kind).toBe("weekend");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.timeRange?.kind
+        : undefined
+    ).toBe("weekend");
     expect((toolResult.messages?.[0] as { name?: string } | undefined)?.name).toBe("weather_forecast");
   });
 
@@ -904,8 +1134,12 @@ describe("Deep Research weather structured result integration", () => {
     const state = makePlannerState([new HumanMessage("Taipei historical weather")]);
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
 
-    expect(planned.plan?.answerMode).toBe("clarify");
-    expect(planned.plan?.clarification).toBe(MISSING_WEATHER_LOCATION);
+    expect(planned.planningResult?.kind).toBe("extraction_error");
+    expect(
+      planned.planningResult?.kind === "extraction_error"
+        ? planned.planningResult.errorCode
+        : undefined
+    ).toBe("planner_schema_rejected");
   });
 
   it("does not invoke weather_forecast when forecast location is missing", async () => {
@@ -913,16 +1147,11 @@ describe("Deep Research weather structured result integration", () => {
       invoke: vi.fn(async () =>
         new AIMessage(
           JSON.stringify({
+            schemaVersion: 2,
             question: "\u660e\u5929\u6703\u4e0b\u96e8\u55ce\uFF1F",
-            answerMode: "weather",
+            kind: "missing_location",
             rationale: "Forecast request missing location.",
-            queries: [],
-            urls: [],
-            weather: {
-              weatherCapability: "daily",
-              timeRange: { kind: "tomorrow", granularity: "daily" },
-            },
-            requiredSourceCount: 1,
+            clarification: MISSING_WEATHER_LOCATION,
           })
         )
       ),
@@ -931,21 +1160,27 @@ describe("Deep Research weather structured result integration", () => {
     const state = makePlannerState([new HumanMessage("\u660e\u5929\u6703\u4e0b\u96e8\u55ce\uFF1F")]);
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
 
-    expect(planned.plan?.answerMode).toBe("clarify");
-    expect(planned.plan?.clarification).toBe(MISSING_WEATHER_LOCATION);
+    expect(planned.planningResult?.kind).toBe("missing_location");
+    expect(
+      planned.planningResult?.kind === "missing_location"
+        ? planned.planningResult.clarification
+        : undefined
+    ).toBe(MISSING_WEATHER_LOCATION);
   });
 
-  it("planner prompt documents optional queryName for Chinese and mixed-Chinese locations only", async () => {
+  it("planner prompt preserves rawLocation without provider-oriented fields", async () => {
     const invoke = vi.fn(async () =>
       new AIMessage(
         JSON.stringify({
+          schemaVersion: 2,
           question: "Tokyo weather now",
-          answerMode: "weather",
+          kind: "weather",
           rationale: "Weather request.",
-          queries: [],
-          urls: [],
-          weather: { location: "Tokyo" },
-          requiredSourceCount: 1,
+          weather: {
+            rawLocation: "Tokyo",
+            weatherCapability: "current",
+            units: "metric",
+          },
         })
       )
     );
@@ -955,25 +1190,25 @@ describe("Deep Research weather structured result integration", () => {
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
     const plannerPrompt = String((invoke.mock.calls as unknown as Array<[unknown]>)[0]?.[0]);
 
-    expect(planned.plan?.weather?.queryName).toBeUndefined();
-    expect(plannerPrompt).toContain("queryName");
-    expect(plannerPrompt).toContain("traditional Chinese");
-    expect(plannerPrompt).toContain("simplified Chinese");
-    expect(plannerPrompt).toContain("Japanese");
-    expect(plannerPrompt).toContain("Korean");
+    expect(JSON.stringify(planned.planningResult)).not.toContain("queryName");
+    expect(plannerPrompt).not.toContain("queryName");
+    expect(plannerPrompt).toContain("weather.rawLocation");
+    expect(plannerPrompt).toContain("original writing system");
   });
 
-  it("keeps rollback behavior when planner output omits queryName", async () => {
+  it("accepts a rawLocation-only weather plan", async () => {
     const invoke = vi.fn(async () =>
       new AIMessage(
         JSON.stringify({
+          schemaVersion: 2,
           question: "Tokyo weather now",
-          answerMode: "weather",
+          kind: "weather",
           rationale: "Weather request.",
-          queries: [],
-          urls: [],
-          weather: { location: "Tokyo" },
-          requiredSourceCount: 1,
+          weather: {
+            rawLocation: "Tokyo",
+            weatherCapability: "current",
+            units: "metric",
+          },
         })
       )
     );
@@ -982,9 +1217,13 @@ describe("Deep Research weather structured result integration", () => {
     const state = makePlannerState([new HumanMessage("Tokyo weather now")]);
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
 
-    expect(planned.plan?.answerMode).toBe("weather");
-    expect(planned.plan?.weather?.location).toBe("Tokyo");
-    expect(planned.plan?.weather?.queryName).toBeUndefined();
+    expect(planned.planningResult?.kind).toBe("weather");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.rawLocation
+        : undefined
+    ).toBe("Tokyo");
+    expect(JSON.stringify(planned.planningResult)).not.toContain("queryName");
   });
 
   it("plans only the latest user message in a multi-turn weather clarification thread", async () => {
@@ -992,15 +1231,15 @@ describe("Deep Research weather structured result integration", () => {
     const invoke = vi.fn(async () =>
       new AIMessage(
         JSON.stringify({
-          question: "User: stale transcript should not be used",
-          answerMode: "weather",
+          schemaVersion: 2,
+          question: latestQuestion,
+          kind: "weather",
           rationale: "Weather request for the latest user message.",
-          queries: [],
-          urls: [],
           weather: {
-            location: BEIJING_CITY,
+            rawLocation: BEIJING_CITY,
+            weatherCapability: "current",
+            units: "metric",
           },
-          requiredSourceCount: 1,
         })
       )
     );
@@ -1014,13 +1253,17 @@ describe("Deep Research weather structured result integration", () => {
 
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
 
-    expect(planned.plan?.question).toBe(latestQuestion);
-    expect(planned.plan?.answerMode).toBe("weather");
-    expect(planned.plan?.weather?.location).toBe(BEIJING_CITY);
+    expect(planned.planningResult?.question).toBe(latestQuestion);
+    expect(planned.planningResult?.kind).toBe("weather");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.rawLocation
+        : undefined
+    ).toBe(BEIJING_CITY);
     expect(
       deepResearcherWeatherTestInternals.routeAfterPlan({
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterPlan>[0])
     ).toBe("targeted_tools");
     const plannerPrompt = (invoke.mock.calls as unknown as Array<[unknown]>)[0]?.[0];
@@ -1035,22 +1278,25 @@ describe("Deep Research weather structured result integration", () => {
       .mockResolvedValueOnce(
         new AIMessage(
           JSON.stringify({
+            schemaVersion: 2,
             question,
-            answerMode: "clarify",
+            kind: "missing_location",
             rationale: "Planner failed to extract the weather location.",
-            queries: [],
-            urls: [],
             clarification: MISSING_WEATHER_LOCATION,
-            requiredSourceCount: 1,
           })
         )
       )
       .mockResolvedValueOnce(
         new AIMessage(
           JSON.stringify({
-            answerMode: "weather",
+            schemaVersion: 2,
+            question,
+            kind: "weather",
+            rationale: "Recovered the complete location span.",
             weather: {
-              location: KAOHSIUNG_FENGSHAN,
+              rawLocation: KAOHSIUNG_FENGSHAN,
+              weatherCapability: "current",
+              units: "metric",
             },
           })
         )
@@ -1078,20 +1324,24 @@ describe("Deep Research weather structured result integration", () => {
     const state = makePlannerState([new HumanMessage(question)]);
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
 
-    expect(planned.plan?.question).toBe(question);
-    expect(planned.plan?.answerMode).toBe("weather");
-    expect(planned.plan?.weather?.location).toBe(KAOHSIUNG_FENGSHAN);
+    expect(planned.planningResult?.question).toBe(question);
+    expect(planned.planningResult?.kind).toBe("weather");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.rawLocation
+        : undefined
+    ).toBe(KAOHSIUNG_FENGSHAN);
     expect(
       deepResearcherWeatherTestInternals.routeAfterPlan({
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterPlan>[0])
     ).toBe("targeted_tools");
 
     const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
       {
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
       {}
     );
@@ -1132,9 +1382,14 @@ describe("Deep Research weather structured result integration", () => {
       .mockResolvedValueOnce(
         new AIMessage(
           JSON.stringify({
-            answerMode: "weather",
+            schemaVersion: 2,
+            question,
+            kind: "weather",
+            rationale: "Recovered the complete location span.",
             weather: {
-              location: BEIJING_CITY,
+              rawLocation: BEIJING_CITY,
+              weatherCapability: "current",
+              units: "metric",
             },
           })
         )
@@ -1156,20 +1411,24 @@ describe("Deep Research weather structured result integration", () => {
     const state = makePlannerState([new HumanMessage(question)]);
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
 
-    expect(planned.plan?.question).toBe(question);
-    expect(planned.plan?.answerMode).toBe("weather");
-    expect(planned.plan?.weather?.location).toBe(BEIJING_CITY);
+    expect(planned.planningResult?.question).toBe(question);
+    expect(planned.planningResult?.kind).toBe("weather");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.rawLocation
+        : undefined
+    ).toBe(BEIJING_CITY);
     expect(
       deepResearcherWeatherTestInternals.routeAfterPlan({
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterPlan>[0])
     ).toBe("targeted_tools");
 
     const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
       {
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
       {}
     );
@@ -1195,15 +1454,15 @@ describe("Deep Research weather structured result integration", () => {
     const invoke = vi.fn(async () =>
       new AIMessage(
         JSON.stringify({
+          schemaVersion: 2,
           question,
-          answerMode: "weather",
+          kind: "weather",
           rationale: "Weather request for a user-provided Latin-script location.",
-          queries: [],
-          urls: [],
           weather: {
-            location: MUNCHEN,
+            rawLocation: MUNCHEN,
+            weatherCapability: "current",
+            units: "metric",
           },
-          requiredSourceCount: 1,
         })
       )
     );
@@ -1212,20 +1471,24 @@ describe("Deep Research weather structured result integration", () => {
     const state = makePlannerState([new HumanMessage(question)]);
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
 
-    expect(planned.plan?.question).toBe(question);
-    expect(planned.plan?.answerMode).toBe("weather");
-    expect(planned.plan?.weather?.location).toBe(MUNCHEN);
+    expect(planned.planningResult?.question).toBe(question);
+    expect(planned.planningResult?.kind).toBe("weather");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.rawLocation
+        : undefined
+    ).toBe(MUNCHEN);
     expect(
       deepResearcherWeatherTestInternals.routeAfterPlan({
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterPlan>[0])
     ).toBe("targeted_tools");
 
     const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
       {
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
       {}
     );
@@ -1252,15 +1515,15 @@ describe("Deep Research weather structured result integration", () => {
       .mockResolvedValueOnce(
         new AIMessage(
           JSON.stringify({
+            schemaVersion: 2,
             question: "\u5317\u4eac\u5e02\u73fe\u5728\u5e7e\u5ea6\uFF1F",
-            answerMode: "weather",
+            kind: "weather",
             rationale: "Weather request for Beijing.",
-            queries: [],
-            urls: [],
             weather: {
-              location: "\u5317\u4eac\u5e02",
+              rawLocation: "\u5317\u4eac\u5e02",
+              weatherCapability: "current",
+              units: "metric",
             },
-            requiredSourceCount: 1,
           })
         )
       )
@@ -1290,12 +1553,16 @@ describe("Deep Research weather structured result integration", () => {
     } as unknown) as Parameters<typeof deepResearcherWeatherTestInternals.planResearch>[0];
 
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
-    expect(planned.plan?.weather?.location).toBe("\u5317\u4eac\u5e02");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.rawLocation
+        : undefined
+    ).toBe("\u5317\u4eac\u5e02");
 
     const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
       {
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
       {}
     );
@@ -1325,15 +1592,15 @@ describe("Deep Research weather structured result integration", () => {
       .mockResolvedValueOnce(
         new AIMessage(
           JSON.stringify({
+            schemaVersion: 2,
             question: "\u9ad8\u96c4\u9cf3\u5c71\u4eca\u5929\u6703\u4e0b\u96e8\u55ce\uFF1F",
-            answerMode: "weather",
+            kind: "weather",
             rationale: "Weather request for Fengshan in Kaohsiung.",
-            queries: [],
-            urls: [],
             weather: {
-              location: "\u9ad8\u96c4\u9cf3\u5c71",
+              rawLocation: "\u9ad8\u96c4\u9cf3\u5c71",
+              weatherCapability: "current",
+              units: "metric",
             },
-            requiredSourceCount: 1,
           })
         )
       )
@@ -1370,12 +1637,16 @@ describe("Deep Research weather structured result integration", () => {
     } as unknown) as Parameters<typeof deepResearcherWeatherTestInternals.planResearch>[0];
 
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
-    expect(planned.plan?.weather?.location).toBe("\u9ad8\u96c4\u9cf3\u5c71");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.rawLocation
+        : undefined
+    ).toBe("\u9ad8\u96c4\u9cf3\u5c71");
 
     const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
       {
         ...state,
-        plan: planned.plan,
+        planningResult: planned.planningResult,
       } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
       {}
     );
@@ -1431,23 +1702,26 @@ describe("Deep Research weather structured result integration", () => {
       .mockResolvedValueOnce(
         new AIMessage(
           JSON.stringify({
+            schemaVersion: 2,
             question,
-            answerMode: "clarify",
+            kind: "missing_location",
             rationale: "Planner failed to extract the weather location.",
-            queries: [],
-            urls: [],
             clarification: MISSING_WEATHER_LOCATION,
-            requiredSourceCount: 1,
+            apiKey: "sk-secret-value",
           })
         )
       )
       .mockResolvedValueOnce(
         new AIMessage(
           JSON.stringify({
-            answerMode: "weather",
+            schemaVersion: 2,
+            question,
+            kind: "weather",
+            rationale: "Recovered the original location span.",
             weather: {
-              location: BEIJING_CITY,
-              apiKey: "sk-secret-value",
+              rawLocation: BEIJING_CITY,
+              weatherCapability: "current",
+              units: "metric",
             },
           })
         )
@@ -1457,7 +1731,7 @@ describe("Deep Research weather structured result integration", () => {
     const state = makePlannerState([new HumanMessage(question)]);
     const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
 
-    expect(planned.plan?.answerMode).toBe("weather");
+    expect(planned.planningResult?.kind).toBe("weather");
     const logs = consoleSpy.mock.calls.map((call) => call.join(" ")).join("\n");
     expect(logs).toContain("weather.llm.diagnostic");
     expect(logs).toContain('"phase":"planner_extraction"');
@@ -1493,13 +1767,15 @@ describe("Deep Research weather structured result integration", () => {
       invoke: vi.fn(async () =>
         new AIMessage(
           JSON.stringify({
+            schemaVersion: 2,
             question: "Tokyo weather now",
-            answerMode: "weather",
+            kind: "weather",
             rationale: "Weather request.",
-            queries: [],
-            urls: [],
-            weather: { location: "Tokyo" },
-            requiredSourceCount: 1,
+            weather: {
+              rawLocation: "Tokyo",
+              weatherCapability: "current",
+              units: "metric",
+            },
           })
         )
       ),
@@ -1514,5 +1790,86 @@ describe("Deep Research weather structured result integration", () => {
         responseFormat: { type: "json_object" },
       })
     );
+  });
+
+  it("12.3 extracts composite three-level Chinese admin place name as weather.location", async () => {
+    installRepairWeatherFetchMock();
+    const question = "\u53f0\u7063\u9ad8\u96c4\u5927\u5bee\u5929\u6c23\u5982\u4f55\uff1f";
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            schemaVersion: 2,
+            question,
+            kind: "missing_location",
+            rationale: "Planner failed to extract the weather location.",
+            clarification: MISSING_WEATHER_LOCATION,
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            schemaVersion: 2,
+            question,
+            kind: "weather",
+            rationale: "Recovered the complete location span.",
+            weather: {
+              rawLocation: "\u53f0\u7063\u9ad8\u96c4\u5927\u5bee",
+              weatherCapability: "current",
+              units: "metric",
+            },
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            candidates: [
+              {
+                location: "Daliao",
+                country: "Taiwan",
+                region: "Kaohsiung",
+              },
+            ],
+          })
+        )
+      );
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({ invoke });
+
+    const state = makePlannerState([new HumanMessage(question)]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+
+    expect(planned.planningResult?.kind).toBe("weather");
+    expect(
+      planned.planningResult?.kind === "weather"
+        ? planned.planningResult.weather.rawLocation
+        : undefined
+    ).toBe("\u53f0\u7063\u9ad8\u96c4\u5927\u5bee");
+    expect(JSON.stringify(planned.planningResult)).not.toContain("queryName");
+    expect(String(invoke.mock.calls[0]?.[0])).toContain("complete user-provided location span");
+    expect(String(invoke.mock.calls[1]?.[0])).toContain(
+      "complete user-provided location span"
+    );
+    expect(
+      deepResearcherWeatherTestInternals.routeAfterPlan({
+        ...state,
+        planningResult: planned.planningResult,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterPlan>[0])
+    ).toBe("targeted_tools");
+
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        planningResult: planned.planningResult,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+
+    expect((toolResult.messages?.[0] as { name?: string } | undefined)?.name).toBe(
+      "current_weather"
+    );
+    expect(toolResult.weatherExecution?.status).toBe("success");
   });
 });

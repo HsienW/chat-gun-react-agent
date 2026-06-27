@@ -78,19 +78,18 @@ export function buildLocationQuery(
  *
  * Order:
  * 1. Normalized location (original)
- * 2. location + country
- * 3. location + region
- * 4. location + region + country
+ * 2. location + region
+ * 3. location + region + country
+ * 4. location + country
  * 5-7. Same variants with language-coded queries
  *
  * Limited to MAX_QUERIES variants, deduplicated.
  */
 export function buildQueryVariants(
   query: LocationQuery,
-  maxVariants: number = 6,
-  queryName?: string
+  maxVariants: number = 6
 ): string[] {
-  return [...new Set(buildGeocodingQueryVariants(query, maxVariants, queryName).map((variant) => variant.text))];
+  return [...new Set(buildGeocodingQueryVariants(query, maxVariants).map((variant) => variant.text))];
 }
 
 /**
@@ -98,17 +97,12 @@ export function buildQueryVariants(
  */
 export function buildGeocodingQueryVariants(
   query: LocationQuery,
-  maxVariants: number = 6,
-  queryName?: string
+  maxVariants: number = 6
 ): GeocodingQueryVariant[] {
   const requiredTexts: string[] = [];
   const preFallbackOptionalTexts: string[] = [];
   const postFallbackOptionalTexts: string[] = [];
   const seenTexts = new Set<string>();
-  const normalizedQueryName = queryName ? normalizeLocation(queryName) : undefined;
-  const hasDistinctQueryName =
-    normalizedQueryName &&
-    normalizeVariantKey(normalizedQueryName) !== normalizeVariantKey(query.location);
 
   function addText(target: string[], text: string): void {
     const trimmed = text.trim();
@@ -119,23 +113,7 @@ export function buildGeocodingQueryVariants(
     }
   }
 
-  if (hasDistinctQueryName) {
-    addText(requiredTexts, normalizedQueryName);
-  }
-
   addText(requiredTexts, query.location);
-
-  if (hasDistinctQueryName && query.region) {
-    addText(requiredTexts, `${normalizedQueryName}, ${query.region}`);
-  }
-
-  if (hasDistinctQueryName && query.region && query.country) {
-    addText(requiredTexts, `${normalizedQueryName}, ${query.region}, ${query.country}`);
-  }
-
-  if (hasDistinctQueryName && query.country) {
-    addText(requiredTexts, `${normalizedQueryName}, ${query.country}`);
-  }
 
   if (query.region) {
     addText(requiredTexts, `${query.location}, ${query.region}`);
@@ -163,7 +141,7 @@ export function buildGeocodingQueryVariants(
 
   const providerVariants: GeocodingQueryVariant[] = [];
   const providerSeen = new Set<string>();
-  const allTexts = [...requiredTexts, ...preFallbackOptionalTexts, ...postFallbackOptionalTexts];
+  const languageFallbackTexts = [...requiredTexts, ...preFallbackOptionalTexts];
 
   function addVariant(text: string, language?: string): void {
     const key = `${normalizeVariantKey(text)}|${language ?? ""}`;
@@ -173,7 +151,7 @@ export function buildGeocodingQueryVariants(
     providerSeen.add(key);
     const strategy = language
       ? "locale_fallback"
-      : text === normalizedQueryName || text === query.location
+      : text === query.location
         ? "original"
         : "contextual";
     providerVariants.push({
@@ -192,7 +170,7 @@ export function buildGeocodingQueryVariants(
   }
 
   for (const language of ["zh", "en"]) {
-    for (const text of allTexts) {
+    for (const text of languageFallbackTexts) {
       addVariant(text, language);
     }
   }

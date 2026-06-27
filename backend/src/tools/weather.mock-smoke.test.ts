@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+process.env.WEATHER_TEST_GEOCODING_PROVIDER = "open-meteo";
+
 import { weatherTool } from "./weather.js";
 import type { WeatherToolResult } from "./weather-types.js";
 
@@ -269,57 +271,6 @@ const candidates: Record<string, OpenMeteoResult[]> = {
   ],
 };
 
-const latinQueryCandidates: Record<string, OpenMeteoResult[]> = {
-  taipei: [
-    {
-      name: "Taipei",
-      latitude: 25.033,
-      longitude: 121.565,
-      country: "Taiwan",
-      country_code: "TW",
-      admin1: "Taipei City",
-      timezone: "Asia/Taipei",
-      population: 7_000_000,
-    },
-  ],
-  "kaohsiung fengshan": [
-    {
-      name: "Fengshan",
-      latitude: 22.624,
-      longitude: 120.355,
-      country: "Taiwan",
-      country_code: "TW",
-      admin1: "Kaohsiung City",
-      admin2: "Fengshan District",
-      timezone: "Asia/Taipei",
-      population: 350_000,
-    },
-  ],
-  beijing: [
-    {
-      name: "Beijing",
-      latitude: 39.904,
-      longitude: 116.407,
-      country: "China",
-      country_code: "CN",
-      admin1: "Beijing",
-      timezone: "Asia/Shanghai",
-      population: 21_000_000,
-    },
-  ],
-  singapore: [
-    {
-      name: "Singapore",
-      latitude: 1.352,
-      longitude: 103.82,
-      country: "Singapore",
-      country_code: "SG",
-      timezone: "Asia/Singapore",
-      population: 5_600_000,
-    },
-  ],
-};
-
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
     status: init?.status ?? 200,
@@ -345,6 +296,38 @@ function installMockOpenMeteoFetch(
         const name = (url.searchParams.get("name") ?? "").toLowerCase();
         const results = geocodingCandidates[name] ?? [];
         return jsonResponse({ results });
+      }
+
+      if (url.hostname === "api.mapbox.com") {
+        const query = (url.searchParams.get("q") ?? "").toLowerCase();
+        const results = geocodingCandidates[query] ?? [];
+        return jsonResponse({
+          type: "FeatureCollection",
+          features: results.map((candidate) => ({
+            type: "Feature",
+            id: `${candidate.name}:${candidate.latitude}:${candidate.longitude}`,
+            geometry: {
+              type: "Point",
+              coordinates: [candidate.longitude, candidate.latitude],
+            },
+            properties: {
+              mapbox_id: `${candidate.name}:${candidate.latitude}:${candidate.longitude}`,
+              feature_type: "place",
+              name: candidate.name,
+              full_address: [candidate.name, candidate.admin1, candidate.country]
+                .filter(Boolean)
+                .join(", "),
+              context: {
+                country: {
+                  name: candidate.country,
+                  country_code: candidate.country_code,
+                },
+                region: { name: candidate.admin1 },
+                district: { name: candidate.admin2 },
+              },
+            },
+          })),
+        });
       }
 
       if (url.hostname === "api.open-meteo.com") {
@@ -429,13 +412,13 @@ describe("mock smoke acceptance for weather manual matrix", () => {
   });
 
   it.each([
-    ["5.1", TAIPEI_SIMPLIFIED, "Taipei", "Taipei"],
-    ["5.2", TAIPEI_TRADITIONAL, "Taipei", "Taipei"],
-    ["5.3", KAOHSIUNG_FENGSHAN, "Kaohsiung Fengshan", "Fengshan"],
-    ["5.4", BEIJING_CITY, "Beijing", "Beijing"],
-    ["5.5", SINGAPORE_ZH, "Singapore", "Singapore"],
-  ])("%s resolves CJK location %s through Latin queryName %s", async (_taskId, location, queryName, expectedName) => {
-    installMockOpenMeteoFetch({ kind: "normal" }, latinQueryCandidates);
+    ["5.1", TAIPEI_SIMPLIFIED, "Taipei", TAIPEI_SIMPLIFIED],
+    ["5.2", TAIPEI_TRADITIONAL, "Taipei", TAIPEI_TRADITIONAL],
+    ["5.3", KAOHSIUNG_FENGSHAN, "Kaohsiung Fengshan", KAOHSIUNG_FENGSHAN],
+    ["5.4", BEIJING_CITY, "Beijing", BEIJING_CITY],
+    ["5.5", SINGAPORE_ZH, "Singapore", SINGAPORE_ZH],
+  ])("%s ignores legacy queryName and resolves complete raw location %s", async (_taskId, location, queryName, expectedName) => {
+    installMockOpenMeteoFetch();
 
     const result = await invokeWeather({ location, queryName });
 
@@ -516,7 +499,7 @@ describe("mock smoke acceptance for weather manual matrix", () => {
   it("9.13 maps forecast provider failure to terminal error", async () => {
     installMockOpenMeteoFetch({ kind: "forecast_failure" });
 
-    const result = await invokeWeather({ location: "Tokyo" });
+    const result = await invokeWeather({ location: "Tokyo", country: "Japan" });
 
     expect(result.status).toBe("error");
     if (result.status === "error") {
@@ -555,11 +538,12 @@ describe("mock smoke acceptance for weather manual matrix", () => {
 
   it("does not enable weather fault injection in production", async () => {
     vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("MAPBOX_ACCESS_TOKEN", "test-token");
     vi.stubEnv("WEATHER_TEST_FORCE_GEOCODING_ERROR", "true");
     vi.stubEnv("WEATHER_TEST_FORCE_FORECAST_ERROR", "true");
     installMockOpenMeteoFetch();
 
-    const result = await invokeWeather({ location: "Tokyo" });
+    const result = await invokeWeather({ location: "Tokyo", country: "Japan" });
 
     expect(result.status).toBe("success");
   });

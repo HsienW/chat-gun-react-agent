@@ -26,7 +26,6 @@ export type WeatherGoldenEvalCase = {
     prompt: string;
     toolInput?: {
       location: string;
-      queryName?: string;
       country?: string;
       region?: string;
     };
@@ -74,13 +73,13 @@ export const WEATHER_GOLDEN_EVAL_CASES: WeatherGoldenEvalCase[] = [
     capabilityCategory: "current_observation",
     input: {
       prompt: "台北現在幾度？",
-      toolInput: { location: "台北", queryName: "Taipei" },
+      toolInput: { location: "台北" },
     },
     expected: {
       status: "success",
-      summary: "CJK location resolves through provider-backed queryName and returns current observation.",
+      summary: "CJK raw location resolves through the provider boundary and returns current observation.",
     },
-    diagnosticTags: ["cjk", "queryName", "current", "temperature"],
+    diagnosticTags: ["cjk", "raw-location", "current", "temperature"],
   },
   {
     id: "WGE-CURRENT-EN-TOKYO",
@@ -102,13 +101,13 @@ export const WEATHER_GOLDEN_EVAL_CASES: WeatherGoldenEvalCase[] = [
     capabilityCategory: "current_observation",
     input: {
       prompt: "新加坡 weather",
-      toolInput: { location: "新加坡", queryName: "Singapore" },
+      toolInput: { location: "新加坡" },
     },
     expected: {
       status: "success",
-      summary: "Mixed Chinese-Latin weather request resolves through provider-backed queryName.",
+      summary: "Mixed-language weather request preserves the raw location through resolution.",
     },
-    diagnosticTags: ["mixed-language", "queryName", "current"],
+    diagnosticTags: ["mixed-language", "raw-location", "current"],
   },
   {
     id: "WGE-CURRENT-UNICODE-SAO-PAULO",
@@ -390,7 +389,7 @@ export const WEATHER_GOLDEN_EVAL_CASES: WeatherGoldenEvalCase[] = [
     capabilityCategory: "current_observation",
     input: {
       prompt: "台北現在天氣如何？",
-      toolInput: { location: "台北", queryName: "Taipei" },
+      toolInput: { location: "台北" },
     },
     expected: {
       status: "success",

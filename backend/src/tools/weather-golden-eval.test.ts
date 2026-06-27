@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+process.env.WEATHER_TEST_GEOCODING_PROVIDER = "open-meteo";
+
 import {
   WEATHER_GOLDEN_EVAL_CASES,
   evaluateWeatherGoldenCase,
@@ -26,9 +28,9 @@ const TAIPEI_TRADITIONAL = "\u81fa\u5317";
 const SINGAPORE_ZH = "\u65b0\u52a0\u5761";
 
 const goldenCandidates: Record<string, OpenMeteoResult[]> = {
-  taipei: [
+  [TAIPEI.toLowerCase()]: [
     {
-      name: "Taipei",
+      name: TAIPEI,
       latitude: 25.033,
       longitude: 121.565,
       country: "Taiwan",
@@ -50,9 +52,9 @@ const goldenCandidates: Record<string, OpenMeteoResult[]> = {
       population: 14_000_000,
     },
   ],
-  singapore: [
+  [SINGAPORE_ZH.toLowerCase()]: [
     {
-      name: "Singapore",
+      name: SINGAPORE_ZH,
       latitude: 1.352,
       longitude: 103.82,
       country: "Singapore",
@@ -176,7 +178,6 @@ function installGoldenEvalFetchMock(scenario: "normal" | "provider_error" | "tim
 
 async function invokeWeather(input: {
   location: string;
-  queryName?: string;
   country?: string;
   region?: string;
 }, signal?: AbortSignal): Promise<WeatherToolResult> {
@@ -353,9 +354,9 @@ describe("weather golden eval matrix", () => {
   it("evaluates mock integration success, ambiguity, not_found, provider error, timeout, and cancellation", async () => {
     installGoldenEvalFetchMock();
 
-    const taipei = await invokeWeather({ location: TAIPEI, queryName: "Taipei" });
+    const taipei = await invokeWeather({ location: TAIPEI });
     const tokyo = await invokeWeather({ location: "Tokyo" });
-    const singapore = await invokeWeather({ location: SINGAPORE_ZH, queryName: "Singapore" });
+    const singapore = await invokeWeather({ location: SINGAPORE_ZH });
     const saoPaulo = await invokeWeather({ location: "S\u00e3o Paulo" });
     const ambiguous = await invokeWeather({ location: "Springfield" });
     const notFound = await invokeWeather({ location: "Definitely Missing Place" });

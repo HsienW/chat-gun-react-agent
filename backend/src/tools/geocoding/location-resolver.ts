@@ -25,8 +25,6 @@ export type ResolverOptions = {
   signal?: AbortSignal;
   /** Override result strategy, used for one-time LLM repair attempts */
   strategy?: ResolutionStrategy;
-  /** Optional provider-facing query hint produced by the planner. */
-  queryName?: string;
 };
 
 export const DEFAULT_RESOLVER_OPTIONS: ResolverOptions = {
@@ -57,7 +55,7 @@ export async function resolveLocation(
   provider: GeocodingProvider,
   options: ResolverOptions = DEFAULT_RESOLVER_OPTIONS
 ): Promise<LocationResolutionResult> {
-  const variants = buildGeocodingQueryVariants(query, options.maxQueries, options.queryName);
+  const variants = buildGeocodingQueryVariants(query, options.maxQueries);
   const attemptedQueries = variants.map(formatAttemptedQuery);
   const candidatesByKey = new Map<string, CandidateEntry>();
 
@@ -90,7 +88,7 @@ export async function resolveLocation(
         return {
           status: "provider_error",
           query,
-          provider: "open-meteo",
+          provider: provider.name,
           code: "weather_geocoding_cancelled",
           retryable: false,
         };
@@ -102,7 +100,7 @@ export async function resolveLocation(
           return {
             status: "provider_error",
             query,
-            provider: "open-meteo",
+            provider: provider.name,
             code: "weather_geocoding_timeout",
             retryable: true,
           };
@@ -112,7 +110,7 @@ export async function resolveLocation(
           return {
             status: "provider_error",
             query,
-            provider: "open-meteo",
+            provider: provider.name,
             code: "weather_geocoding_cancelled",
             retryable: false,
           };
@@ -121,7 +119,7 @@ export async function resolveLocation(
         return {
           status: "provider_error",
           query,
-          provider: "open-meteo",
+          provider: provider.name,
           code: "weather_geocoding_provider_error",
           retryable: isRetryableError(message),
         };
@@ -177,17 +175,10 @@ function scoreAndResolve(
 
   const second = scored[1];
   const hasContext = Boolean(query.country || query.region);
-  // Skip the short CJK ambiguity guard when candidates were found via a
-  // queryName (Latin) variant.  The CJK guard exists because short CJK
-  // queries often fail against the Latin-only geocoding index; when a
-  // queryName successfully bridged that gap, we trust the scoring.
-  const resolvedViaQueryName = candidates.some(
-    (entry) => entry.queryText !== query.location
-  );
   if (
     !hasContext &&
     second &&
-    !resolvedViaQueryName &&
+    hasLocationTextMatch(second.candidate, query.location) &&
     (isShortCjkQuery(query.raw) || isShortCjkQuery(query.location))
   ) {
     const differentCountries = scored
@@ -301,20 +292,6 @@ function shouldPreferCandidateText(
   existing: LocationCandidate,
   query: LocationQuery
 ): boolean {
-  // When a queryName-based variant (Latin) fetches a candidate first, and a
-  // subsequent language=zh variant returns a localized name for the same
-  // coordinates, prefer the Latin name.  The geocoding provider index is
-  // Latin-only; the Latin name is the canonical one for scoring purposes.
-  const existingIsLatin = /^\p{Script=Latin}/u.test(existing.name);
-  const incomingIsLatin = /^\p{Script=Latin}/u.test(incoming.name);
-  if (existingIsLatin !== incomingIsLatin) {
-    const latin = existingIsLatin ? existing : incoming;
-    const nonLatin = existingIsLatin ? incoming : existing;
-    // Only prefer Latin when the CJK name is a plausible localization,
-    // i.e. the Latin name matches the provider index.
-    return latin === incoming;
-  }
-
   const incomingScore = candidateTextMatchScore(incoming, query);
   const existingScore = candidateTextMatchScore(existing, query);
   if (incomingScore !== existingScore) {
@@ -389,9 +366,7 @@ export function scoreCandidate(
     score += 20;
   }
 
-  if (candidateCoversLocationTokens(candidate, normalizedLocation)) {
-    score += 15;
-  }
+  score += candidateLocationCoverageScore(candidate, normalizedLocation);
 
   // Country matching
   if (query.country && countryMatches(candidate, query.country)) {
@@ -422,19 +397,10 @@ function comparableTokens(value: string): string[] {
     .filter((token) => token.length >= 3);
 }
 
-function candidateCoversLocationTokens(
+function candidateLocationCoverageScore(
   candidate: LocationCandidate,
   normalizedLocation: string
-): boolean {
-  if (!hasLatinScript(normalizedLocation)) {
-    return false;
-  }
-
-  const locationTokens = comparableTokens(normalizedLocation);
-  if (locationTokens.length < 2) {
-    return false;
-  }
-
+): number {
   const candidateText = [
     candidate.name,
     candidate.displayName,
@@ -447,7 +413,29 @@ function candidateCoversLocationTokens(
     .map(normalizeComparable)
     .join(" ");
 
-  return locationTokens.every((token) => candidateText.includes(token));
+  if (hasLatinScript(normalizedLocation)) {
+    const locationTokens = comparableTokens(normalizedLocation);
+    return locationTokens.length >= 2 &&
+      locationTokens.every((token) => candidateText.includes(token))
+      ? 15
+      : 0;
+  }
+
+  const normalizedHanLocation = normalizedLocation.replace(/[^\p{Script=Han}\p{N}]+/gu, "");
+  if (normalizedHanLocation.length < 2) {
+    return 0;
+  }
+
+  const normalizedHanCandidate = candidateText.replace(/[^\p{Script=Han}\p{N}]+/gu, "");
+  const bigrams = Array.from(
+    { length: normalizedHanLocation.length - 1 },
+    (_, index) => normalizedHanLocation.slice(index, index + 2)
+  );
+  const matchedBigrams = bigrams.filter((bigram) =>
+    normalizedHanCandidate.includes(bigram)
+  ).length;
+
+  return matchedBigrams / bigrams.length >= 0.6 ? 35 : 0;
 }
 
 function isExactNameMatch(candidate: LocationCandidate, query: LocationQuery): boolean {
@@ -464,6 +452,17 @@ function hasClearDisplayNameMatch(candidate: LocationCandidate, query: LocationQ
     .map((part) => part.trim())
     .filter(Boolean);
   return displayParts.includes(normalizeComparable(query.location));
+}
+
+function hasLocationTextMatch(
+  candidate: LocationCandidate,
+  location: string
+): boolean {
+  const normalizedLocation = normalizeComparable(location);
+  const candidateName = normalizeComparable(candidate.name);
+  const displayName = normalizeComparable(candidate.displayName);
+  return candidateName.includes(normalizedLocation) ||
+    displayName.includes(normalizedLocation);
 }
 
 function isShortCjkQuery(value: string): boolean {

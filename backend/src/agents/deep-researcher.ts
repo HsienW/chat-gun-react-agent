@@ -6,7 +6,6 @@ import { MemorySaver } from "@langchain/langgraph-checkpoint";
 
 import { getBooleanEnv } from "../platform/env.js";
 import { BACKEND_ERROR_MESSAGES } from "../platform/error-messages.js";
-import { createPlannerFailureRoutingDecision } from "../platform/agent-routing-policy.js";
 import {
   createErrorEnvelope,
   formatErrorEnvelope,
@@ -34,6 +33,11 @@ import { getLatestUserMessage, getResearchTopic, messageContentToString } from "
 import { validateLocationInput } from "../tools/geocoding/location-normalizer.js";
 import { loadAgentTools } from "../tools/registry.js";
 import { normalizeAiMessageForStream } from "./message-normalization.js";
+import {
+  routePlanningResultV2,
+  safeParsePlanningResultV2,
+} from "./planning-result-v2.js";
+import type { PlanningResultV2 } from "./planning-result-v2.js";
 import type {
   WeatherToolResult,
   WeatherExecutionState,
@@ -43,7 +47,6 @@ import type {
   LocationCandidate,
   LocationQuery,
   WeatherCapability,
-  WeatherTimeRange,
 } from "../tools/weather-types.js";
 
 const DEFAULT_RESEARCH_MODEL = "";
@@ -88,44 +91,6 @@ const DEEP_RESEARCH_TOOL_NAMES = {
   webFetch: "web_fetch",
   weatherGeocodingStage: "weather_geocoding",
 } as const;
-
-type AnswerMode = "direct" | "weather" | "calculation" | "research" | "clarify";
-type Freshness = "pd" | "pw" | "pm" | "py";
-
-type WeatherRequest = {
-  location: string;
-  queryName?: string;
-  country?: string;
-  region?: string;
-  weatherCapability?: WeatherCapability;
-  timeRange?: WeatherTimeRange;
-  resolvedCandidate?: LocationCandidate;
-  units?: "metric";
-  locale?: string;
-};
-
-type CalculationRequest = {
-  expression: string;
-};
-
-type ResearchPlan = {
-  question: string;
-  answerMode: AnswerMode;
-  rationale: string;
-  queries: string[];
-  urls: string[];
-  freshness?: Freshness;
-  weather?: WeatherRequest;
-  calculation?: CalculationRequest;
-  clarification?: string;
-  requiredSourceCount: number;
-};
-
-type WeatherPlannerExtractionResponse = {
-  answerMode?: unknown;
-  weather?: unknown;
-  clarification?: unknown;
-} & Record<string, unknown>;
 
 type SearchResult = {
   title: string;
@@ -183,7 +148,7 @@ const DeepResearchState = Annotation.Root({
     reducer: (_left, right) => right,
     default: () => DEFAULT_RESEARCH_MODEL,
   }),
-  plan: Annotation<ResearchPlan | undefined>({
+  planningResult: Annotation<PlanningResultV2 | undefined>({
     reducer: (_left, right) => right,
     default: () => undefined,
   }),
@@ -216,6 +181,10 @@ const DeepResearchState = Annotation.Root({
     default: () => [],
   }),
   weatherExecution: Annotation<WeatherExecutionState | undefined>({
+    reducer: (_left, right) => right,
+    default: () => undefined,
+  }),
+  selectedWeatherCandidate: Annotation<LocationCandidate | undefined>({
     reducer: (_left, right) => right,
     default: () => undefined,
   }),
@@ -326,206 +295,39 @@ function uniqueStrings(values: unknown[], max: number): string[] {
   return output;
 }
 
-function fallbackPlan(
-  question: string,
-  state: typeof DeepResearchState.State,
-  plannerFailureReason?: string
-): ResearchPlan {
-  const decision = createPlannerFailureRoutingDecision(question, plannerFailureReason);
-  const maxQueries = clampInt(state.initial_search_query_count, DEFAULT_SEARCH_QUERY_COUNT, 1, 5);
-
-  return {
-    question,
-    answerMode: decision.answerMode,
-    rationale: decision.rationale,
-    queries: uniqueStrings(decision.queries, maxQueries),
-    urls: [],
-    weather: decision.weather,
-    calculation: decision.calculation,
-    clarification: decision.clarification,
-    requiredSourceCount: decision.requiredSourceCount,
-  };
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function coerceLocationHint(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const normalized = value.trim();
-  return normalized && !validateLocationInput(normalized, 160) ? normalized : undefined;
-}
-
-function coerceWeatherCapability(value: unknown): WeatherCapability | undefined {
-  return value === "current" || value === "hourly" || value === "daily"
-    ? value
-    : undefined;
-}
-
-function isValidIsoDateString(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    return false;
-  }
-  const parsed = new Date(`${value}T00:00:00Z`);
-  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
-}
-
-function coerceWeatherTimeRange(value: unknown): WeatherTimeRange | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  const kind = value.kind;
-  if (
-    kind !== "now" &&
-    kind !== "today" &&
-    kind !== "tonight" &&
-    kind !== "tomorrow" &&
-    kind !== "weekend" &&
-    kind !== "date_range"
-  ) {
-    return undefined;
-  }
-
-  const startDate = typeof value.startDate === "string" ? value.startDate : undefined;
-  const endDate = typeof value.endDate === "string" ? value.endDate : undefined;
-  if (startDate && !isValidIsoDateString(startDate)) {
-    return undefined;
-  }
-  if (endDate && !isValidIsoDateString(endDate)) {
-    return undefined;
-  }
-  if (startDate && endDate && startDate > endDate) {
-    return undefined;
-  }
-
-  const timezone = typeof value.timezone === "string" && value.timezone.trim()
-    ? value.timezone.trim()
-    : undefined;
-  const granularity =
-    value.granularity === "hourly" || value.granularity === "daily"
-      ? value.granularity
-      : undefined;
-
+function createMissingLocationPlanningResult(
+  question: string,
+  rationale: string
+): PlanningResultV2 {
   return {
-    kind,
-    ...(startDate ? { startDate } : {}),
-    ...(endDate ? { endDate } : {}),
-    ...(timezone ? { timezone } : {}),
-    ...(granularity ? { granularity } : {}),
-  };
-}
-
-function coerceWeatherRequest(value: unknown): WeatherRequest | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-
-  const location = coerceLocationHint(value.location);
-  if (!location) {
-    return undefined;
-  }
-
-  const country = coerceLocationHint(value.country);
-  const region = coerceLocationHint(value.region);
-  const queryName = coerceLocationHint(value.queryName);
-  const weatherCapability = coerceWeatherCapability(value.weatherCapability);
-  const timeRange = coerceWeatherTimeRange(value.timeRange);
-  const units = value.units === "metric" ? value.units : undefined;
-  const locale = coerceLocationHint(value.locale);
-  if ("weatherCapability" in value && value.weatherCapability !== undefined && !weatherCapability) {
-    return undefined;
-  }
-  if ("timeRange" in value && value.timeRange !== undefined && !timeRange) {
-    return undefined;
-  }
-  if ((weatherCapability === "hourly" || weatherCapability === "daily") && !timeRange) {
-    return undefined;
-  }
-  return {
-    location,
-    ...(queryName ? { queryName } : {}),
-    ...(country ? { country } : {}),
-    ...(region ? { region } : {}),
-    ...(weatherCapability ? { weatherCapability } : {}),
-    ...(timeRange ? { timeRange } : {}),
-    ...(units ? { units } : {}),
-    ...(locale ? { locale } : {}),
-  };
-}
-
-function missingWeatherLocationPlan(question: string, rationale: string): ResearchPlan {
-  return {
+    schemaVersion: 2,
     question,
-    answerMode: "clarify",
+    kind: "missing_location",
     rationale,
-    queries: [],
-    urls: [],
     clarification: BACKEND_ERROR_MESSAGES.planner.missingWeatherLocation,
-    requiredSourceCount: 1,
   };
 }
 
-function isMissingWeatherLocationClarification(value: string | undefined): boolean {
-  return value?.trim() === BACKEND_ERROR_MESSAGES.planner.missingWeatherLocation;
-}
-
-function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string, state: typeof DeepResearchState.State): ResearchPlan {
-  const fallback = fallbackPlan(question, state);
-  const modes: AnswerMode[] = ["direct", "weather", "calculation", "research", "clarify"];
-  const answerMode = modes.includes(rawPlan?.answerMode as AnswerMode)
-    ? (rawPlan?.answerMode as AnswerMode)
-    : fallback.answerMode;
-  const maxQueries = clampInt(state.initial_search_query_count, DEFAULT_SEARCH_QUERY_COUNT, 1, 5);
-  const weather = coerceWeatherRequest(rawPlan?.weather);
-  const calculation =
-    rawPlan?.calculation && typeof rawPlan.calculation.expression === "string"
-      ? { expression: rawPlan.calculation.expression }
-      : undefined;
-  const clarification =
-    typeof rawPlan?.clarification === "string" ? rawPlan.clarification : undefined;
-
-  if (answerMode === "weather" && !weather?.location.trim()) {
-    return missingWeatherLocationPlan(
-      question,
-      "The planner classified weather intent but did not provide a geocoding-friendly location."
-    );
-  }
-
-  if (answerMode === "calculation" && !calculation?.expression.trim()) {
-    return {
-      ...fallback,
-      answerMode: "clarify",
-      queries: [],
-      rationale: "The planner classified calculation intent but did not provide an expression.",
-      clarification: BACKEND_ERROR_MESSAGES.planner.missingCalculationExpression,
-    };
-  }
-
+function createPlanningExtractionError(
+  question: string,
+  errorCode: Extract<
+    PlanningResultV2,
+    { kind: "extraction_error" }
+  >["errorCode"],
+  retryable: boolean,
+  rationale: string
+): PlanningResultV2 {
   return {
+    schemaVersion: 2,
     question,
-    answerMode,
-    rationale: typeof rawPlan?.rationale === "string" ? rawPlan.rationale : fallback.rationale,
-    queries: uniqueStrings(
-      Array.isArray(rawPlan?.queries)
-        ? rawPlan.queries
-        : answerMode === "research"
-          ? [question]
-          : [],
-      maxQueries
-    ),
-    urls: uniqueStrings(Array.isArray(rawPlan?.urls) ? rawPlan.urls : [], 5),
-    freshness: ["pd", "pw", "pm", "py"].includes(rawPlan?.freshness as string)
-      ? (rawPlan?.freshness as Freshness)
-      : undefined,
-    weather,
-    calculation,
-    clarification,
-    requiredSourceCount: clampInt(rawPlan?.requiredSourceCount, fallback.requiredSourceCount, 1, 8),
+    kind: "extraction_error",
+    rationale,
+    errorCode,
+    retryable,
   };
 }
 
@@ -699,7 +501,9 @@ function parseWeatherToolResult(content: string): WeatherToolResult | undefined 
   return undefined;
 }
 
-function getWeatherToolNameForRequest(request: WeatherRequest): string {
+function getWeatherToolNameForRequest(
+  request: Extract<PlanningResultV2, { kind: "weather" }>["weather"]
+): string {
   return request.weatherCapability === "hourly" || request.weatherCapability === "daily"
     ? DEEP_RESEARCH_TOOL_NAMES.weatherForecast
     : DEEP_RESEARCH_TOOL_NAMES.currentWeather;
@@ -733,17 +537,12 @@ const FORBIDDEN_WEATHER_REPAIR_FIELDS = [
   "sourceUrl",
 ] as const;
 
-const FORBIDDEN_WEATHER_PLANNER_EXTRACTION_FIELDS = [
-  ...FORBIDDEN_WEATHER_REPAIR_FIELDS,
-  "candidate",
-  "candidates",
-] as const;
-
 type WeatherLlmDiagnosticFailureCode =
   | "llm_unavailable"
   | "parse_failed"
   | "schema_rejected"
-  | "empty_candidates";
+  | "empty_candidates"
+  | Extract<PlanningResultV2, { kind: "extraction_error" }>["errorCode"];
 
 const SENSITIVE_DIAGNOSTIC_KEY = /(api[-_]?key|authorization|token|password|secret|credential)/i;
 
@@ -979,209 +778,83 @@ function shouldRepairWeatherRequest(
   return result.status === "not_found";
 }
 
-function plannerReturnedWeatherWithoutLocation(rawPlan: Partial<ResearchPlan> | undefined): boolean {
-  return rawPlan?.answerMode === "weather" && !coerceWeatherRequest(rawPlan.weather);
-}
-
-function shouldRetryWeatherPlannerExtraction(
-  rawPlan: Partial<ResearchPlan> | undefined,
-  plan: ResearchPlan,
-  question: string
-): boolean {
-  const rawClarification =
-    typeof rawPlan?.clarification === "string" ? rawPlan.clarification : undefined;
-  const fallbackDecision = createPlannerFailureRoutingDecision(question);
-  const fallbackDetectedWeatherWithoutLocation =
-    plan.answerMode === "clarify" &&
-    !plan.weather?.location.trim() &&
-    fallbackDecision.answerMode === "clarify" &&
-    isMissingWeatherLocationClarification(fallbackDecision.clarification);
-
-  return (
-    plannerReturnedWeatherWithoutLocation(rawPlan) ||
-    isMissingWeatherLocationClarification(rawClarification) ||
-    (plan.answerMode === "clarify" &&
-      isMissingWeatherLocationClarification(plan.clarification)) ||
-    fallbackDetectedWeatherWithoutLocation
-  );
-}
-
-function hasForbiddenWeatherExtractionFields(
-  parsed: WeatherPlannerExtractionResponse | undefined
-): boolean {
-  if (!parsed) {
-    return false;
-  }
-
-  const weather = isRecord(parsed.weather) ? parsed.weather : undefined;
-  return FORBIDDEN_WEATHER_PLANNER_EXTRACTION_FIELDS.some(
-    (field) => field in parsed || Boolean(weather && field in weather)
-  );
-}
-
-function coerceWeatherPlannerExtractionPlan(
-  parsed: WeatherPlannerExtractionResponse | undefined,
-  question: string
-): ResearchPlan | undefined {
-  if (!parsed || !isRecord(parsed) || hasForbiddenWeatherExtractionFields(parsed)) {
-    return undefined;
-  }
-
-  const weather = coerceWeatherRequest(parsed.weather);
-  if (weather) {
-    return {
-      question,
-      answerMode: "weather",
-      rationale: "Bounded weather planner extraction recovered a user-provided location.",
-      queries: [],
-      urls: [],
-      weather,
-      requiredSourceCount: 1,
-    };
-  }
-
-  if (parsed.answerMode === "clarify") {
-    return {
-      ...missingWeatherLocationPlan(
-        question,
-        "Bounded weather planner extraction could not find a user-provided location."
-      ),
-      clarification:
-        typeof parsed.clarification === "string" && parsed.clarification.trim()
-          ? parsed.clarification.trim()
-          : BACKEND_ERROR_MESSAGES.planner.missingWeatherLocation,
-    };
-  }
-
-  return undefined;
-}
-
-async function retryWeatherPlannerExtraction(
-  question: string,
-  state: typeof DeepResearchState.State
-): Promise<ResearchPlan | undefined> {
-  const prompt = [
-    "Return only JSON. Do not use markdown.",
-    "Extract a weather planning decision from the current user request only.",
-    "Plan only the current user request.",
-    "Do not use prior messages.",
-    "Do not treat prior assistant clarification as the current request.",
-    "Use the exact user-provided place text, or a directly traceable place span from the current request.",
-    "Keep weather.location as the original user-provided place text.",
-    "For traditional Chinese, simplified Chinese, or mixed Chinese-Latin place text, add weather.queryName only when you know a geocoding-friendly Latin name.",
-    "Do not add queryName for pure English or Latin-script place text.",
-    "Japanese and Korean place names are out of scope for required queryName coverage; do not guess if uncertain.",
-    "Do not strip weather words, time words, particles, or punctuation to guess a location.",
-    "If the current request asks for weather and includes a location, return answerMode weather with weather.location.",
-    "If no location is provided, return answerMode clarify with a short clarification.",
-    "Do not invent coordinates.",
-    "Do not return latitude, longitude, coordinates, providerId, provider candidates, URLs, source names, or tool calls.",
-    'JSON schema: {"answerMode":"weather|clarify","weather":{"location":"string","queryName":"string optional","country":"string optional","region":"string optional","weatherCapability":"current|hourly|daily optional","timeRange":{"kind":"now|today|tonight|tomorrow|weekend|date_range","startDate":"YYYY-MM-DD optional","endDate":"YYYY-MM-DD optional","timezone":"string optional","granularity":"hourly|daily optional"} optional","units":"metric optional","locale":"string optional"},"clarification":"string optional"}',
-    `Current user request: ${JSON.stringify(question)}`,
-  ].join("\n");
-
-  try {
-    const model = state.reasoning_model.trim() || undefined;
-    const llm = llmGateway.createChatModel({
-      purpose: "research",
-      model,
-      temperature: 0,
-      responseFormat: { type: "json_object" },
-    });
-    const response = await llm.invoke(prompt);
-    const rawContent = messageContentToString(response);
-    const parsedResult = parseJsonObjectWithDiagnostics<WeatherPlannerExtractionResponse>(rawContent);
-    if (parsedResult.failureCode || !parsedResult.parsed) {
-      await recordWeatherLlmDiagnostic({
-        phase: "planner_extraction",
-        failureCode: "parse_failed",
-        responseContentLength: parsedResult.responseContentLength,
-      });
-      return undefined;
+type PlanningInvocationResult =
+  | {
+      status: "success";
+      planningResult: PlanningResultV2;
+      responseContentLength: number;
+      plannerJson: unknown;
     }
+  | {
+      status: "failure";
+      errorCode: Extract<
+        PlanningResultV2,
+        { kind: "extraction_error" }
+      >["errorCode"];
+      responseContentLength?: number;
+      plannerJson?: unknown;
+    };
 
-    const plan = coerceWeatherPlannerExtractionPlan(parsedResult.parsed, question);
-    await recordWeatherLlmDiagnostic({
-      phase: "planner_extraction",
-      resultStatus: plan ? plan.answerMode : "rejected",
-      failureCode: plan ? undefined : "schema_rejected",
-      responseContentLength: parsedResult.responseContentLength,
-      plannerJson: parsedResult.parsed,
-    });
-    return plan;
-  } catch {
-    await recordWeatherLlmDiagnostic({
-      phase: "planner_extraction",
-      failureCode: "llm_unavailable",
-    });
-    return undefined;
-  }
-}
-
-async function applyWeatherPlannerExtractionRetry(
-  rawPlan: Partial<ResearchPlan> | undefined,
-  plan: ResearchPlan,
-  question: string,
-  state: typeof DeepResearchState.State
-): Promise<ResearchPlan> {
-  if (!shouldRetryWeatherPlannerExtraction(rawPlan, plan, question)) {
-    return plan;
-  }
-
-  const retryPlan = await retryWeatherPlannerExtraction(question, state);
-  return retryPlan ?? missingWeatherLocationPlan(
-    question,
-    "Weather intent was detected, but no geocoding-friendly location was provided."
-  );
-}
-
-async function planResearch(
-  state: typeof DeepResearchState.State,
-  _config: RunnableConfig
-): Promise<Partial<typeof DeepResearchState.State>> {
-  const question = getLatestUserMessage(state.messages).trim();
-  if (!question) {
+function parsePlanningModelResponse(rawContent: string): PlanningInvocationResult {
+  const parsedResponse = parseJsonObjectWithDiagnostics<unknown>(rawContent);
+  if (parsedResponse.failureCode || parsedResponse.parsed === undefined) {
     return {
-      plan: {
-        question: "",
-        answerMode: "clarify",
-        rationale: "No user question was provided.",
-        queries: [],
-        urls: [],
-        clarification: "Please provide a question to research.",
-        requiredSourceCount: 1,
-      },
+      status: "failure",
+      errorCode: "planner_parse_error",
+      responseContentLength: parsedResponse.responseContentLength,
     };
   }
 
-  const contextPack = state.contextPack ?? buildImAgentContextPack(state.messages);
-  const imageContext = state.imageObservations.length
-    ? state.imageObservations.join("\n\n")
-    : "No image attachments were provided.";
-  const prompt = [
+  const validatedPlanningResult = safeParsePlanningResultV2(parsedResponse.parsed);
+  if (!validatedPlanningResult.success) {
+    return {
+      status: "failure",
+      errorCode: "planner_schema_rejected",
+      responseContentLength: parsedResponse.responseContentLength,
+      plannerJson: parsedResponse.parsed,
+    };
+  }
+
+  return {
+    status: "success",
+    planningResult: validatedPlanningResult.data,
+    responseContentLength: parsedResponse.responseContentLength,
+    plannerJson: parsedResponse.parsed,
+  };
+}
+
+function buildPlanningPrompt(
+  question: string,
+  contextPack: ImAgentContextPack,
+  imageContext: string,
+  isRetry: boolean
+): string {
+  return [
     "You are a research pipeline planner for a LangGraph agent.",
-    "Return only one JSON object. Do not use markdown.",
-    "Plan only the current user request.",
-    "Recent messages are context only.",
-    "Do not treat prior assistant clarification as the current request.",
-    "Set question exactly to the current user request below, not to a transcript.",
-    "Classify the user request and decide whether it needs direct answer, weather, calculation, web research, or clarification.",
-    "Use web research for current facts, news, products, prices, law, regulations, company/person changes, technical docs that may have changed, and any topic requiring external evidence.",
-    "Use weather only for actual weather/temperature/rain/wind/humidity questions.",
-    "For weather, set weather.weatherCapability to current, hourly, or daily.",
-    "Use current for current observations such as now/current temperature or current wind.",
-    "Use hourly for tonight or intra-day forecast buckets.",
-    "Use daily for tomorrow, weekend, or multi-day forecast questions.",
-    "Do not emit historical, climate, forecast, or advice as weatherCapability values.",
-    "For hourly or daily weather, include weather.timeRange with kind now, today, tonight, tomorrow, weekend, or date_range. Use ISO startDate/endDate only when deterministic.",
-    "Set weather.units to metric when units are not specified.",
-    "For weather, extract the place name the user provided. Keep weather.location as the original text the user used. Include country or region only when the user explicitly mentioned them.",
-    "For traditional Chinese, simplified Chinese, or mixed Chinese-Latin weather locations, add weather.queryName only when you know a geocoding-friendly Latin name. Do not add queryName for pure English or Latin-script locations.",
-    "Japanese and Korean place names are out of scope for required queryName coverage; do not guess queryName if uncertain.",
-    "Do not include latitude or longitude in the weather request — the geocoding tool resolves coordinates.",
-    "If a location is ambiguous, include country or region when the user supplied it; otherwise leave it to the weather tool to request clarification.",
-    "JSON schema:",
-    '{"question":"string","answerMode":"direct|weather|calculation|research|clarify","rationale":"string","queries":["string"],"urls":["https://..."],"freshness":"pd|pw|pm|py optional","weather":{"location":"string","queryName":"string optional","country":"string optional","region":"string optional","weatherCapability":"current|hourly|daily optional","timeRange":{"kind":"now|today|tonight|tomorrow|weekend|date_range","startDate":"YYYY-MM-DD optional","endDate":"YYYY-MM-DD optional","timezone":"string optional","granularity":"hourly|daily optional"} optional","units":"metric optional","locale":"string optional"},"calculation":{"expression":"string"},"clarification":"string optional","requiredSourceCount":3}',
+    "Return exactly one JSON object that satisfies PlanningResultV2. Do not use markdown.",
+    isRetry
+      ? "The previous response was invalid or reported a missing location. Re-evaluate the current request once."
+      : "Plan only the current user request.",
+    "Recent messages are context only. Do not treat prior assistant clarification as the current request.",
+    "Set schemaVersion to 2 and question exactly to the current user request.",
+    "Select exactly one kind: direct, weather, calculation, research, missing_location, clarify, or extraction_error.",
+    "Use weather only for weather, temperature, rain, wind, or humidity requests.",
+    "For kind weather, preserve the complete user-provided location span in weather.rawLocation, including every administrative qualifier and its original writing system.",
+    "Do not translate, romanize, geocode, shorten, decompose, or replace weather.rawLocation.",
+    "Do not infer coordinates, provider identifiers, provider candidates, feature identifiers, or resolved locations.",
+    "Set weather.weatherCapability to current, hourly, or daily.",
+    "Use current for current observations, hourly for intra-day forecast buckets, and daily for today, tomorrow, weekend, or multi-day forecasts.",
+    "For hourly or daily weather, include weather.timeRange with kind now, today, tonight, tomorrow, weekend, or date_range.",
+    "Set weather.units to metric. Include country or region only when explicitly present as separate context in the request.",
+    "Use missing_location only when a weather request truly contains no location span.",
+    "Use clarify only for missing calculation input or insufficient non-weather context.",
+    "PlanningResultV2 JSON shapes:",
+    '{"schemaVersion":2,"question":"string","rationale":"string","kind":"direct"}',
+    '{"schemaVersion":2,"question":"string","rationale":"string","kind":"weather","weather":{"rawLocation":"string","country":"string optional","region":"string optional","weatherCapability":"current|hourly|daily","timeRange":{"kind":"now|today|tonight|tomorrow|weekend|date_range","startDate":"YYYY-MM-DD optional","endDate":"YYYY-MM-DD optional","timezone":"string optional","granularity":"hourly|daily optional"} optional","units":"metric","locale":"string optional"}}',
+    '{"schemaVersion":2,"question":"string","rationale":"string","kind":"calculation","calculation":{"expression":"string"}}',
+    '{"schemaVersion":2,"question":"string","rationale":"string","kind":"research","queries":["string"],"urls":["https://..."],"freshness":"pd|pw|pm|py optional","requiredSourceCount":1}',
+    '{"schemaVersion":2,"question":"string","rationale":"string","kind":"missing_location","clarification":"string"}',
+    '{"schemaVersion":2,"question":"string","rationale":"string","kind":"clarify","reason":"missing_calculation|insufficient_context","clarification":"string"}',
     `Today is ${today()}.`,
     "IM Context Pack:",
     JSON.stringify(contextPack, null, 2),
@@ -1190,7 +863,12 @@ async function planResearch(
     "Current user request:",
     question,
   ].join("\n");
+}
 
+async function invokePlanningModel(
+  prompt: string,
+  state: typeof DeepResearchState.State
+): Promise<PlanningInvocationResult> {
   try {
     const model = state.reasoning_model.trim() || undefined;
     const llm = llmGateway.createChatModel({
@@ -1200,53 +878,101 @@ async function planResearch(
       responseFormat: { type: "json_object" },
     });
     const response = await llm.invoke(prompt);
-    const rawContent = messageContentToString(response);
-    const parsedResult = parseJsonObjectWithDiagnostics<Partial<ResearchPlan>>(rawContent);
-    const parsed = parsedResult.parsed;
-    const plan = await applyWeatherPlannerExtractionRetry(
-      parsed,
-      coercePlan(parsed, question, state),
-      question,
-      state
-    );
-    await recordWeatherLlmDiagnostic({
-      phase: "planner",
-      resultStatus: plan.answerMode,
-      failureCode: parsedResult.failureCode,
-      responseContentLength: parsedResult.responseContentLength,
-      plannerJson: parsed,
-    });
-    return { plan };
-  } catch (error) {
-    const llmDiagnostics = describeLlmGatewayConfig();
-    await recordMetric("planner.llm.failure.count", {
-      count: 1,
-      ...llmDiagnostics,
-    });
-    const fallback = fallbackPlan(question, state, formatLlmError(error));
-    const plan = await applyWeatherPlannerExtractionRetry(undefined, fallback, question, state);
-    await recordWeatherLlmDiagnostic({
-      phase: "planner",
-      resultStatus: plan.answerMode,
-      failureCode: "llm_unavailable",
-    });
-    return { plan };
+    return parsePlanningModelResponse(messageContentToString(response));
+  } catch {
+    return {
+      status: "failure",
+      errorCode: "planner_invoke_error",
+    };
   }
 }
 
-function routeAfterPlan(state: typeof DeepResearchState.State): string {
-  switch (state.plan?.answerMode) {
-    case "clarify":
-      return DEEP_RESEARCH_GRAPH_ROUTES.synthesize;
-    case "weather":
-    case "calculation":
-      return DEEP_RESEARCH_GRAPH_ROUTES.targetedTools;
-    case "research":
-      return DEEP_RESEARCH_GRAPH_ROUTES.searchWeb;
-    case "direct":
-    default:
-      return DEEP_RESEARCH_GRAPH_ROUTES.synthesize;
+async function planResearchV2(
+  state: typeof DeepResearchState.State,
+  _config: RunnableConfig
+): Promise<Partial<typeof DeepResearchState.State>> {
+  const question = getLatestUserMessage(state.messages).trim();
+  if (!question) {
+    return {
+      planningResult: {
+        schemaVersion: 2,
+        question: "No user question was provided.",
+        kind: "clarify",
+        rationale: "No user question was provided.",
+        reason: "insufficient_context",
+        clarification: "Please provide a question to research.",
+      },
+    };
   }
+
+  const contextPack = state.contextPack ?? buildImAgentContextPack(state.messages);
+  const imageContext = state.imageObservations.length
+    ? state.imageObservations.join("\n\n")
+    : "No image attachments were provided.";
+  const initialInvocation = await invokePlanningModel(
+    buildPlanningPrompt(question, contextPack, imageContext, false),
+    state
+  );
+  const shouldRetry =
+    initialInvocation.status === "failure" ||
+    initialInvocation.planningResult.kind === "missing_location";
+  if (shouldRetry) {
+    await recordWeatherLlmDiagnostic({
+      phase: "planner",
+      resultStatus:
+        initialInvocation.status === "success"
+          ? initialInvocation.planningResult.kind
+          : "rejected",
+      failureCode:
+        initialInvocation.status === "failure"
+          ? initialInvocation.errorCode
+          : undefined,
+      responseContentLength: initialInvocation.responseContentLength,
+      plannerJson: initialInvocation.plannerJson,
+    });
+  }
+  const finalInvocation = shouldRetry
+    ? await invokePlanningModel(
+        buildPlanningPrompt(question, contextPack, imageContext, true),
+        state
+      )
+    : initialInvocation;
+
+  if (finalInvocation.status === "success") {
+    await recordWeatherLlmDiagnostic({
+      phase: shouldRetry ? "planner_extraction" : "planner",
+      resultStatus: finalInvocation.planningResult.kind,
+      responseContentLength: finalInvocation.responseContentLength,
+      plannerJson: finalInvocation.plannerJson,
+    });
+    return { planningResult: finalInvocation.planningResult };
+  }
+
+  const llmDiagnostics = describeLlmGatewayConfig();
+  await recordMetric("planner.llm.failure.count", {
+    count: 1,
+    ...llmDiagnostics,
+  });
+  const planningResult = createPlanningExtractionError(
+    question,
+    finalInvocation.errorCode,
+    finalInvocation.errorCode === "planner_invoke_error",
+    `PlanningResultV2 generation failed: ${finalInvocation.errorCode}.`
+  );
+  await recordWeatherLlmDiagnostic({
+    phase: shouldRetry ? "planner_extraction" : "planner",
+    resultStatus: planningResult.kind,
+    failureCode: finalInvocation.errorCode,
+    responseContentLength: finalInvocation.responseContentLength,
+    plannerJson: finalInvocation.plannerJson,
+  });
+  return { planningResult };
+}
+
+function routeAfterPlan(state: typeof DeepResearchState.State): string {
+  return state.planningResult
+    ? routePlanningResultV2(state.planningResult)
+    : DEEP_RESEARCH_GRAPH_ROUTES.synthesize;
 }
 
 /**
@@ -1256,33 +982,33 @@ async function targetedTools(
   state: typeof DeepResearchState.State,
   _config: RunnableConfig
 ): Promise<Partial<typeof DeepResearchState.State>> {
-  const plan = state.plan;
+  const planningResult = state.planningResult;
   const messages: ToolMessage[] = [];
   let weatherExecution: WeatherExecutionState | undefined;
 
-  if (plan?.answerMode === "weather") {
-    const rawRequest = plan.weather ?? { location: plan.question };
+  if (planningResult?.kind === "weather") {
+    const rawRequest = planningResult.weather;
     const request: LocationQuery = {
-      raw: rawRequest.location,
-      location: rawRequest.location,
+      raw: rawRequest.rawLocation,
+      location: rawRequest.rawLocation,
       country: rawRequest.country,
       region: rawRequest.region,
     };
 
     weatherExecution = { status: "running", requestedLocation: request };
     const toolName = getWeatherToolNameForRequest(rawRequest);
-    const input = request as Record<string, unknown>;
-    if (rawRequest.queryName) {
-      input.queryName = rawRequest.queryName;
-    }
+    const input: Record<string, unknown> = {
+      ...request,
+      raw: rawRequest.rawLocation,
+    };
     if (rawRequest.weatherCapability) {
       input.weatherCapability = rawRequest.weatherCapability;
     }
     if (rawRequest.timeRange) {
       input.timeRange = rawRequest.timeRange;
     }
-    if (rawRequest.resolvedCandidate) {
-      input.resolvedCandidate = rawRequest.resolvedCandidate;
+    if (state.selectedWeatherCandidate) {
+      input.resolvedCandidate = state.selectedWeatherCandidate;
     }
     if (rawRequest.units) {
       input.units = rawRequest.units;
@@ -1305,7 +1031,7 @@ async function targetedTools(
       });
       await recordMetric("weather.location.repair.count", { count: 1 });
       const repairCandidates = await repairWeatherRequest(request, state, {
-        question: plan.question,
+        question: planningResult.question,
         notFound: parsedResult,
       });
       let firstClarification: { content: string; result: WeatherToolResult } | undefined;
@@ -1391,9 +1117,9 @@ async function targetedTools(
     messages.push(createToolMessage(toolName, content));
   }
 
-  if (plan?.answerMode === "calculation" && plan.calculation?.expression) {
+  if (planningResult?.kind === "calculation") {
     const input = {
-      expression: plan.calculation.expression,
+      expression: planningResult.calculation.expression,
     };
     const content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.calculator, input);
     messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.calculator, content));
@@ -1451,8 +1177,10 @@ function getWeatherCapabilityForClarification(
   result: WeatherToolResult
 ): WeatherCapability {
   if (result.tool === "weather_forecast" && result.status === "needs_clarification") {
-    return state.plan?.weather?.weatherCapability === "hourly" || state.plan?.weather?.weatherCapability === "daily"
-      ? state.plan.weather.weatherCapability
+    return state.planningResult?.kind === "weather" &&
+      (state.planningResult.weather.weatherCapability === "hourly" ||
+        state.planningResult.weather.weatherCapability === "daily")
+      ? state.planningResult.weather.weatherCapability
       : "daily";
   }
   return "current";
@@ -1510,7 +1238,10 @@ function buildClarificationState(
     candidates,
     originalQuery: exec.result.requestedLocation,
     weatherCapability: getWeatherCapabilityForClarification(state, exec.result),
-    timeRange: state.plan?.weather?.timeRange,
+    timeRange:
+      state.planningResult?.kind === "weather"
+        ? state.planningResult.weather.timeRange
+        : undefined,
     summary: exec.result.summary,
     interruptCheckpointStep: Number(Date.now()),
     rounds: state.clarification?.rounds ?? 0,
@@ -1735,24 +1466,19 @@ function createWeatherClarificationErrorResult(
 function buildPlanFromClarificationCandidate(
   state: typeof DeepResearchState.State,
   clarification: WeatherClarificationState,
-  candidate: LocationCandidate
-): ResearchPlan {
+  _candidate: LocationCandidate
+): PlanningResultV2 {
   return {
-    question: state.plan?.question ?? getResearchTopic(state.messages),
-    answerMode: "weather",
+    schemaVersion: 2,
+    question: state.planningResult?.question ?? getResearchTopic(state.messages),
+    kind: "weather",
     rationale: "Weather clarification selected a provider-backed candidate.",
-    queries: [],
-    urls: [],
     weather: {
-      location: candidate.displayName,
-      country: candidate.country,
-      region: candidate.admin1,
+      rawLocation: clarification.originalQuery.raw,
       weatherCapability: clarification.weatherCapability,
       ...(clarification.timeRange ? { timeRange: clarification.timeRange } : {}),
-      resolvedCandidate: candidate,
       units: "metric",
     },
-    requiredSourceCount: 1,
   };
 }
 
@@ -1866,7 +1592,8 @@ async function resumeClarify(
     if (selected) {
       return {
         clarification: { ...clarification, status: "resolved", resolution },
-        plan: buildPlanFromClarificationCandidate(state, clarification, selected),
+        planningResult: buildPlanFromClarificationCandidate(state, clarification, selected),
+        selectedWeatherCandidate: selected,
         weatherExecution: { status: "running", requestedLocation: clarification.originalQuery },
       };
     }
@@ -1879,7 +1606,12 @@ async function resumeClarify(
     if (matchingCandidates.length === 1) {
       return {
         clarification: { ...clarification, status: "resolved", resolution },
-        plan: buildPlanFromClarificationCandidate(state, clarification, matchingCandidates[0]),
+        planningResult: buildPlanFromClarificationCandidate(
+          state,
+          clarification,
+          matchingCandidates[0]
+        ),
+        selectedWeatherCandidate: matchingCandidates[0],
         weatherExecution: { status: "running", requestedLocation: clarification.originalQuery },
       };
     }
@@ -1904,20 +1636,19 @@ async function resumeClarify(
   if (resolution.resolutionType === "new_location") {
     return {
       clarification: { ...clarification, status: "resolved", resolution },
-      plan: {
-        question: state.plan?.question ?? resolution.newLocationText,
-        answerMode: "weather",
+      planningResult: {
+        schemaVersion: 2,
+        question: state.planningResult?.question ?? resolution.newLocationText,
+        kind: "weather",
         rationale: "Weather clarification changed to a new location.",
-        queries: [],
-        urls: [],
         weather: {
-          location: resolution.newLocationText,
+          rawLocation: resolution.newLocationText,
           weatherCapability: clarification.weatherCapability,
           ...(clarification.timeRange ? { timeRange: clarification.timeRange } : {}),
           units: "metric",
         },
-        requiredSourceCount: 1,
       },
+      selectedWeatherCandidate: undefined,
       weatherExecution: {
         status: "running",
         requestedLocation: { raw: resolution.newLocationText, location: resolution.newLocationText },
@@ -1956,7 +1687,10 @@ function routeAfterResumeClarify(state: typeof DeepResearchState.State): string 
   if (state.weatherExecution?.status === "needs_clarification") {
     return DEEP_RESEARCH_GRAPH_ROUTES.clarifyInterrupt;
   }
-  if (state.plan?.answerMode === "weather" && state.weatherExecution?.status === "running") {
+  if (
+    state.planningResult?.kind === "weather" &&
+    state.weatherExecution?.status === "running"
+  ) {
     return DEEP_RESEARCH_GRAPH_ROUTES.targetedTools;
   }
   return DEEP_RESEARCH_GRAPH_ROUTES.synthesize;
@@ -2023,8 +1757,11 @@ async function searchWeb(
   state: typeof DeepResearchState.State,
   _config: RunnableConfig
 ): Promise<Partial<typeof DeepResearchState.State>> {
-  const plan = state.plan ?? fallbackPlan(getResearchTopic(state.messages), state);
-  const queries = plan.queries.length ? plan.queries : [plan.question];
+  const planningResult = state.planningResult;
+  if (planningResult?.kind !== "research") {
+    return {};
+  }
+  const queries = planningResult.queries;
   const allResults: SearchResult[] = [];
   const messages: ToolMessage[] = [];
 
@@ -2032,7 +1769,7 @@ async function searchWeb(
     const input = {
       query,
       count: 8,
-      freshness: plan.freshness,
+      freshness: planningResult.freshness,
       format: "json",
     };
     const content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.webSearch, input);
@@ -2040,12 +1777,12 @@ async function searchWeb(
     allResults.push(...parseSearchToolOutput(content, query));
   }
 
-  for (const url of plan.urls) {
+  for (const url of planningResult.urls) {
     allResults.push({
       title: url,
       url,
       snippet: "URL supplied by planner or user.",
-      query: plan.question,
+      query: planningResult.question,
       sourceType: "provided_url",
     });
   }
@@ -2085,7 +1822,10 @@ async function rankSources(
   state: typeof DeepResearchState.State,
   _config: RunnableConfig
 ): Promise<Partial<typeof DeepResearchState.State>> {
-  const plan = state.plan ?? fallbackPlan(getResearchTopic(state.messages), state);
+  const planningResult = state.planningResult;
+  if (planningResult?.kind !== "research") {
+    return {};
+  }
   const deduped = new Map<string, SearchResult>();
 
   for (const result of state.searchResults) {
@@ -2097,11 +1837,14 @@ async function rankSources(
 
   const ranked = [...deduped.values()]
     .map((result) => {
-      const scoring = sourceScore(result, plan.question);
+      const scoring = sourceScore(result, planningResult.question);
       return { ...result, score: scoring.score, rankReason: scoring.reason };
     })
     .sort((left, right) => right.score - left.score)
-    .slice(0, Math.max(plan.requiredSourceCount, getMaxFetchedSources(state)));
+    .slice(
+      0,
+      Math.max(planningResult.requiredSourceCount, getMaxFetchedSources(state))
+    );
 
   return { rankedSources: ranked };
 }
@@ -2155,7 +1898,8 @@ async function extractEvidence(
   state: typeof DeepResearchState.State,
   _config: RunnableConfig
 ): Promise<Partial<typeof DeepResearchState.State>> {
-  const question = state.plan?.question ?? getResearchTopic(state.messages);
+  const question =
+    state.planningResult?.question ?? getResearchTopic(state.messages);
   const extractedSources: ExtractedSource[] = state.fetchedSources.map((source, index) => {
     const usable = !source.fetchError && source.content.trim().length >= 200;
     const sentences = source.content
@@ -2201,10 +1945,10 @@ async function verifyCitations(
   const rejectedSourceCount = state.extractedSources.length - usableSourceCount;
   const warnings: string[] = [];
 
-  if (state.plan?.answerMode === "research" && usableSourceCount === 0) {
+  if (state.planningResult?.kind === "research" && usableSourceCount === 0) {
     warnings.push("No usable fetched sources are available. The final answer must explain the search/fetch failure instead of fabricating facts.");
   }
-  if (state.plan?.answerMode === "research" && usableSourceCount === 1) {
+  if (state.planningResult?.kind === "research" && usableSourceCount === 1) {
     warnings.push("Only one usable source is available. Treat claims as weakly corroborated.");
   }
 
@@ -2397,14 +2141,14 @@ function buildCalculationToolAnswer(
 }
 
 function buildTargetedToolAnswer(
-  plan: ResearchPlan,
+  planningResult: PlanningResultV2,
   state: typeof DeepResearchState.State
 ): AIMessage | undefined {
-  if (plan.answerMode === "weather") {
+  if (planningResult.kind === "weather") {
     return buildWeatherToolAnswer(state);
   }
 
-  if (plan.answerMode === "calculation") {
+  if (planningResult.kind === "calculation") {
     return buildCalculationToolAnswer(state);
   }
 
@@ -2412,7 +2156,7 @@ function buildTargetedToolAnswer(
 }
 
 export const deepResearcherWeatherTestInternals = {
-  planResearch,
+  planResearch: planResearchV2,
   routeAfterPlan,
   parseWeatherToolResult,
   repairWeatherRequest,
@@ -2428,20 +2172,18 @@ export const deepResearcherWeatherTestInternals = {
 };
 
 export const deepResearcherQueryContractTestInternals = {
-  coercePlan,
-  fallbackPlan,
   parseJsonObjectWithDiagnostics,
   routeAfterPlan,
 };
 
 function buildTargetedToolErrorAnswer(
-  plan: ResearchPlan,
+  planningResult: PlanningResultV2,
   state: typeof DeepResearchState.State
 ): AIMessage | undefined {
   const toolName =
-    plan.answerMode === "weather"
-      ? getWeatherToolNameForRequest(plan.weather ?? { location: plan.question })
-      : plan.answerMode === "calculation"
+    planningResult.kind === "weather"
+      ? getWeatherToolNameForRequest(planningResult.weather)
+      : planningResult.kind === "calculation"
         ? DEEP_RESEARCH_TOOL_NAMES.calculator
         : undefined;
 
@@ -2458,7 +2200,14 @@ async function synthesizeAnswer(
   state: typeof DeepResearchState.State,
   _config: RunnableConfig
 ): Promise<Partial<typeof DeepResearchState.State>> {
-  const plan = state.plan ?? fallbackPlan(getResearchTopic(state.messages), state);
+  const planningResult =
+    state.planningResult ??
+    createPlanningExtractionError(
+      getResearchTopic(state.messages) || "Unknown request",
+      "planner_schema_rejected",
+      false,
+      "PlanningResultV2 was missing from graph state."
+    );
 
   if (state.uploadError) {
     const envelope = parseErrorEnvelope(state.uploadError);
@@ -2468,21 +2217,37 @@ async function synthesizeAnswer(
     };
   }
 
-  if (plan.answerMode === "clarify") {
-    const content = plan.clarification ?? "Please clarify the request before I continue.";
+  if (
+    planningResult.kind === "clarify" ||
+    planningResult.kind === "missing_location"
+  ) {
+    const content = planningResult.clarification;
     return {
       messages: [new AIMessage(content)],
     };
   }
 
-  const targetedToolErrorAnswer = buildTargetedToolErrorAnswer(plan, state);
+  if (planningResult.kind === "extraction_error") {
+    return {
+      messages: [
+        new AIMessage(
+          `Planning failed with ${planningResult.errorCode}. Please retry the request.`
+        ),
+      ],
+    };
+  }
+
+  const targetedToolErrorAnswer = buildTargetedToolErrorAnswer(
+    planningResult,
+    state
+  );
   if (targetedToolErrorAnswer) {
     return {
       messages: [targetedToolErrorAnswer],
     };
   }
 
-  const targetedToolFallback = buildTargetedToolAnswer(plan, state);
+  const targetedToolFallback = buildTargetedToolAnswer(planningResult, state);
 
   const evidence = formatEvidence(state);
   const prompt = [
@@ -2500,7 +2265,7 @@ async function synthesizeAnswer(
     "If current_weather reports 'Weather provider network request failed' or 'fetch failed', explain that the backend Node process could not connect to Open-Meteo. Do not imply the user's location is invalid or that Open-Meteo itself is down unless the evidence says so. Include a concise next step: check backend VPN/proxy/firewall/DNS or set HTTPS_PROXY/HTTP_PROXY before restarting the backend.",
     "Keep the answer concise but include exact numbers, dates, and source limitations when relevant.",
     `Today is ${today()}.`,
-    `Plan: ${JSON.stringify(plan, null, 2)}`,
+    `Plan: ${JSON.stringify(planningResult, null, 2)}`,
     `Verification: ${JSON.stringify(state.verification ?? {}, null, 2)}`,
     "Evidence:",
     evidence || "No external evidence was collected.",
@@ -2548,7 +2313,7 @@ const builder = new StateGraph(DeepResearchState)
   .addNode(DEEP_RESEARCH_GRAPH_NODES.validateUploads, validateUploads)
   .addNode(DEEP_RESEARCH_GRAPH_NODES.buildContextPack, buildContextPack)
   .addNode(DEEP_RESEARCH_GRAPH_NODES.analyzeImages, analyzeImages)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.planResearch, planResearch)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.planResearch, planResearchV2)
   .addNode(DEEP_RESEARCH_GRAPH_NODES.targetedTools, targetedTools)
   .addNode(DEEP_RESEARCH_GRAPH_NODES.clarifyInterrupt, clarifyInterrupt, {
     ends: [DEEP_RESEARCH_GRAPH_NODES.resumeClarify, DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer],

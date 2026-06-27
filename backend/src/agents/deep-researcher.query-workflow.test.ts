@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import { deepResearcherQueryContractTestInternals } from "./deep-researcher.js";
+import type { PlanningResultV2 } from "./planning-result-v2.js";
 
 type ContractState = Parameters<
   typeof deepResearcherQueryContractTestInternals.routeAfterPlan
 >[0];
 
-function stateWithPlan(
-  plan: NonNullable<ContractState["plan"]>
+function stateWithPlanningResult(
+  planningResult: PlanningResultV2
 ): ContractState {
   return {
-    plan,
+    planningResult,
     contextPack: undefined,
     initial_search_query_count: 2,
     max_research_loops: 5,
@@ -24,11 +25,18 @@ function stateWithPlan(
     uploadError: undefined,
     imageObservations: [],
     weatherExecution: undefined,
+    selectedWeatherCandidate: undefined,
     clarification: undefined,
   };
 }
 
-describe("deep researcher query workflow contract", () => {
+const planningBase = {
+  schemaVersion: 2 as const,
+  question: "Explain TypeScript",
+  rationale: "route test",
+};
+
+describe("deep researcher PlanningResultV2 workflow contract", () => {
   it("captures structured output parse failures without exposing raw parser exceptions", () => {
     const result =
       deepResearcherQueryContractTestInternals.parseJsonObjectWithDiagnostics("{not-json");
@@ -39,57 +47,59 @@ describe("deep researcher query workflow contract", () => {
     });
   });
 
-  it("coerces invalid calculation structured output into a clarification plan", () => {
-    const state = stateWithPlan({
-      question: "What is 2+2?",
-      answerMode: "research",
-      rationale: "fallback",
-      queries: ["What is 2+2?"],
-      urls: [],
-      requiredSourceCount: 1,
-    });
-
-    const plan = deepResearcherQueryContractTestInternals.coercePlan(
-      {
-        answerMode: "calculation",
-        rationale: "calculation requires a tool",
-      },
-      "What is 2+2?",
-      state
-    );
-
-    expect(plan.answerMode).toBe("clarify");
-    expect(plan.calculation).toBeUndefined();
-    expect(plan.clarification).toBeTruthy();
-  });
-
-  it("routes supported answer modes through stable graph route constants", () => {
-    const basePlan = {
-      question: "Explain TypeScript",
-      rationale: "route test",
-      queries: ["TypeScript"],
-      urls: [],
-      requiredSourceCount: 1,
-    };
-
+  it("routes production state using the validated V2 discriminant", () => {
     expect(
       deepResearcherQueryContractTestInternals.routeAfterPlan(
-        stateWithPlan({ ...basePlan, answerMode: "research" })
+        stateWithPlanningResult({
+          ...planningBase,
+          kind: "research",
+          queries: ["TypeScript"],
+          urls: [],
+          requiredSourceCount: 1,
+        })
       )
     ).toBe("search_web");
+
     expect(
       deepResearcherQueryContractTestInternals.routeAfterPlan(
-        stateWithPlan({
-          ...basePlan,
-          answerMode: "calculation",
+        stateWithPlanningResult({
+          ...planningBase,
+          kind: "calculation",
           calculation: { expression: "2+2" },
         })
       )
     ).toBe("targeted_tools");
+
     expect(
       deepResearcherQueryContractTestInternals.routeAfterPlan(
-        stateWithPlan({ ...basePlan, answerMode: "clarify", clarification: "Need detail." })
+        stateWithPlanningResult({
+          ...planningBase,
+          kind: "clarify",
+          reason: "insufficient_context",
+          clarification: "Need detail.",
+        })
       )
     ).toBe("synthesize");
+  });
+
+  it("routes a complete raw weather location to targeted tools", () => {
+    const state = stateWithPlanningResult({
+      ...planningBase,
+      question: "高雄大寮今天會下雨嗎",
+      kind: "weather",
+      weather: {
+        rawLocation: "高雄大寮",
+        weatherCapability: "daily",
+        timeRange: {
+          kind: "today",
+          granularity: "daily",
+        },
+        units: "metric",
+      },
+    });
+
+    expect(deepResearcherQueryContractTestInternals.routeAfterPlan(state)).toBe(
+      "targeted_tools"
+    );
   });
 });

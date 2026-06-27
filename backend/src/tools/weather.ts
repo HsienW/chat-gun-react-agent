@@ -10,9 +10,9 @@ import {
 import { auditLogger, recordMetric } from "../platform/observability.js";
 import { configureNetwork } from "../platform/network.js";
 
-import { OpenMeteoGeocodingProvider } from "./geocoding/open-meteo-provider.js";
+import { createConfiguredGeocodingProvider } from "./geocoding/provider-factory.js";
 import { resolveLocation, DEFAULT_RESOLVER_OPTIONS } from "./geocoding/location-resolver.js";
-import { buildLocationQuery, normalizeLocation, validateLocationInput } from "./geocoding/location-normalizer.js";
+import { buildLocationQuery, validateLocationInput } from "./geocoding/location-normalizer.js";
 import type {
   LocationCandidate,
   LocationQuery,
@@ -101,28 +101,8 @@ function isTimeoutError(message: string): boolean {
   return message === "weather_fetch_timeout" || message === "weather_geocoding_timeout" || message.includes("timeout");
 }
 
-function validateOptionalQueryName(
-  rawQueryName: unknown,
-  maxChars: number
-): { queryName?: string; error?: string } {
-  if (rawQueryName === undefined) {
-    return {};
-  }
-
-  if (typeof rawQueryName !== "string") {
-    return { error: "queryName must be a string when provided." };
-  }
-
-  const validationError = validateLocationInput(rawQueryName, maxChars);
-  if (validationError) {
-    return { error: validationError.replace("Location input", "queryName") };
-  }
-
-  return { queryName: normalizeLocation(rawQueryName) };
-}
-
 const resolvedCandidateSchema = z.object({
-  provider: z.literal("open-meteo").optional(),
+  provider: z.string().min(1).optional(),
   providerId: z.string().optional(),
   name: z.string().min(1),
   displayName: z.string().min(1),
@@ -700,7 +680,6 @@ export const weatherForecastTool = tool(
       location,
       country,
       region,
-      queryName,
       resolutionStrategy,
       raw,
       weatherCapability,
@@ -712,7 +691,7 @@ export const weatherForecastTool = tool(
     const startTime = Date.now();
     const weatherConfig = getWeatherConfig();
     const runSignal = getRunnableSignal(config);
-    const geocodingProvider = new OpenMeteoGeocodingProvider(weatherConfig.geocodingTimeoutMs);
+    const geocodingProvider = createConfiguredGeocodingProvider();
     const strategy: ResolutionStrategy | undefined =
       resolutionStrategy === "llm_repair" ? "llm_repair" : undefined;
 
@@ -740,27 +719,17 @@ export const weatherForecastTool = tool(
       );
     }
 
-    const queryNameValidation = validateOptionalQueryName(
-      queryName,
-      weatherConfig.locationMaxChars
-    );
-    if (queryNameValidation.error) {
-      return JSON.stringify(createForecastInvalidInputResult(location, queryNameValidation.error));
-    }
-
     const query = {
       ...buildLocationQuery(location, country, region),
       raw: typeof raw === "string" && raw.trim() ? raw : location,
     };
     const directCandidate = coerceResolvedCandidate(resolvedCandidate);
-    const providerQueryName = queryNameValidation.queryName;
     await auditLogger.record("weather.forecast.location.resolve.start", {
       raw: query.raw,
       location: query.location,
       country: query.country,
       capability: weatherCapability,
       timeRangeKind: timeRangeValidation.timeRange.kind,
-      queryNameProvided: Boolean(providerQueryName),
       directCandidateProvided: Boolean(directCandidate),
     });
 
@@ -797,7 +766,6 @@ export const weatherForecastTool = tool(
             maxQueries: weatherConfig.geocodingMaxQueries,
             signal: runSignal,
             strategy,
-            queryName: providerQueryName,
           });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -966,10 +934,6 @@ export const weatherForecastTool = tool(
         .string()
         .optional()
         .describe("Optional state, province, or administrative region hint, for example 'New York'."),
-      queryName: z
-        .string()
-        .optional()
-        .describe("Optional geocoding-friendly Latin name for Chinese or mixed-Chinese locations."),
       weatherCapability: z
         .enum(["hourly", "daily"])
         .describe("Forecast granularity requested by the planner."),
@@ -998,11 +962,11 @@ export const weatherForecastTool = tool(
 );
 
 export const weatherTool = tool(
-  async ({ location, country, region, queryName, resolutionStrategy, raw, resolvedCandidate }, config?: RunnableConfig) => {
+  async ({ location, country, region, resolutionStrategy, raw, resolvedCandidate }, config?: RunnableConfig) => {
     const startTime = Date.now();
     const weatherConfig = getWeatherConfig();
     const runSignal = getRunnableSignal(config);
-    const geocodingProvider = new OpenMeteoGeocodingProvider(weatherConfig.geocodingTimeoutMs);
+    const geocodingProvider = createConfiguredGeocodingProvider();
     const strategy: ResolutionStrategy | undefined =
       resolutionStrategy === "llm_repair" ? "llm_repair" : undefined;
 
@@ -1028,43 +992,16 @@ export const weatherTool = tool(
         : formatLegacyText(result);
     }
 
-    const queryNameValidation = validateOptionalQueryName(
-      queryName,
-      weatherConfig.locationMaxChars
-    );
-    if (queryNameValidation.error) {
-      const result: WeatherToolResult = {
-        schemaVersion: "1.0",
-        tool: "current_weather",
-        status: "error",
-        requestedLocation: { raw: location ?? "", location: location ?? "" },
-        code: "weather_invalid_input",
-        retryable: false,
-        message: queryNameValidation.error,
-        summary: "Invalid location input. Please provide a valid city or place name.",
-      };
-      await auditLogger.record("weather.location.resolve.start", {
-        error: "invalid_query_name",
-        location,
-        queryNameProvided: true,
-      });
-      return weatherConfig.structuredResultEnabled
-        ? JSON.stringify(result)
-        : formatLegacyText(result);
-    }
-
     // Build the query
     const query = {
       ...buildLocationQuery(location, country, region),
       raw: typeof raw === "string" && raw.trim() ? raw : location,
     };
     const directCandidate = coerceResolvedCandidate(resolvedCandidate);
-    const providerQueryName = queryNameValidation.queryName;
     await auditLogger.record("weather.location.resolve.start", {
       raw: query.raw,
       location: query.location,
       country: query.country,
-      queryNameProvided: Boolean(providerQueryName),
       directCandidateProvided: Boolean(directCandidate),
     });
 
@@ -1111,7 +1048,6 @@ export const weatherTool = tool(
             maxQueries: weatherConfig.geocodingMaxQueries,
             signal: runSignal,
             strategy,
-            queryName: providerQueryName,
           });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1330,7 +1266,7 @@ export const weatherTool = tool(
   {
     name: "current_weather",
     description:
-      "Get real-time current weather for a city or location using Open-Meteo. Use this only for current weather, current temperature, humidity, current rain, or current wind questions. For tomorrow, tonight, weekend, date range, or rain probability forecast questions, use weather_forecast. Provide country or region when the location is ambiguous. The tool does not contain built-in city aliases; pass the most geocoding-friendly place name you can infer.",
+      "Get real-time current weather for a city or location using Open-Meteo. Use this only for current weather, current temperature, humidity, current rain, or current wind questions. For tomorrow, tonight, weekend, date range, or rain probability forecast questions, use weather_forecast. Preserve the user's complete original location text; location query transformation belongs to the resolver and geocoding provider adapter.",
     schema: z.object({
       location: z.string().min(1).describe("City or location name."),
       country: z
@@ -1349,10 +1285,6 @@ export const weatherTool = tool(
         .string()
         .optional()
         .describe("Internal original user location text preserved across one-time repair."),
-      queryName: z
-        .string()
-        .optional()
-        .describe("Optional geocoding-friendly Latin name for Chinese or mixed-Chinese locations."),
       resolvedCandidate: resolvedCandidateSchema
         .optional()
         .describe("Internal resolved geocoding candidate for checkpoint resume; callers should normally omit this."),

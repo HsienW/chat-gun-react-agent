@@ -21,7 +21,6 @@ const LIVE_SMOKE_TEST_TIMEOUT_MS = 30_000;
 
 async function invokeWeather(input: {
   location: string;
-  queryName?: string;
   country?: string;
   region?: string;
 }): Promise<WeatherToolResult> {
@@ -31,7 +30,6 @@ async function invokeWeather(input: {
 
 async function invokeForecast(input: {
   location: string;
-  queryName?: string;
   country?: string;
   region?: string;
   weatherCapability: "hourly" | "daily";
@@ -52,19 +50,18 @@ async function invokeForecast(input: {
 describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
   // 9.1–9.8: location format
   it("9.1 台北現在天氣如何？ → resolves 台北 (Taipei)", async () => {
-    const result = await invokeWeather({ location: "台北", queryName: "Taipei" });
+    const result = await invokeWeather({ location: "台北" });
     expect(result.status).toBe("success");
   }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("9.2 臺北天氣 → resolves 臺北 (Taipei)", async () => {
-    const result = await invokeWeather({ location: "臺北", queryName: "Taipei" });
+    const result = await invokeWeather({ location: "臺北" });
     expect(result.status).toBe("success");
   }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("9.3 高雄鳳山今天會下雨嗎？ → resolves 高雄鳳山 (Fengshan)", async () => {
     const result = await invokeWeather({
       location: "高雄鳳山",
-      queryName: "Fengshan",
       region: "Kaohsiung",
       country: "Taiwan",
     });
@@ -78,7 +75,7 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
   }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("9.4 北京市 + country: China → resolves 北京市 (Beijing)", async () => {
-    const result = await invokeWeather({ location: "北京市", country: "China", queryName: "Beijing" });
+    const result = await invokeWeather({ location: "北京市", country: "China" });
     expect(result.status).toBe("success");
     if (result.status === "success") {
       expect(result.resolvedLocation.countryCode).toBe("CN");
@@ -87,7 +84,7 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
   }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("9.5 新加坡 + country: Singapore → resolves 新加坡 (Singapore)", async () => {
-    const result = await invokeWeather({ location: "新加坡", country: "Singapore", queryName: "Singapore" });
+    const result = await invokeWeather({ location: "新加坡", country: "Singapore" });
     expect(result.status).toBe("success");
     if (result.status === "success") {
       expect(result.resolvedLocation.countryCode).toBe("SG");
@@ -113,7 +110,6 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
   it("FORECAST daily: 台北明天會下雨嗎？ → returns Open-Meteo daily forecast", async () => {
     const result = await invokeForecast({
       location: "台北",
-      queryName: "Taipei",
       weatherCapability: "daily",
       timeRange: { kind: "tomorrow", granularity: "daily" },
       units: "metric",
@@ -130,7 +126,6 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
   it("FORECAST hourly: 台北今晚會變冷嗎？ → returns Open-Meteo hourly forecast", async () => {
     const result = await invokeForecast({
       location: "台北",
-      queryName: "Taipei",
       weatherCapability: "hourly",
       timeRange: { kind: "tonight", granularity: "hourly" },
       units: "metric",
@@ -203,8 +198,8 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
 
   // Relationship invariants (weather.md §9)
   it("REL: 台北 and 臺北 resolve to the same geographic entity", async () => {
-    const r1 = await invokeWeather({ location: "台北", queryName: "Taipei" });
-    const r2 = await invokeWeather({ location: "臺北", queryName: "Taipei" });
+    const r1 = await invokeWeather({ location: "台北" });
+    const r2 = await invokeWeather({ location: "臺北" });
     expect(r1.status).toBe("success");
     expect(r2.status).toBe("success");
     if (r1.status === "success" && r2.status === "success") {
@@ -214,7 +209,7 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
 
   it("REL: Singapore and 新加坡 resolve to the same geographic entity", async () => {
     const r1 = await invokeWeather({ location: "Singapore" });
-    const r2 = await invokeWeather({ location: "新加坡", queryName: "Singapore" });
+    const r2 = await invokeWeather({ location: "新加坡" });
     // Both should succeed or be ambiguous; the key invariant is same countryCode
     expect(["success", "needs_clarification"]).toContain(r1.status);
     expect(["success", "needs_clarification"]).toContain(r2.status);
@@ -235,8 +230,8 @@ describe.runIf(LIVE_SMOKE)("live smoke acceptance — real Open-Meteo", () => {
   }, LIVE_SMOKE_TEST_TIMEOUT_MS);
 
   it("REL: punctuation doesn't change resolution result", async () => {
-    const r1 = await invokeWeather({ location: "台北", queryName: "Taipei" });
-    const r2 = await invokeWeather({ location: "台北。", queryName: "Taipei" });
+    const r1 = await invokeWeather({ location: "台北" });
+    const r2 = await invokeWeather({ location: "台北。" });
     expect(r1.status).toBe("success");
     expect(r2.status).toBe("success");
   }, LIVE_SMOKE_TEST_TIMEOUT_MS);

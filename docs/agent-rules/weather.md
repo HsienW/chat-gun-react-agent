@@ -55,26 +55,23 @@ Phase 2 起，`weather_forecast` 是正式 Forecast Tool，負責 `hourly foreca
 負責從使用者語意產生結構化天氣意圖，例如：
 
 ```text
-intent
-location
-country
-region
-timeRange
-weatherCapability
+kind: weather
+weather.rawLocation
+weather.country
+weather.region
+weather.weatherCapability
+weather.timeRange
 ```
 
 不得直接宣稱地理實體解析成功。
 
-`queryName` is an optional planner hint for Chinese or mixed-Chinese weather locations.
-It may contain a geocoding-friendly Latin place name, but it must not replace the
-user's original `location`/raw location text. The resolver may try `queryName`
-before the original location as a provider query variant, but provider-backed
-candidates remain the only geographic authority.
+`weather.rawLocation` 是唯一正式地點欄位，必須保留目前使用者輸入中的完整原始
+Unicode 地點 span。Planner 不得產生 `queryName`、`queryNameHint`、翻譯地名、
+Provider ID、候選或座標。
 
-`queryName` must not be implemented with Chinese/CJK city alias maps, fixed
-natural-language keyword stripping, phrase stripping, punctuation-stripping
-heuristics, or hardcoded place allowlists. Japanese and Korean inputs are outside
-this `queryName` scope and must not be guessed through this path.
+Provider-facing query variant、語言 fallback 與其他 transformation 全部由
+Resolver／Geocoding Provider Adapter 負責。第一個 Provider query 必須是完整
+`rawLocation`；任何 transformation 都不得取代原文或直接宣告最終地理實體。
 
 ### Resolver / Geocoding Provider
 
@@ -283,7 +280,7 @@ São Paulo weather
 ### 失敗
 
 - Planner 回傳非 JSON。
-- Planner 缺少 `location`。
+- Planner 對非空地點錯誤產生 `missing_location`。
 - Provider 無候選。
 - Provider Timeout。
 - Provider Error。

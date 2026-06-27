@@ -2,6 +2,8 @@
 // Tests weather tool structured result contract, status handling, and error conditions.
 
 import { afterEach, describe, it, expect, vi } from "vitest";
+
+process.env.WEATHER_TEST_GEOCODING_PROVIDER = "open-meteo";
 import { describeWeatherCode, describeWindDirection, getWeatherConfig, weatherForecastTool, weatherTool } from "./weather.js";
 import {
   WeatherToolResult,
@@ -53,7 +55,16 @@ function installForecastFetchMock(
         }
         return Promise.resolve(jsonResponse({
           results: [
-            { name: "Taipei", latitude: 25.033, longitude: 121.565, country: "Taiwan", country_code: "TW", admin1: "Taipei City", timezone: "Asia/Taipei", population: 7000000 },
+            {
+              name: name === "台北" ? "台北" : "Taipei",
+              latitude: 25.033,
+              longitude: 121.565,
+              country: "Taiwan",
+              country_code: "TW",
+              admin1: "Taipei City",
+              timezone: "Asia/Taipei",
+              population: 7000000,
+            },
           ],
         }));
       }
@@ -111,7 +122,6 @@ type ForecastToolTestInput = {
   location: string;
   country?: string;
   region?: string;
-  queryName?: string;
   weatherCapability: "hourly" | "daily";
   timeRange: {
     kind: "today" | "tonight" | "tomorrow" | "weekend" | "date_range";
@@ -298,7 +308,7 @@ describe("WeatherToolResult contract (Task 4.1-4.8)", () => {
     expect(error.retryable).toBe(false);
   });
 
-  it("accepts optional queryName without changing WeatherToolResult schemaVersion", async () => {
+  it("strips unknown legacy queryName from the current tool contract", async () => {
     const raw = await weatherTool.invoke({
       location: "Definitely Missing Place",
       queryName: "Definitely Missing Place",
@@ -359,14 +369,13 @@ describe("WeatherToolResult contract (Task 4.1-4.8)", () => {
     }
   });
 
-  it("rejects queryName that exceeds the configured location length", async () => {
+  it("rejects a location that exceeds the configured location length", async () => {
     const originalMaxChars = process.env.WEATHER_LOCATION_MAX_CHARS;
     process.env.WEATHER_LOCATION_MAX_CHARS = "5";
 
     try {
       const raw = await weatherTool.invoke({
-        location: "Tokyo",
-        queryName: "Taipei",
+        location: "Taipei",
       });
       const result = JSON.parse(String(raw)) as WeatherToolResult;
 
@@ -396,7 +405,6 @@ describe("weather_forecast tool contract", () => {
 
     const result = await invokeForecast({
       location: "\u53f0\u5317",
-      queryName: "Taipei",
       weatherCapability: "daily",
       timeRange: { kind: "tomorrow", startDate: "2026-06-24", endDate: "2026-06-24", granularity: "daily" },
       units: "metric",
