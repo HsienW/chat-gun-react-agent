@@ -13,7 +13,7 @@ export type LocationQuery = {
 };
 
 export type LocationCandidate = {
-  provider: "open-meteo";
+  provider: string;
   providerId?: string;
   name: string;
   displayName: string;
@@ -51,7 +51,7 @@ export type LocationResolutionResult =
   | {
       status: "provider_error";
       query: LocationQuery;
-      provider: "open-meteo";
+      provider: string;
       code: string;
       retryable: boolean;
     };

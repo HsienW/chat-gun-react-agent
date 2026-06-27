@@ -1,6 +1,8 @@
 ﻿import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+process.env.WEATHER_TEST_GEOCODING_PROVIDER = "open-meteo";
+
 import { deepResearcherWeatherTestInternals } from "./deep-researcher.js";
 import { llmGateway } from "../platform/llm-gateway.js";
 import type { WeatherToolResult } from "../tools/weather-types.js";
@@ -261,7 +263,21 @@ function installRepairWeatherFetchMock(): void {
                     population: 350_000,
                   },
                 ]
-              : name === MUNCHEN
+              : name === "Daliao"
+                ? [
+                    {
+                      name: "Daliao",
+                      latitude: 22.585,
+                      longitude: 120.396,
+                      country: "Taiwan",
+                      country_code: "TW",
+                      admin1: "Kaohsiung City",
+                      admin2: "Fengshan District",
+                      timezone: "Asia/Taipei",
+                      population: 110_000,
+                    },
+                  ]
+                : name === MUNCHEN
                 ? [
                     {
                       name: MUNCHEN,
@@ -1514,5 +1530,84 @@ describe("Deep Research weather structured result integration", () => {
         responseFormat: { type: "json_object" },
       })
     );
+  });
+
+  it("12.3 extracts composite three-level Chinese admin place name as weather.location", async () => {
+    installRepairWeatherFetchMock();
+    const question = "\u53f0\u7063\u9ad8\u96c4\u5927\u5bee\u5929\u6c23\u5982\u4f55\uff1f";
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            question,
+            answerMode: "clarify",
+            rationale: "Planner failed to extract the weather location.",
+            queries: [],
+            urls: [],
+            clarification: MISSING_WEATHER_LOCATION,
+            requiredSourceCount: 1,
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            answerMode: "weather",
+            weather: {
+              location: "\u53f0\u7063\u9ad8\u96c4\u5927\u5bee",
+              queryName: "Daliao",
+              country: "Taiwan",
+              region: "Kaohsiung",
+            },
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            candidates: [
+              {
+                location: "Daliao",
+                country: "Taiwan",
+                region: "Kaohsiung",
+              },
+            ],
+          })
+        )
+      );
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({ invoke });
+
+    const state = makePlannerState([new HumanMessage(question)]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+
+    expect(planned.plan?.answerMode).toBe("weather");
+    expect(planned.plan?.weather?.location).toBe("\u53f0\u7063\u9ad8\u96c4\u5927\u5bee");
+    expect(planned.plan?.weather?.queryName).toBe("Daliao");
+    expect(planned.plan?.weather?.country).toBe("Taiwan");
+    expect(planned.plan?.weather?.region).toBe("Kaohsiung");
+    expect(String(invoke.mock.calls[0]?.[0])).toContain("extract the complete place text");
+    expect(String(invoke.mock.calls[1]?.[0])).toContain(
+      "complete user-provided place text"
+    );
+    expect(
+      deepResearcherWeatherTestInternals.routeAfterPlan({
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterPlan>[0])
+    ).toBe("targeted_tools");
+
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+
+    expect((toolResult.messages?.[0] as { name?: string } | undefined)?.name).toBe(
+      "current_weather"
+    );
+    expect(toolResult.weatherExecution?.status).toBe("success");
   });
 });

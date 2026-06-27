@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+process.env.WEATHER_TEST_GEOCODING_PROVIDER = "open-meteo";
+
 import { weatherTool } from "./weather.js";
 import type { WeatherToolResult } from "./weather-types.js";
 
@@ -347,6 +349,38 @@ function installMockOpenMeteoFetch(
         return jsonResponse({ results });
       }
 
+      if (url.hostname === "api.mapbox.com") {
+        const query = (url.searchParams.get("q") ?? "").toLowerCase();
+        const results = geocodingCandidates[query] ?? [];
+        return jsonResponse({
+          type: "FeatureCollection",
+          features: results.map((candidate) => ({
+            type: "Feature",
+            id: `${candidate.name}:${candidate.latitude}:${candidate.longitude}`,
+            geometry: {
+              type: "Point",
+              coordinates: [candidate.longitude, candidate.latitude],
+            },
+            properties: {
+              mapbox_id: `${candidate.name}:${candidate.latitude}:${candidate.longitude}`,
+              feature_type: "place",
+              name: candidate.name,
+              full_address: [candidate.name, candidate.admin1, candidate.country]
+                .filter(Boolean)
+                .join(", "),
+              context: {
+                country: {
+                  name: candidate.country,
+                  country_code: candidate.country_code,
+                },
+                region: { name: candidate.admin1 },
+                district: { name: candidate.admin2 },
+              },
+            },
+          })),
+        });
+      }
+
       if (url.hostname === "api.open-meteo.com") {
         if (scenario.kind === "forecast_failure") {
           return jsonResponse({ reason: "forecast unavailable" }, { status: 503, statusText: "Service Unavailable" });
@@ -516,7 +550,7 @@ describe("mock smoke acceptance for weather manual matrix", () => {
   it("9.13 maps forecast provider failure to terminal error", async () => {
     installMockOpenMeteoFetch({ kind: "forecast_failure" });
 
-    const result = await invokeWeather({ location: "Tokyo" });
+    const result = await invokeWeather({ location: "Tokyo", country: "Japan" });
 
     expect(result.status).toBe("error");
     if (result.status === "error") {
@@ -555,11 +589,12 @@ describe("mock smoke acceptance for weather manual matrix", () => {
 
   it("does not enable weather fault injection in production", async () => {
     vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("MAPBOX_ACCESS_TOKEN", "test-token");
     vi.stubEnv("WEATHER_TEST_FORCE_GEOCODING_ERROR", "true");
     vi.stubEnv("WEATHER_TEST_FORCE_FORECAST_ERROR", "true");
     installMockOpenMeteoFetch();
 
-    const result = await invokeWeather({ location: "Tokyo" });
+    const result = await invokeWeather({ location: "Tokyo", country: "Japan" });
 
     expect(result.status).toBe("success");
   });

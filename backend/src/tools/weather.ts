@@ -10,7 +10,7 @@ import {
 import { auditLogger, recordMetric } from "../platform/observability.js";
 import { configureNetwork } from "../platform/network.js";
 
-import { OpenMeteoGeocodingProvider } from "./geocoding/open-meteo-provider.js";
+import { createConfiguredGeocodingProvider } from "./geocoding/provider-factory.js";
 import { resolveLocation, DEFAULT_RESOLVER_OPTIONS } from "./geocoding/location-resolver.js";
 import { buildLocationQuery, normalizeLocation, validateLocationInput } from "./geocoding/location-normalizer.js";
 import type {
@@ -712,7 +712,7 @@ export const weatherForecastTool = tool(
     const startTime = Date.now();
     const weatherConfig = getWeatherConfig();
     const runSignal = getRunnableSignal(config);
-    const geocodingProvider = new OpenMeteoGeocodingProvider(weatherConfig.geocodingTimeoutMs);
+    const geocodingProvider = createConfiguredGeocodingProvider();
     const strategy: ResolutionStrategy | undefined =
       resolutionStrategy === "llm_repair" ? "llm_repair" : undefined;
 
@@ -1002,7 +1002,7 @@ export const weatherTool = tool(
     const startTime = Date.now();
     const weatherConfig = getWeatherConfig();
     const runSignal = getRunnableSignal(config);
-    const geocodingProvider = new OpenMeteoGeocodingProvider(weatherConfig.geocodingTimeoutMs);
+    const geocodingProvider = createConfiguredGeocodingProvider();
     const strategy: ResolutionStrategy | undefined =
       resolutionStrategy === "llm_repair" ? "llm_repair" : undefined;
 

@@ -172,3 +172,52 @@ Status legend: `[mock]` = mock smoke verified (no real model / provider / browse
 - [x] 11.4 更新專案規則 `AGENTS.md` 與 `CLAUDE.md`，讓後續實作與 Review 將此類方案視為 Major 或 Blocker。
 - [x] 11.5 後續 source code 修正時，移除或降級任何以 `WEATHER_QUERY_WORDS`、`CJK_WEATHER_QUERY_PARTS`、`QUESTION_PUNCTUATION` 或等價固定詞表作為主要地點抽取流程的實作。
 - [x] 11.6 後續驗證時，新增或調整測試以證明地點抽取不依賴固定自然語言刪字詞表，且 `台北現在天氣如何？`、`高雄鳳山今天會下雨嗎？`、`Springfield weather` 等案例走 Planner/Resolver 契約。
+
+## 12. Planner Extraction 複合中文行政區覆蓋修復（2026-06-26）
+
+- [x] 12.1 主 Planner Prompt（`planResearch` L1178）加入「保留完整行政區串聯」引導與範例，確保三層以上中文行政區（如「台灣高雄大寮」）不被拆解或省略。
+- [x] 12.2 Retry Extraction Prompt（`retryWeatherPlannerExtraction` L1069-1074）加入「不拆解複合地名」負面約束，確保 LLM 不會將多層行政區分解為多個欄位或直接走 `clarify`。
+- [x] 12.3 新增 regression test case：「台灣高雄大寮天氣如何？」在主 Planner 或 retry extraction 後，`weather.location` 非空且為完整原文。
+- [x] 12.4 對 `installRepairWeatherFetchMock` 補入 `Daliao` geocoding mock response，使 regression test 可通過完整 pipeline。
+- [x] 12.5 `cd backend && npm run lint` 通過。
+- [x] 12.6 `cd backend && npm run test` 通過（含既有回歸）。
+- [x] 12.7 `cd backend && npm run build` 通過。
+- [x] 12.8 `openspec validate generalize-weather-location-resolution` 通過。
+
+## 13. 人工 E2E Review 失敗後的跨語言架構修正（2026-06-26）
+
+> Section 12 僅證明 prompt 文字與 mock pipeline 已完成。人工以正式 `qwen-plus` 執行「台灣高雄大寮天氣如何？」仍得到 `clarify`，且 checkpoint 證明 Weather Tool 未被呼叫，因此本 Change 尚未完成，不得封存。
+
+- [ ] 13.1 將人工失敗 run 的去敏 checkpoint、runId、Planner outcome 與重現步驟固化為 regression evidence，並確認主 Planner 與 bounded retry 的 failure code 可區分 parse error、schema rejection、invoke error、model refusal 與 missing location。
+- [ ] 13.2 定義並實作 `schemaVersion: 2` 的完整 `PlanningResultV2`，明確區分 `direct`、`weather`、`calculation`、`research`、`missing_location`、`clarify` 與 `extraction_error`，包含各分支必要欄位與禁止欄位；直接取代 `ResearchPlan`，不得成為其前置結果，也不得以 Optional 欄位或顯示文案代替狀態。
+- [ ] 13.3 將 Weather Planner extraction 接到 Provider Adapter 支援的 Structured Output、Tool Calling 或等價 schema-bound mode；不支援時回傳明確 capability error，不得依模型名稱改變 Domain Schema。
+- [ ] 13.4 保留任意 Unicode 與任意行政層級的完整 `rawLocation` span；移除日文、韓文或其他文字系統的排除條件，從 `PlanningResultV2`、Weather Tool v2 input、Prompt 與 Retry 移除 legacy `location`／`queryName`／`queryNameHint`，並同步更新 `docs/agent-rules/weather.md` 與相關文件中的舊限制。
+- [ ] 13.5 將 Weather Retry 與 Graph Routing 改為只依 machine status 與 Runtime-validated fields；移除固定 weather keyword 與 localized clarification equality 對 Weather Tool routing 的決定權。
+- [ ] 13.6 Planner parse/schema/invoke failure 不得偽裝成 `missing_location`；新增去敏 audit，至少包含 phase、provider、model、failureCode、resultStatus、requestId 與 runId。
+- [ ] 13.7 將 Provider-facing query transformation 所有權完整移至 Location Resolver／Provider Adapter，保留 original query、contextual query、transformed query 與 resolution strategy；Planner 只輸出 `rawLocation`，transformation 不得直接產生座標或最終地理事實。
+- [ ] 13.8 實作 `MapboxGeocodingProvider` 對接 Geocoding API v6，先 Runtime Validation Provider response，再轉換為 provider-neutral `LocationCandidate`；Open-Meteo 僅保留 Weather Provider。保留 `GeocodingProvider` capability 與設定化 fallback 邊界供未來自架 Nominatim 使用，但本 Change 不得使用公共 Nominatim 自動 fallback。
+- [ ] 13.9 將 `LocationResolutionResult` 統一為 `resolved | ambiguous | not_found | provider_error | timeout | cancelled` 六態，實作跨 attempt 聚合優先序 `cancelled → resolved → ambiguous → timeout → provider_error → not_found`；驗證語意不被合併，且最終座標只來自通過 Runtime Validation 的 Geocoding Provider Candidate。
+- [ ] 13.10 新增 deterministic／mock integration matrix，涵蓋單層地點、國家＋城市、洲際＋國家＋城市與更多行政層級，以及繁體中文、簡體中文、Latin、日文、韓文、阿拉伯文、西里爾文、重音字元與混合文字系統。
+- [ ] 13.11 新增關係型測試：增加上層地理 context 只能維持或縮小候選；非空 `rawLocation` 不得改成 missing_location；legacy `queryName` 不得進入 Provider query；localized 文案改變不得改變 routing；Provider error 不得變成 not_found。
+- [ ] 13.12 新增明確 opt-in 且可自動執行的 live scripts：`npm run test:weather-live-model`、`npm run test:weather-live-geocoding` 與 `npm run test:weather-live-e2e`；預設 `npm run test` 不得連線外部模型或 Provider。使用 `mulberry32-v1` 與固定 seed `20260627` 產生州／國／城市及其他行政層級組合，將展開案例提交至 `backend/test-fixtures/weather-location-live-cases.v1.json`；執行時以 manifest 與 hash 為權威，不得臨時隨機生成。
+- [ ] 13.13 執行 `cd backend && npm run test:weather-live-model`，以正式目標模型與固定參數驗證 live extraction matrix；所有非空地點必須輸出完整 `rawLocation` 且不得回 `missing_location`，輸出不得包含任何 Provider-specific hint。
+- [ ] 13.14 執行 `cd backend && npm run test:weather-live-geocoding`，以 Mapbox Geocoding v6 驗證原始 Unicode、query transformation、歧義、錯誤語意及固定 seed 行政層級矩陣；保存不含 token、完整 response、座標與 Temporary 衍生資料的去敏 evidence。
+- [ ] 13.15 執行 `cd backend && npm run test:weather-live-e2e`，至少驗證「宜蘭天氣如何？」、「台灣宜蘭天氣如何？」、「亞洲台灣宜蘭天氣如何？」與原始失敗案例「台灣高雄大寮天氣如何？」會進入 Weather Tool／Resolver。前三者及固定 seed 無歧義案例必須成功或在 Provider 確實歧義時回候選；「台灣高雄大寮」必須 `resolved → current_weather success`，不得接受 `not_found`、`missing_location` 或提前 `clarify`。
+- [ ] 13.16 執行 Backend `npm run lint && npm run test && npm run build`、Frontend `npm run lint && npm run test && npm run build`、BFF `npm run build`；全部零錯誤且不得跳過既有回歸。
+- [ ] 13.17 執行 `openspec validate generalize-weather-location-resolution` 並確認 Git Diff 不包含固定城市／國家／語言 mapping、自然語言刪字策略、無關重構或未核准套件升級。
+- [ ] 13.18 由獨立人工 Reviewer 依正式 runtime checkpoint 複驗 Section 13 live matrix；只有零 Blocker、零 Major 且 evidence 已記錄時，才可將 Section 13 標記完成並進入 archive readiness check。
+- [ ] 13.19 新增並驗證 `MAPBOX_ACCESS_TOKEN`、`MAPBOX_GEOCODING_STORAGE_MODE=temporary|permanent`、`MAPBOX_WORLDVIEW` 與 Mapbox endpoint 設定；token 只能由 Backend secret store 注入，Platform／Operations owner 負責輪替、撤銷與 `api.mapbox.com` egress，Product／FinOps owner 負責用量預算與告警。
+- [ ] 13.20 實作 Temporary／Permanent 模式：Temporary 不送 `permanent=true`，Permanent 必須送出；模式只靠受驗證設定切換。部署 owner 必須先確認 Permanent entitlement；被拒絕時回 configuration error，不得自動降級 Temporary。
+- [ ] 13.21 實作 `prepareTemporaryDurableBundle`：分別建立並驗證 closed Weather Result／ToolMessage、WeatherExecution State、Audit、Log/Trace projection，再套用共用 forbidden-field guard；記憶體全數通過前零 sink side effect，通過後 freeze immutable bundle。State／ToolMessage／checkpoint 依既有 LangGraph commit；Observability 只從 validated bundle 派生，以 `runId + toolCallId + eventType` 冪等 best-effort送出並最多 retry 3 次，失敗不回滾 Graph state。違規時丟棄未提交 bundle並建立逐 sink驗證的 sanitized terminal bundle。
+- [ ] 13.22 定義並實作 `MAPBOX_WORLDVIEW`：空值不傳參數並沿用 Provider 預設；非空值先 Runtime Validation；不得依語言、locale、國家名稱或文字系統推斷。
+- [ ] 13.23 實作受驗證的全域解析時間／嘗試預算與 process-local traffic governor：單次 timeout 5000ms、總預算 8000ms、最多 3 個 query variants、1 個 Provider、4 次總網路嘗試；per-instance token bucket 預設 100/min、concurrency 10、FIFO queue 100，queue wait 計入總預算。文件不得宣稱跨 replica 全域限流；Platform／Operations 依最大 replica 數配置額度並監控 token 級 Provider 用量。
+- [ ] 13.24 實作 retry：只對 Network Error、429、502、503、504 等暫時性錯誤最多重試一次，優先遵守 `Retry-After`，否則 exponential backoff + bounded jitter；invalid、ambiguous、not_found、401、403 與 cancel 不重試。
+- [ ] 13.25 實作 process-local per-provider circuit breaker：連續 5 次可重試失敗開啟 60000ms，half-open 每 process 僅放行 1 次探測，restart 歸零；成功後關閉歸零；不得把門檻誤作單一請求重試 5 次。
+- [ ] 13.26 為 Mapbox request／response、feature properties、座標範圍、未知欄位與錯誤 envelope 新增 Runtime Schema Validation 及 deterministic contract tests；`q` 最多 256 字元／20 個 words or numbers 且不得含 `;`，worldview 僅接受正式 Enum，不得以 Type Assertion 信任外部資料或刪字補救。
+- [ ] 13.27 定義 `PlanningResultV2` checkpoint migration：新 run 只寫 v2 且無 legacy feature-flag 雙軌；舊 checkpoint 不做 heuristic coercion，resume 時回 `planner_checkpoint_incompatible_v2`、發出 `planning_checkpoint_rejected` 去敏 audit並標記 non-resumable，不複製或封存原始 payload。實作 idempotent `cleanup:incompatible-checkpoints` CLI 與 `CheckpointRetentionAdapter`，支援每筆最多 3 次重試、deleted/failed/oldest-age metric、12h warning 與 24h critical alert。
+- [ ] 13.28 為每個 sink 新增合法 payload 通過與惡意欄位拒絕測試，涵蓋 Temporary／Permanent、Weather Result、State/checkpoint weather slice、Audit、Log/Trace、candidate／座標／feature ID／resolved label／unknown field／query URL／Provider body、驗證前零 side effect、LangGraph commit、observability idempotency/retry/failure不回滾、sanitized factory、Graph terminal、晚到結果忽略、Frontend 不停留 Loading，以及 token/worldview、Mapbox constraints、429、queue、timeout、retry、circuit、cancel。
+- [ ] 13.29 更新 `backend/.env.example`、部署文件與 weather 專項規則，文件化 secret owner、rotation、egress、storage mode、worldview、費用 owner、資料保存限制與未來自架 Nominatim fallback 邊界。
+- [x] 13.30 在 apply-change 前重新執行獨立 plan review；只有 Proposal、Design、Specs 與 Tasks 為零 Blocker、零 Major，才可開始 source code 修改。（2026-06-27 Codex independent review：PASS，零 Blocker／Major／Minor。）
+- [ ] 13.31 驗證 Temporary safe projection 通過 BFF 與 Frontend 時不含任何 Mapbox candidate、座標、feature ID、resolved label 或含 query URL；保持既有 `/api/langgraph/*` Route、取消、backpressure 與 request ID 語意。
+- [ ] 13.32 建立 Temporary persistence evidence：以合法與惡意 fixture 對 Weather Result、State/checkpoint weather slice、ToolMessage、Audit、Log/Trace 與 BFF response 執行 contract suite，證明 sink-specific schema 保留合法 observability 欄位、共用 guard 拒絕 Mapbox 衍生資料、驗證失敗前零 sink side effect、每個 sink 只接收 validated projection，且沒有 Mapbox candidate event。
+- [ ] 13.33 由 Platform／Operations 部署每小時執行的 checkpoint cleanup CronJob，使用 production-equivalent adapter 完成標記、重試、冪等刪除與告警整合測試；保存不含 payload 的部署與 24 小時 SLO evidence，否則 13.27 不得完成。

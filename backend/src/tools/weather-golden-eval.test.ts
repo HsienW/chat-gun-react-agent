@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+process.env.WEATHER_TEST_GEOCODING_PROVIDER = "open-meteo";
+
 import {
   WEATHER_GOLDEN_EVAL_CASES,
   evaluateWeatherGoldenCase,

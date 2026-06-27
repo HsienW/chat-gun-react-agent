@@ -2,6 +2,8 @@
 // Tests weather tool structured result contract, status handling, and error conditions.
 
 import { afterEach, describe, it, expect, vi } from "vitest";
+
+process.env.WEATHER_TEST_GEOCODING_PROVIDER = "open-meteo";
 import { describeWeatherCode, describeWindDirection, getWeatherConfig, weatherForecastTool, weatherTool } from "./weather.js";
 import {
   WeatherToolResult,
