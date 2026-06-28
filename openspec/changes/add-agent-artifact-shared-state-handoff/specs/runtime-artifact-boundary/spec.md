@@ -99,8 +99,9 @@ AND `relativePath` 為絕對路徑
 
 GIVEN ArtifactReference 的 `relativePath`
 WHEN 驗證前綴
-THEN MUST 以 `openspec/`、`.agent-runtime/` 或專案根目錄下的已知安全前綴開頭
+THEN MUST 以 `openspec/changes/`（OpenSpec Change 文件）或 `.agent-runtime/`（Runtime Artifact）開頭
 AND 其他前綴 MUST 拒絕
+AND MUST NOT 以模糊的「專案根目錄下的已知安全前綴」作為兜底
 
 ---
 

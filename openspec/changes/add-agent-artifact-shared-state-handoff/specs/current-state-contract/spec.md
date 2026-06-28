@@ -115,9 +115,16 @@ AND MUST 包含 `status`（`unresolved` | `accepted_risk` | `resolved`）
 #### Scenario: TERMINAL 後不可修改
 
 GIVEN `terminalStatus` 為 `"TERMINAL"`
-AND `currentPhase` 為 `"COMPLETED"` 或 `"FAILED"` 或 `"INCOMPLETE"`
+AND `currentPhase` 為 `"COMPLETED"` 或 `"FAILED"`
 WHEN 任何 Agent 嘗試修改 current-state.json 或 OpenSpec
 THEN 除非由人工明確重置，否則 MUST 拒絕
+
+#### Scenario: INCOMPLETE 保持可恢復
+
+GIVEN `currentPhase` 為 `"INCOMPLETE"`
+WHEN 檢查 `terminalStatus`
+THEN `terminalStatus` MUST 為 `"NON_TERMINAL"`
+AND Coordinator MAY 在補齊缺失輸入後依合法狀態轉移重新提交審查
 
 #### Scenario: NON_TERMINAL 可繼續修改
 
@@ -145,3 +152,47 @@ GIVEN Handoff 中描述的階段與 current-state.json 的 `currentPhase` 不一
 WHEN Agent 判斷應執行哪個階段
 THEN MUST 以 `current-state.json` 為準
 AND MUST 回報衝突
+
+---
+
+### Requirement: current-state.json 更新責任
+
+每次 Agent 完成工作後，MUST 有明確的 Agent 負責更新 current-state.json。
+
+#### Scenario: CCR 完成 plan-change 後更新
+
+GIVEN CCR 完成 proposal/design/tasks 建立
+WHEN CCR 準備交接給 Qwen
+THEN CCR MUST 更新 current-state.json 的 `currentPhase` 為 `"PLAN_REVIEW"`
+AND CCR MUST 更新 `currentOwner` 為 `"Qwen"`
+AND CCR MUST 更新 `latestArtifactRefs` 包含 proposal、design、tasks
+
+#### Scenario: Codex 完成實作後更新
+
+GIVEN Codex 完成 IMPLEMENTING 階段
+WHEN Codex 準備交接給 Qwen 進行 review-result
+THEN Codex MUST 更新 current-state.json 的 `currentPhase` 為 `"READY_FOR_REVIEW"`
+AND Codex MUST 更新 `latestArtifactRefs.implementationResult` 指向新的 implementation_result
+AND Codex MUST 更新 `evidence/` 中的相關檔案
+
+#### Scenario: Qwen 完成審查後由人工更新
+
+GIVEN Qwen 完成 review-plan 或 review-result 審查
+WHEN Qwen 輸出 review_result 到 stdout
+THEN Qwen MUST NOT 直接修改 current-state.json（唯讀邊界）
+AND 人工或 CLIHost MUST 依 Qwen 的輸出更新 current-state.json 的 `currentPhase`、`currentOwner` 與 `latestArtifactRefs.reviewResult`
+AND 更新時機 MUST 在 review_result 成功保存為 Runtime Artifact 之後
+
+#### Scenario: CCR 仲裁後更新
+
+GIVEN CCR 完成 readiness-check 或 NEEDS_COORDINATOR_ARBITRATION 仲裁
+WHEN CCR 判定下一步
+THEN CCR MUST 更新 current-state.json 的 `currentPhase`、`currentOwner`、`gateStatus` 與 `blockers`
+
+#### Scenario: 更新時必須驗證前置條件
+
+GIVEN Agent 準備更新 current-state.json
+WHEN 檢查前置條件
+THEN Agent MUST 確認目前 `currentOwner` 為該 Agent 或為 CCR（CCR 可隨時更新）
+AND Agent MUST 確認目標 Phase 為合法轉移（見 workflow-state-transition spec）
+AND Agent MUST 更新 `updatedAt` 為當前時間

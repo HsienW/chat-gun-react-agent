@@ -218,7 +218,15 @@
 ### Task 6.4：補齊 Claude Router References（01-07）
 
 - **修改範圍**：`.claude/skills/openspec-workflow-router/references/01-plan-change.md` ~ `07-archive-change.md`
-- **內容**：以 Codex references 為基礎，增加 CCR 專屬協調行為、Artifact 讀寫責任
+- **內容**：
+  - `01-plan-change.md`：CCR 建立 proposal/design/tasks、coordinator_result 與初始 current-state.json。
+  - `02-review-plan.md`：CCR 準備 Qwen 所需輸入、保存 review_result、仲裁 Verdict 並更新 current-state.json。
+  - `03-apply-change.md`：產生交給 Codex 的 apply-change handoff，列明 implementation_result 與 Evidence 路徑。
+  - `04-review-result.md`：產生交給 Qwen 的唯讀審查 handoff，列明 Base、Diff、Evidence 與 review_result 預期路徑。
+  - `05-fix-from-review.md`：產生交給 Codex 的修復 handoff，列明 findings 與仲裁升級條件。
+  - `06-readiness-check.md`：CCR 驗證所有 Gate、blockers 與 artifacts，產生 readiness_result 並更新狀態。
+  - `07-archive-change.md`：產生交給 Codex 的 archive handoff，保留人工 commit gate。
+  - 每個 reference 都明確列出 Input、Output 與 State Transition。
 - **Requirement 對應**：AgentResultContract、CurrentStateContract、WorkflowStateTransition
 - **驗證方式**：每個 reference 包含 Input/Output/State Transition 說明、路徑存在
 - **完成條件**：7 個 reference 檔案全部建立
@@ -230,6 +238,13 @@
   - 「Input: 從 current-state.json 的哪個欄位取得」
   - 「Output: 產生哪個 artifact，寫入哪個路徑」
   - 「State Transition: 完成後 currentPhase 變為什麼」
+  - `01-plan-change.md`：coordinator_result；`PLAN_DRAFT` → `PLAN_REVIEW`。
+  - `02-review-plan.md`：review_result；`PLAN_REVIEW` → `PLAN_APPROVED`、`PLAN_DRAFT` 或 `INCOMPLETE`。
+  - `03-apply-change.md`：implementation_result 與 Evidence；`READY_FOR_IMPLEMENTATION` → `IMPLEMENTING` → `READY_FOR_REVIEW`，規格問題回到 `PLAN_DRAFT`。
+  - `04-review-result.md`：review_result；`READY_FOR_REVIEW` → `REVIEWING` → `CHANGES_REQUESTED`、`READY_FOR_READINESS_CHECK` 或 `INCOMPLETE`。
+  - `05-fix-from-review.md`：新版 implementation_result 與 Evidence；`CHANGES_REQUESTED` → `IMPLEMENTING`，衝突時進入 `NEEDS_COORDINATOR_ARBITRATION`。
+  - `06-readiness-check.md`：readiness_result；`READY_FOR_READINESS_CHECK` → `READY_FOR_ARCHIVE` 或 `IMPLEMENTING`。
+  - `07-archive-change.md`：archive_result 與 execution-summary；`READY_FOR_ARCHIVE` → `ARCHIVED_AWAITING_HUMAN_COMMIT`，等待 Human 完成 commit。
 - **Requirement 對應**：WorkflowStateTransition、AgentResultContract
 - **驗證方式**：每個 reference 的 Input/Output 路徑與 Schema 一致
 - **完成條件**：7 個 reference 檔案全部更新
@@ -357,6 +372,18 @@
 - **Requirement 對應**：RuntimeArtifactBoundary
 - **驗證方式**：`git status` 實際執行
 - **完成條件**：`.agent-runtime/` 被 Git 忽略
+
+### Task 9.8：驗證 review_result 保存機制
+
+- **修改範圍**：`.agent-runtime/<change-id>/artifacts/review-result.json`（測試用，不進 Git）、`current-state.json`
+- **內容**：
+  1. 以 Qwen 輸出的 raw JSON 與 markdown code fence JSON 各執行一次 CLIHost stdout capture。
+  2. 提取 JSON 並依 `agent-result.schema.json` 驗證；格式錯誤時必須拒絕保存。
+  3. 驗證成功後寫入 review-result.json，再更新 `latestArtifactRefs.reviewResult`、`currentPhase` 與 `currentOwner`。
+  4. 若目前 CLIHost 無法可靠擷取，執行人工複製保存流程並記錄限制，不得將 CLIHost capture 標示為已完成。
+- **Requirement 對應**：QwenReadOnlyResultCapture、CurrentStateContract
+- **驗證方式**：保存後重新讀取 review-result.json 並驗證 Schema，核對 current-state.json 引用與狀態
+- **完成條件**：至少一種第一階段保存方式已實測成功，且 CLIHost capture 的可行性與限制有明確紀錄
 
 ---
 

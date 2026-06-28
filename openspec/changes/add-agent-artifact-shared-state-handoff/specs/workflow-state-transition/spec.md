@@ -50,6 +50,15 @@ WHEN Codex 更新 current-state.json
 THEN `currentPhase` MAY 變為 `"READY_FOR_REVIEW"`
 AND `latestArtifactRefs.implementationResult` MUST 指向新的 implementation_result
 
+#### Scenario: READY_FOR_REVIEW → REVIEWING
+
+GIVEN `currentPhase` 為 `"READY_FOR_REVIEW"`
+AND `latestArtifactRefs.implementationResult` 指向有效的 implementation_result
+AND Coordinator 已完成交給 Qwen 的 review-result handoff
+WHEN 人工或 CLIHost 更新 current-state.json
+THEN `currentPhase` MAY 變為 `"REVIEWING"`
+AND `currentOwner` MUST 變為 `"Qwen"`
+
 #### Scenario: REVIEWING → CHANGES_REQUESTED
 
 GIVEN `currentPhase` 為 `"REVIEWING"`
@@ -82,6 +91,14 @@ WHEN CCR 更新 current-state.json
 THEN `currentPhase` MAY 變為 `"READY_FOR_ARCHIVE"`
 AND `gateStatus.readinessConfirmed` MUST 變為 `true`
 
+#### Scenario: READY_FOR_ARCHIVE → ARCHIVED_AWAITING_HUMAN_COMMIT
+
+GIVEN `currentPhase` 為 `"READY_FOR_ARCHIVE"`
+AND Codex 完成 archive-change 並產生 execution-summary 與 archive_result
+WHEN Codex 更新 current-state.json
+THEN `currentPhase` MAY 變為 `"ARCHIVED_AWAITING_HUMAN_COMMIT"`
+AND `currentOwner` MUST 變為 `"Human"`
+
 #### Scenario: ARCHIVED_AWAITING_HUMAN_COMMIT → COMPLETED
 
 GIVEN `currentPhase` 為 `"ARCHIVED_AWAITING_HUMAN_COMMIT"`
@@ -97,6 +114,103 @@ AND `terminalStatus` 為 `"NON_TERMINAL"`
 WHEN 人工或 CCR 判定失敗
 THEN `currentPhase` MAY 變為 `"FAILED"`
 AND `terminalStatus` MUST 變為 `"TERMINAL"`
+
+#### Scenario: PLAN_REVIEW → PLAN_DRAFT（Qwen REQUEST_CHANGES）
+
+GIVEN `currentPhase` 為 `"PLAN_REVIEW"`
+AND Qwen review-plan 回報 Verdict 為 `REQUEST_CHANGES`
+WHEN CCR 仲裁確認需要修改 plan
+THEN `currentPhase` MAY 變為 `"PLAN_DRAFT"`
+AND `currentOwner` MUST 變為 `"CCR"`
+AND `attempt` MUST 遞增
+
+#### Scenario: PLAN_APPROVED → READY_FOR_IMPLEMENTATION
+
+GIVEN `currentPhase` 為 `"PLAN_APPROVED"`
+AND `gateStatus.proposalApproved` 為 `true`
+WHEN CCR 更新 current-state.json
+THEN `currentPhase` MAY 變為 `"READY_FOR_IMPLEMENTATION"`
+AND `currentOwner` MUST 變為 `"Codex"`
+
+#### Scenario: READY_FOR_IMPLEMENTATION → IMPLEMENTING
+
+GIVEN `currentPhase` 為 `"READY_FOR_IMPLEMENTATION"`
+AND Codex 確認承接實作任務
+WHEN Codex 開始實作
+THEN `currentPhase` MAY 變為 `"IMPLEMENTING"`
+AND `currentOwner` MUST 保持為 `"Codex"`
+
+#### Scenario: IMPLEMENTING → PLAN_DRAFT（實作中發現規格問題）
+
+GIVEN `currentPhase` 為 `"IMPLEMENTING"`
+AND Codex 發現 OpenSpec 規格有根本性問題無法繼續
+WHEN Codex 回報規格問題
+THEN `currentPhase` MAY 變為 `"PLAN_DRAFT"`
+AND `currentOwner` MUST 變為 `"CCR"`
+AND Codex MUST 在 implementation_result 中說明問題
+
+#### Scenario: REVIEWING → INCOMPLETE
+
+GIVEN `currentPhase` 為 `"REVIEWING"`
+AND Qwen 無法完成審查（缺少 Base/Diff/關鍵驗證證據）
+WHEN Qwen 輸出 Verdict 為 `INCOMPLETE`
+THEN `currentPhase` MAY 變為 `"INCOMPLETE"`
+AND `currentOwner` MUST 變為 `"CCR"`
+AND `terminalStatus` MUST 保持為 `"NON_TERMINAL"`
+AND Qwen MUST 列出所有缺失的輸入
+
+#### Scenario: CHANGES_REQUESTED → NEEDS_COORDINATOR_ARBITRATION
+
+GIVEN `currentPhase` 為 `"CHANGES_REQUESTED"`
+AND Codex 認為 Qwen Finding 為誤判或與 OpenSpec 衝突
+WHEN Codex 與 Qwen 判斷衝突且無法自行解決
+THEN `currentPhase` MAY 變為 `"NEEDS_COORDINATOR_ARBITRATION"`
+AND `currentOwner` MUST 變為 `"CCR"`
+
+#### Scenario: NEEDS_COORDINATOR_ARBITRATION → PLAN_DRAFT
+
+GIVEN `currentPhase` 為 `"NEEDS_COORDINATOR_ARBITRATION"`
+AND CCR 仲裁後決定需要修改規格
+WHEN CCR 更新 current-state.json
+THEN `currentPhase` MAY 變為 `"PLAN_DRAFT"`
+AND `currentOwner` MUST 變為 `"CCR"`
+
+#### Scenario: NEEDS_COORDINATOR_ARBITRATION → IMPLEMENTING
+
+GIVEN `currentPhase` 為 `"NEEDS_COORDINATOR_ARBITRATION"`
+AND CCR 仲裁後判定 Codex 正確，繼續修復
+WHEN CCR 更新 current-state.json
+THEN `currentPhase` MAY 變為 `"IMPLEMENTING"`
+AND `currentOwner` MUST 變為 `"Codex"`
+AND `attempt` MUST 遞增
+
+#### Scenario: NEEDS_COORDINATOR_ARBITRATION → READY_FOR_READINESS_CHECK
+
+GIVEN `currentPhase` 為 `"NEEDS_COORDINATOR_ARBITRATION"`
+AND CCR 仲裁後接受風險，判定不需要進一步修復
+WHEN CCR 更新 current-state.json
+THEN `currentPhase` MAY 變為 `"READY_FOR_READINESS_CHECK"`
+AND `currentOwner` MUST 變為 `"CCR"`
+AND CCR MUST 在 blockers 或 nextActions 中記錄接受的風險
+
+#### Scenario: READY_FOR_READINESS_CHECK → IMPLEMENTING
+
+GIVEN `currentPhase` 為 `"READY_FOR_READINESS_CHECK"`
+AND CCR 在 readiness-check 中發現問題需要修復
+WHEN CCR 判定不 ready
+THEN `currentPhase` MAY 變為 `"IMPLEMENTING"`
+AND `currentOwner` MUST 變為 `"Codex"`
+AND `attempt` MUST 遞增
+
+#### Scenario: INCOMPLETE → PLAN_REVIEW
+
+GIVEN `currentPhase` 為 `"INCOMPLETE"`
+AND `terminalStatus` 為 `"NON_TERMINAL"`
+AND Coordinator 已補齊 Qwen 所需的缺失輸入
+WHEN CCR 重新提交審查
+THEN `currentPhase` MAY 變為 `"PLAN_REVIEW"`（若為 review-plan 階段）
+AND `currentOwner` MUST 變為 `"Qwen"`
+AND `attempt` MUST 遞增
 
 ---
 
