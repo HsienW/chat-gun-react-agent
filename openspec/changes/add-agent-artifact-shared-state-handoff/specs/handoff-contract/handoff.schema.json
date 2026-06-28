@@ -18,6 +18,7 @@
     "onSuccess",
     "onFailure",
     "requiresHumanApproval",
+    "status",
     "createdAt"
   ],
   "properties": {

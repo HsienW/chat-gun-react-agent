@@ -166,3 +166,34 @@ GIVEN 第一階段 Runtime Boundary
 WHEN Change 完成或失敗
 THEN MUST NOT 自動刪除 `.agent-runtime/<change-id>/`
 AND 清理由人工決定
+
+---
+
+### Requirement: Evidence 收集
+
+Codex 完成實作或修復後，MUST 保存可供下一階段重播的 latest-only Evidence。
+
+#### Scenario: 收集 review-result 必要 Evidence
+
+GIVEN Codex 完成 apply-change 或 fix-from-review
+WHEN 準備 implementation_result 與下一個 Handoff
+THEN `evidence/` MUST 包含 `changed-files.txt`、`git-diff.patch`、`git-diff-stat.txt`、`git-diff-check.txt` 與 `validation-summary.json`
+AND 若有適用的 lint/test/build，MUST 保存其實際輸出或在 validation-summary 中列為未執行
+AND Handoff `requiredInputRefs` MUST 明確引用 Qwen 所需的 Evidence
+
+---
+
+### Requirement: ArtifactReference 讀取驗證流程
+
+Agent 讀取任何 ArtifactReference 前 MUST 依固定順序完成邊界驗證。
+
+#### Scenario: 五步驗證全部通過
+
+GIVEN Agent 準備讀取一個 ArtifactReference
+WHEN Agent 驗證該 Reference
+THEN MUST 確認 `changeId` 與目前 Change 一致
+AND MUST 確認 `relativePath` 不含 `..` 且不是絕對路徑
+AND MUST 確認路徑以 `openspec/changes/` 或 `.agent-runtime/` 開頭
+AND MUST 確認檔案存在
+AND MUST 確認內容不含 Secret、Token 或 Credential
+AND 任一步失敗時 MUST 拒絕讀取並回報具體原因

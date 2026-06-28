@@ -94,6 +94,22 @@
     }
   },
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "currentPhase": { "const": "INCOMPLETE" }
+        },
+        "required": ["currentPhase"]
+      },
+      "then": {
+        "properties": {
+          "terminalStatus": { "const": "NON_TERMINAL" }
+        },
+        "required": ["terminalStatus"]
+      }
+    }
+  ],
   "$defs": {
     "ArtifactReference": {
       "type": "object",

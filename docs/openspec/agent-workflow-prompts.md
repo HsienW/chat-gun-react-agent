@@ -98,6 +98,14 @@ Codex 摘要如下：
 - 測試失敗且無法用相鄰上下文定位。
 - Reviewer finding 指向更上游的架構問題。
 
+## Artifact-based Shared State
+
+已知 Change 名稱時，Router 先讀取精確路徑 `.agent-runtime/<change-id>/current-state.json`。`currentPhase` 決定唯一 Stage，`currentOwner` 決定寫入者；聊天摘要只用於發現衝突，不覆蓋 CurrentState。
+
+各 Stage 的輸入只來自 `latestArtifactRefs` 與目前 Handoff 的 `requiredInputRefs`。讀取前驗證 changeId/runId、安全相對路徑、檔案存在與無 Secret；不得遞迴掃描 `.agent-runtime/` 或讀取其他 Change／Run。
+
+每個 Stage 產生一份 latest-only Result 與 Handoff，再由有寫入權的 Agent、人工或 CLIHost 更新 CurrentState。Qwen 只輸出 JSON／Markdown，不直接寫入。結構化 JSON 是機器可讀來源；Markdown 是同一結果的人類可讀投影。
+
 ## 專案注意事項
 
 - 本文件是本 repo 的專案版 workflow，不是通用開源版。

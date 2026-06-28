@@ -58,3 +58,10 @@ Diff 摘要：
 
 請使用繁體中文。
 ```
+
+## Artifact Contract
+
+- **Input**：CurrentState、implementationResult、Diff／Validation Evidence、OpenSpec References；不要求使用者重貼摘要或 diff。
+- **Output**：Qwen stdout 的 `review_result`，由人工或 CLIHost 保存。
+- **State Transition**：`READY_FOR_REVIEW` → `REVIEWING` → `CHANGES_REQUESTED`、`READY_FOR_READINESS_CHECK` 或 `INCOMPLETE`。
+- **Validation**：缺 Base、Diff 或關鍵驗證時必須 `INCOMPLETE`；Qwen 維持唯讀。

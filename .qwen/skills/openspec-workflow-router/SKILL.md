@@ -12,9 +12,13 @@ Use this skill as Qwen Code's read-only routing layer for the repository OpenSpe
 At the start of every task in this repository:
 
 1. Decide whether the request belongs to the OpenSpec change lifecycle.
-2. If it does, select exactly one stage from the route table below.
-3. For review stages, load `secondary-architecture-reviewer` after selecting the stage.
-4. If it does not, keep the context policy below in force and continue with `QWEN.md`.
+2. If a change name is known, read only `.agent-runtime/<change-id>/current-state.json`.
+3. Treat `currentPhase` as the source of truth and verify `currentOwner` is `Qwen` for review work.
+4. Select exactly one stage and read the matching canonical Codex reference.
+5. Read only `latestArtifactRefs` and current Handoff `requiredInputRefs`; validate changeId/runId, safe paths, existence, and absence of Secrets.
+6. For review stages, load `secondary-architecture-reviewer`.
+7. If CurrentState or required evidence is missing, output `INCOMPLETE`; never initialize or modify state.
+8. If it is not a lifecycle task, keep the context policy below in force and continue with `QWEN.md`.
 
 ## Context Policy
 
@@ -25,6 +29,7 @@ At the start of every task in this repository:
 - Expand context only for contract conflicts, security concerns, unclear architecture, or test failures that cannot be localized.
 - Keep all user-facing output in Traditional Chinese.
 - Maintain Qwen's read-only boundary from `QWEN.md`.
+- Never recursively scan `.agent-runtime/`, read another Change/Run, or write Runtime Artifacts.
 
 ## Route Table
 
@@ -44,3 +49,5 @@ At the start of every task in this repository:
 2. Read only the artifacts needed for that stage.
 3. Follow `QWEN.md` and `.qwen/skills/secondary-architecture-reviewer/SKILL.md` for reviewer output.
 4. If the stage is ambiguous, ask one concise Traditional Chinese question.
+
+For review stages, emit a schema-valid `review_result` to stdout. Human or CLIHost validation and persistence must complete before CurrentState advances.

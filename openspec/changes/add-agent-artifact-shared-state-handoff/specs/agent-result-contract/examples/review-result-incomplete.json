@@ -41,6 +41,5 @@
       "severity": "Critical",
       "description": "缺少 Base Diff 與驗證證據，無法進行可靠審查"
     }
-  ],
-  "nextHandoff": {}
+  ]
 }

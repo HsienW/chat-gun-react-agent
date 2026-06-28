@@ -52,3 +52,10 @@ Qwen review 結論：
 
 請使用繁體中文。
 ```
+
+## Artifact Contract
+
+- **Input**：CurrentState、implementationResult、reviewResult、Evidence 與 OpenSpec；不要求長摘要。
+- **Output**：`artifacts/readiness-result.json` 與 archive-change Handoff。
+- **State Transition**：`READY_FOR_READINESS_CHECK` → `READY_FOR_ARCHIVE`；需修正時 → `IMPLEMENTING`／Codex。
+- **Validation**：前三個 Gate 為 true、blockers 為空且 Requirements 有證據後，CCR 才可設定 readinessConfirmed。

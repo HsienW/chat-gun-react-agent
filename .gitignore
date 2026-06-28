@@ -211,3 +211,6 @@ backend/.langgraph_api
 .cursor/settings.local.json
 .qwen/auth.json
 .qwen/settings.local.json
+
+# Latest-only local artifacts for Agent handoff and review evidence
+.agent-runtime/
