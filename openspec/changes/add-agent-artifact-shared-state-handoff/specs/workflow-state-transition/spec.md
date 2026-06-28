@@ -102,10 +102,12 @@ AND `currentOwner` MUST 變為 `"Human"`
 #### Scenario: ARCHIVED_AWAITING_HUMAN_COMMIT → COMPLETED
 
 GIVEN `currentPhase` 為 `"ARCHIVED_AWAITING_HUMAN_COMMIT"`
+AND `terminalStatus` 為 `"NON_TERMINAL"`（仍在等待人工操作）
 AND 人工完成 git commit
 WHEN 人工更新 current-state.json
 THEN `currentPhase` MAY 變為 `"COMPLETED"`
 AND `terminalStatus` MUST 變為 `"TERMINAL"`
+AND `ARCHIVED_AWAITING_HUMAN_COMMIT` 階段的 `terminalStatus` 在人工 commit 前 MUST 為 `"NON_TERMINAL"`（因為 Agent 不得自行完成 COMPLETED）
 
 #### Scenario: 任何 NON_TERMINAL → FAILED
 

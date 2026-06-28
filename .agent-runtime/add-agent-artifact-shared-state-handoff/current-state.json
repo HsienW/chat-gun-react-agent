@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "1.0.0",
+  "changeId": "add-agent-artifact-shared-state-handoff",
+  "runId": "run-2026-06-29-001",
+  "currentPhase": "PLAN_REVIEW",
+  "currentOwner": "CCR",
+  "attempt": 1,
+  "latestArtifactRefs": {
+    "proposal": {
+      "artifactId": "proposal-artifact-handoff",
+      "changeId": "add-agent-artifact-shared-state-handoff",
+      "kind": "proposal",
+      "relativePath": "openspec/changes/add-agent-artifact-shared-state-handoff/proposal.md"
+    },
+    "design": {
+      "artifactId": "design-artifact-handoff",
+      "changeId": "add-agent-artifact-shared-state-handoff",
+      "kind": "design",
+      "relativePath": "openspec/changes/add-agent-artifact-shared-state-handoff/design.md"
+    },
+    "tasks": {
+      "artifactId": "tasks-artifact-handoff",
+      "changeId": "add-agent-artifact-shared-state-handoff",
+      "kind": "tasks",
+      "relativePath": "openspec/changes/add-agent-artifact-shared-state-handoff/tasks.md"
+    }
+  },
+  "latestHandoff": {
+    "handoffId": "",
+    "stage": "",
+    "from": "CCR",
+    "to": "CCR",
+    "status": "PENDING"
+  },
+  "gateStatus": {
+    "proposalApproved": false,
+    "reviewPassed": false,
+    "implementationVerified": false,
+    "readinessConfirmed": false
+  },
+  "blockers": [],
+  "nextActions": [
+    "Qwen 已完成 review-plan，發現 4 個問題",
+    "CCR 正在執行仲裁並修正 OpenSpec",
+    "修正完成後重新交給 Qwen 複審或推進到 PLAN_APPROVED"
+  ],
+  "updatedAt": "2026-06-29T18:00:00Z",
+  "terminalStatus": "NON_TERMINAL"
+}

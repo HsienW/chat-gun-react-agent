@@ -30,13 +30,29 @@ WHEN Agent 嘗試解析
 THEN Agent MUST 拒絕處理並報錯
 AND 不得 silent ignore 或以錯誤 shape 解析
 
-#### Scenario: 未知 kind 處理
+#### Scenario: Schema Validation 階段拒絕未知 kind
 
-GIVEN Agent 讀取到 `kind` 為 `"unknown_future_kind"` 的 artifact
-WHEN Agent 嘗試解析
-THEN Agent MUST 將 payload 視為 `unknown`
-AND MUST 保留原始 payload 供人類檢查
-AND MUST NOT 假設 payload shape
+GIVEN 一個 artifact 的 `kind` 欄位值不在 `agent-result.schema.json` 的 `kind` enum 中
+WHEN 對該 artifact 執行 Schema Validation
+THEN Schema Validation MUST 失敗
+AND Agent MUST 回報 Schema Error（`kind` 值不合法）
+AND Agent MUST NOT 嘗試以 unknown fallback 解析
+
+#### Scenario: 已知 kind 但 payload 包含未定義欄位
+
+GIVEN `kind` 在 Schema enum 中（例如 `"review_result"`）
+WHEN payload 包含 Schema 未定義的額外欄位
+THEN 依 `additionalProperties: false`，Schema Validation MUST 失敗
+AND Agent MUST 回報 Schema Error
+AND 這是向後不相容變更的信號，需檢查 schemaVersion
+
+#### Scenario: Schema 版本演進後新增 kind
+
+GIVEN Schema 的新 major 或 minor 版本新增了 `kind` enum 值（例如 `"future_result"`）
+WHEN Agent 使用新版 Schema 解析
+THEN 新版 Schema 的 enum 包含 `"future_result"`，Validation 通過
+AND 若 Agent 使用舊版 Schema，Validation 失敗（視為 schemaVersion 不相容）
+AND 這是 schemaVersion 演進的正確行為
 
 #### Scenario: 必要欄位缺失
 
@@ -123,14 +139,14 @@ AND `outputRefs` 中的每個項目都可供下游 Agent 引用
 
 ### Requirement: Artifact 版本演進
 
-Agent Result Schema MUST 使用 `schemaVersion` 欄位支援版本演進。
+Agent Result Schema MUST 使用 `schemaVersion` 欄位支援版本演進。`kind` enum 的變更視為 Schema 變更的一部分，必須伴隨 `schemaVersion` 更新。
 
 #### Scenario: Minor version 向後相容
 
 GIVEN Agent 理解的 schemaVersion 為 `"1.0.0"`
 WHEN 讀取到 schemaVersion 為 `"1.1.0"` 的 artifact
 THEN Agent SHOULD 盡力解析已知欄位
-AND 未知的新增欄位 SHOULD 被保留但不得導致 parse error
+AND 未知的新增欄位（若 Schema 允許）SHOULD 被保留但不得導致 parse error
 
 #### Scenario: Major version 不相容
 
@@ -138,3 +154,11 @@ GIVEN Agent 理解的 schemaVersion 為 `"1.0.0"`
 WHEN 讀取到 schemaVersion 為 `"2.0.0"` 的 artifact
 THEN Agent MUST 拒絕處理
 AND MUST 報錯說明版本不相容
+
+#### Scenario: 新增 kind 需伴隨 schemaVersion 變更
+
+GIVEN 需要在 agent-result.schema.json 中新增 `kind` enum 值
+WHEN 修改 Schema
+THEN 若新增的 kind 不改變既有欄位語意（純新增），SHOULD 遞增 minor schemaVersion
+AND 若新增的 kind 改變既有 required 欄位或移除欄位，MUST 遞增 major schemaVersion
+AND 所有 Agent MUST 先升級 Schema 理解才能處理新 kind

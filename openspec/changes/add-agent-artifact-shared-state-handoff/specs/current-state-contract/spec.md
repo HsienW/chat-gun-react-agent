@@ -15,6 +15,15 @@ AND `currentPhase` MUST 為 `"PLAN_DRAFT"`
 AND `currentOwner` MUST 為 `"CCR"`
 AND `terminalStatus` MUST 為 `"NON_TERMINAL"`
 
+#### Scenario: plan-change 完成後推進到 PLAN_REVIEW
+
+GIVEN CCR 完成 proposal/design/tasks/specs
+WHEN CCR 準備交接給 Qwen review-plan
+THEN CCR MUST 更新 current-state.json
+AND `currentPhase` MUST 變為 `"PLAN_REVIEW"`
+AND `currentOwner` MUST 變為 `"Qwen"`
+AND `latestArtifactRefs` MUST 包含 proposal、design、tasks 的 reference
+
 #### Scenario: current-state.json 不存在
 
 GIVEN Agent 被指派處理某個 Change

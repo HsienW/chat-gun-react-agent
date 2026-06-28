@@ -69,12 +69,13 @@ WHEN Agent 考慮產生 commit message 建議
 THEN Agent MUST NOT 建議 commit
 AND MUST 說明目前 phase 不適合 commit
 
-#### Scenario: TERMINAL 狀態才可建議 commit
+#### Scenario: 只在 ARCHIVED_AWAITING_HUMAN_COMMIT 時建議 commit
 
-GIVEN `terminalStatus` 為 `"NON_TERMINAL"`
-WHEN Agent 考慮產生 commit message 建議
-THEN Agent MUST NOT 建議 commit
-AND MUST 等待 `terminalStatus` 變為 `"TERMINAL"`（即進入 `ARCHIVED_AWAITING_HUMAN_COMMIT` 後）
+GIVEN `currentPhase` 為 `"ARCHIVED_AWAITING_HUMAN_COMMIT"`
+WHEN Agent（Codex/CCR）產生 commit message 建議
+THEN Agent MAY 產生 commit message 建議
+AND `terminalStatus` 在此階段為 `"NON_TERMINAL"`（因為尚未人工 commit）
+AND 人工 commit 後 `currentPhase` 變為 `"COMPLETED"` 且 `terminalStatus` 變為 `"TERMINAL"`
 
 ---
 
