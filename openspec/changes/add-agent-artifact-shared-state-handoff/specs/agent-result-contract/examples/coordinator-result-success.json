@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "1.0.0",
+  "artifactId": "cr-weather-location-001",
+  "changeId": "generalize-weather-location-resolution",
+  "runId": "run-2026-06-29-001",
+  "producer": "CCR",
+  "stage": "plan-change",
+  "kind": "coordinator_result",
+  "status": "success",
+  "createdAt": "2026-06-29T10:00:00Z",
+  "summary": "完成 generalize-weather-location-resolution 的 proposal、design、tasks 初稿。OpenSpec 四件套已落盤，涵蓋地點解析 Provider-driven 重構、結構化 Weather Tool Result、前端狀態顯示。",
+  "inputRefs": [],
+  "outputRefs": [
+    {
+      "artifactId": "proposal-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "proposal",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/proposal.md"
+    },
+    {
+      "artifactId": "design-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "design",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/design.md"
+    },
+    {
+      "artifactId": "tasks-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "tasks",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/tasks.md"
+    }
+  ],
+  "verification": {
+    "executed": ["openspec validate generalize-weather-location-resolution --strict"],
+    "passed": ["openspec validate generalize-weather-location-resolution --strict"],
+    "failed": [],
+    "notExecuted": ["lint", "test", "build"]
+  },
+  "risks": [
+    {
+      "severity": "Medium",
+      "description": "Open-Meteo Geocoding 對非英文地點的搜尋品質可能不一致",
+      "mitigation": "使用多語言查詢策略，並在 ambiguous 時回傳候選而非猜測"
+    }
+  ],
+  "nextHandoff": {
+    "handoffId": "hdo-weather-001",
+    "stage": "review-plan",
+    "to": "Qwen",
+    "reason": "Proposal/design/tasks 完成，需要獨立架構審查"
+  }
+}

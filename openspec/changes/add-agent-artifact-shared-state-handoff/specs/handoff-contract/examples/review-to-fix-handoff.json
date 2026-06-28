@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "1.0.0",
+  "handoffId": "hdo-weather-003",
+  "changeId": "generalize-weather-location-resolution",
+  "runId": "run-2026-06-29-001",
+  "from": "CCR",
+  "to": "Codex",
+  "stage": "fix-from-review",
+  "reason": "Qwen review-result 發現 1 Blocker、2 Major，需要 Codex 修復",
+  "requiredInputRefs": [
+    {
+      "artifactId": "rr-weather-location-001",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "review_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/review-result.json"
+    },
+    {
+      "artifactId": "ir-weather-location-001",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "implementation_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/implementation-result.json"
+    }
+  ],
+  "expectedOutputKind": "implementation_result",
+  "acceptanceCriteriaRefs": [
+    {
+      "artifactId": "rr-weather-location-001",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "review_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/review-result.json"
+    }
+  ],
+  "onSuccess": {
+    "nextStage": "review-result",
+    "nextOwner": "Qwen"
+  },
+  "onFailure": {
+    "nextStage": "NEEDS_COORDINATOR_ARBITRATION",
+    "nextOwner": "CCR",
+    "reason": "Codex 修復後問題仍存在，或修復 A 導致 B 回歸"
+  },
+  "onConflict": {
+    "strategy": "coordinator_arbitration",
+    "nextOwner": "CCR",
+    "reason": "若 Codex 對 Qwen findings 有異議"
+  },
+  "requiresHumanApproval": false,
+  "status": "PENDING",
+  "createdAt": "2026-06-29T14:00:00Z"
+}

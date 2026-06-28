@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "1.0.0",
+  "changeId": "generalize-weather-location-resolution",
+  "runId": "run-2026-06-29-001",
+  "currentPhase": "REVIEWING",
+  "currentOwner": "Qwen",
+  "attempt": 1,
+  "latestArtifactRefs": {
+    "proposal": {
+      "artifactId": "proposal-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "proposal",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/proposal.md"
+    },
+    "design": {
+      "artifactId": "design-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "design",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/design.md"
+    },
+    "tasks": {
+      "artifactId": "tasks-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "tasks",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/tasks.md"
+    },
+    "implementationResult": {
+      "artifactId": "ir-weather-location-001",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "implementation_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/implementation-result.json"
+    }
+  },
+  "latestHandoff": {
+    "handoffId": "hdo-weather-002",
+    "stage": "review-result",
+    "from": "CCR",
+    "to": "Qwen",
+    "status": "IN_PROGRESS"
+  },
+  "gateStatus": {
+    "proposalApproved": true,
+    "reviewPassed": false,
+    "implementationVerified": true,
+    "readinessConfirmed": false
+  },
+  "blockers": [],
+  "nextActions": [
+    "Qwen 正在審查實作結果",
+    "完成後輸出 review_result JSON"
+  ],
+  "updatedAt": "2026-06-29T14:00:00Z",
+  "terminalStatus": "NON_TERMINAL"
+}

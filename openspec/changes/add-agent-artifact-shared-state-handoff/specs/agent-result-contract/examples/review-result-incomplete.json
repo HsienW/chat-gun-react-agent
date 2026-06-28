@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "1.0.0",
+  "artifactId": "rr-incomplete-001",
+  "changeId": "some-change",
+  "runId": "run-2026-06-29-001",
+  "producer": "Qwen",
+  "stage": "review-result",
+  "kind": "review_result",
+  "status": "failure",
+  "createdAt": "2026-06-29T12:00:00Z",
+  "summary": "無法完成審查：缺少 Base Diff、Lint/Test/Build 輸出、百煉認證無法確認。Verdict: INCOMPLETE。",
+  "inputRefs": [
+    {
+      "artifactId": "impl-result-incomplete-001",
+      "changeId": "some-change",
+      "runId": "run-2026-06-29-001",
+      "kind": "implementation_result",
+      "relativePath": ".agent-runtime/some-change/artifacts/implementation-result.json"
+    }
+  ],
+  "outputRefs": [],
+  "verification": {
+    "executed": [],
+    "passed": [],
+    "failed": [],
+    "notExecuted": ["lint", "test", "build", "git diff --stat", "git diff --check"]
+  },
+  "payload": {
+    "verdict": "INCOMPLETE",
+    "findings": {
+      "blocker": [],
+      "major": [],
+      "minor": []
+    },
+    "crossLayerContractCheck": {},
+    "residualRisks": [],
+    "positiveNotes": []
+  },
+  "risks": [
+    {
+      "severity": "Critical",
+      "description": "缺少 Base Diff 與驗證證據，無法進行可靠審查"
+    }
+  ],
+  "nextHandoff": {}
+}

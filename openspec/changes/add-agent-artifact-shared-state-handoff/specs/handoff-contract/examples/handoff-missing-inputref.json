@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1.0.0",
+  "handoffId": "hdo-incomplete-001",
+  "changeId": "some-change",
+  "runId": "run-2026-06-29-001",
+  "from": "CCR",
+  "to": "Qwen",
+  "stage": "review-result",
+  "reason": "交接給 Qwen 進行實作結果審查",
+  "requiredInputRefs": [],
+  "expectedOutputKind": "review_result",
+  "acceptanceCriteriaRefs": [],
+  "onSuccess": {
+    "nextStage": "readiness-check",
+    "nextOwner": "CCR"
+  },
+  "onFailure": {
+    "nextStage": "fix-from-review",
+    "nextOwner": "Codex",
+    "reason": "Qwen 找到問題需要 Codex 修復"
+  },
+  "requiresHumanApproval": false,
+  "status": "PENDING",
+  "createdAt": "2026-06-29T12:00:00Z"
+}

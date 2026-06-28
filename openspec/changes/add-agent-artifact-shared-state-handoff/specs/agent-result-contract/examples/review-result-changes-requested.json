@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "1.0.0",
+  "artifactId": "rr-weather-location-001",
+  "changeId": "generalize-weather-location-resolution",
+  "runId": "run-2026-06-29-001",
+  "producer": "Qwen",
+  "stage": "review-plan",
+  "kind": "review_result",
+  "status": "success",
+  "createdAt": "2026-06-29T12:00:00Z",
+  "summary": "完成 proposal/design/tasks 審查。發現 1 Blocker（Location Resolution Domain Type 缺少 Unknown 狀態處理）、2 Major（缺少 Timeout 取消傳遞規格、GeoQuery 正規化步驟未定義）。Verdict: REQUEST_CHANGES。",
+  "inputRefs": [
+    {
+      "artifactId": "cr-weather-location-001",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "coordinator_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/coordinator-result.json"
+    }
+  ],
+  "outputRefs": [],
+  "verification": {
+    "executed": [],
+    "passed": [],
+    "failed": [],
+    "notExecuted": ["lint", "test", "build", "git diff"]
+  },
+  "payload": {
+    "verdict": "REQUEST_CHANGES",
+    "findings": {
+      "blocker": [
+        {
+          "severity": "Blocker",
+          "title": "Location Resolution Domain Type 缺少 Unknown 狀態處理",
+          "file": "specs/tool-execution/spec.md",
+          "status": "Confirmed",
+          "trigger": "當 Geocoding Provider 回傳無法判別的行政區類型時",
+          "issue": "Domain Type 的 LocationResolutionStatus 列舉未包含 unknown 或 future 值的 fallback，違反 AGENTS.md §7（必須處理 unknown 欄位）",
+          "impact": "未來 Provider 新增欄位或回傳未預期格式時，Parser 可能拋出錯誤或被 silent ignore",
+          "evidence": "specs/tool-execution/spec.md 的 LocationResolutionStatus 只定義了 resolved/ambiguous/not_found/provider_error",
+          "suggestedFix": "新增 unknown 狀態並在 Provider Adapter 中對未識別結果使用此狀態",
+          "confidence": "High"
+        }
+      ],
+      "major": [
+        {
+          "severity": "Major",
+          "title": "缺少 Weather Tool 逾時取消傳遞規格",
+          "file": "specs/tool-execution/spec.md",
+          "status": "Confirmed",
+          "trigger": "Geocoding 或 Weather Provider 呼叫逾時",
+          "issue": "Design 提到 timeout，但 Spec 中沒有定義逾時後的 Error Code、State Transition 與 BFF Cancel 傳遞",
+          "impact": "逾時後 Frontend 可能永久顯示 Tool 執行中",
+          "evidence": "specs/tool-execution/spec.md 中沒有 TIMEOUT 相關 Scenario",
+          "suggestedFix": "新增逾時 Scenario 與對應 Error Code",
+          "confidence": "High"
+        },
+        {
+          "severity": "Major",
+          "title": "GeoQuery 正規化步驟未在 Spec 中定義",
+          "file": "specs/tool-execution/spec.md",
+          "status": "Strong Inference",
+          "trigger": "使用者輸入包含非標準 Unicode 或特殊字元的地點名稱",
+          "issue": "Design 中描述了 Query Normalization，但 Spec 缺乏具體的 Normalization Rule 與可驗證 Scenario",
+          "impact": "Implementer 對正規化範圍理解可能不同，導致不一致行為",
+          "evidence": "specs/tool-execution/spec.md 未包含 Normalization 相關 Requirement",
+          "suggestedFix": "新增 Normalization Rule 的 Requirement 與 Scenario",
+          "confidence": "Medium"
+        }
+      ],
+      "minor": []
+    },
+    "crossLayerContractCheck": {
+      "requestResponse": "未檢查（無 BFF 變更）",
+      "eventState": "未檢查（無實作產出）",
+      "errorTimeoutCancel": "Major：缺少 Timeout Error Code 與 Cancellation 傳遞規格",
+      "compatibility": "OK：公開 Route 與 Graph ID 不變"
+    },
+    "residualRisks": [
+      "Open-Meteo API 可能對某些語言的地名回傳空結果，需要實際 live test 驗證",
+      "LLM Repair 的邊界僅靠 prompt 限制，建議增加 Runtime Validation"
+    ],
+    "positiveNotes": [
+      "Design 的四層架構責任邊界清晰",
+      "正確禁止了 hard-coded mapping 作為主要解析策略",
+      "Proposal 的 Non-goals 與 Rollback 策略完整"
+    ]
+  },
+  "risks": [
+    {
+      "severity": "Medium",
+      "description": "Provider 搜尋品質差異可能影響非英文地點",
+      "mitigation": "多語言查詢策略已在 Design 中規劃"
+    }
+  ],
+  "nextHandoff": {
+    "stage": "plan-change",
+    "to": "CCR",
+    "reason": "Qwen 找到 Blocker，需要 CCR 修改 proposal/design/tasks"
+  }
+}
