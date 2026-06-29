@@ -3,14 +3,16 @@
 import { spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { pathToFileURL } from "node:url";
+import path from "node:path";
 import process from "node:process";
 
 const DEFAULT_STAGE = "review-result";
 const EXPECTED_KIND = "review_result";
 const EXPECTED_PRODUCER = "Qwen";
-const SUPPORTED_SCHEMA_VERSION = "1.0.0";
+const SUPPORTED_SCHEMA_MAJOR_VERSION = 1;
+const VALID_RESULT_STATUSES = new Set(["success", "failure", "partial"]);
+const VALID_REVIEW_VERDICTS = new Set(["APPROVE", "REQUEST_CHANGES", "COMMENT_ONLY", "INCOMPLETE"]);
 
 export function extractJsonObjectFromOutput(output) {
   if (typeof output !== "string" || output.trim().length === 0) {
@@ -54,9 +56,7 @@ export function validateReviewResult(
   requireStringField(value, "createdAt");
   requireStringField(value, "summary");
 
-  if (value.schemaVersion !== SUPPORTED_SCHEMA_VERSION) {
-    throw new Error(`Unsupported schemaVersion: ${value.schemaVersion}`);
-  }
+  validateCompatibleSchemaVersion(value.schemaVersion);
 
   if (value.changeId !== expectedChangeId) {
     throw new Error(`Unexpected changeId: ${value.changeId}`);
@@ -78,7 +78,7 @@ export function validateReviewResult(
     throw new Error(`Unexpected producer: ${value.producer}`);
   }
 
-  if (!["success", "failure", "partial"].includes(value.status)) {
+  if (!VALID_RESULT_STATUSES.has(value.status)) {
     throw new Error(`Unexpected status: ${value.status}`);
   }
 
@@ -323,7 +323,7 @@ function validateReviewPayload(value) {
     throw new Error("payload must be an object.");
   }
 
-  if (!["APPROVE", "REQUEST_CHANGES", "COMMENT_ONLY", "INCOMPLETE"].includes(value.verdict)) {
+  if (!VALID_REVIEW_VERDICTS.has(value.verdict)) {
     throw new Error(`Unexpected payload.verdict: ${value.verdict}`);
   }
 
@@ -352,6 +352,26 @@ function requireArrayField(value, fieldName) {
   if (!Array.isArray(value[fieldName])) {
     throw new Error(`${fieldName} must be an array.`);
   }
+}
+
+function validateCompatibleSchemaVersion(schemaVersion) {
+  const majorVersion = parseSchemaMajorVersion(schemaVersion);
+
+  if (majorVersion !== SUPPORTED_SCHEMA_MAJOR_VERSION) {
+    throw new Error(
+      `Unsupported schemaVersion major: ${schemaVersion}; expected ${SUPPORTED_SCHEMA_MAJOR_VERSION}.x.x`,
+    );
+  }
+}
+
+function parseSchemaMajorVersion(schemaVersion) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(schemaVersion);
+
+  if (!match) {
+    throw new Error(`Invalid schemaVersion: ${schemaVersion}`);
+  }
+
+  return Number.parseInt(match[1], 10);
 }
 
 function requireNonEmptyString(name, value) {

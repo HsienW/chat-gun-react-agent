@@ -130,6 +130,35 @@ test("validateReviewResult rejects wrong change, run, stage, and kind", () => {
   );
 });
 
+test("validateReviewResult accepts compatible schema minor versions", () => {
+  const base = validReviewResult({ schemaVersion: "1.1.0" });
+
+  assert.equal(
+    validateReviewResult(base, {
+      expectedChangeId: base.changeId,
+      expectedRunId: base.runId,
+      expectedStage: base.stage,
+      expectedKind: base.kind,
+    }),
+    base,
+  );
+});
+
+test("validateReviewResult rejects incompatible schema major versions", () => {
+  const base = validReviewResult({ schemaVersion: "2.0.0" });
+
+  assert.throws(
+    () =>
+      validateReviewResult(base, {
+        expectedChangeId: base.changeId,
+        expectedRunId: base.runId,
+        expectedStage: base.stage,
+        expectedKind: base.kind,
+      }),
+    /schemaVersion/,
+  );
+});
+
 test("captureQwenReviewResult rejects non-zero process exit before writing artifact", async () => {
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), "qwen-capture-"));
   const changeId = "change-a";
