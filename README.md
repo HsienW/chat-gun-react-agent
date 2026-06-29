@@ -429,6 +429,8 @@ Browser
   -> http://langgraph-api:8000
 ```
 
+注意：Docker Compose 目前將 `BFF_MAX_BODY_BYTES` 預設為 `1048576`。若需要與本機 `bff/.env.example` 的 `52428800` 對齊，請在啟動 Compose 前設定 `BFF_MAX_BODY_BYTES=52428800` 或調整 `docker-compose.yml`。
+
 如果 Docker 內的 backend 也需要 proxy，目前 `docker-compose.yml` 尚未把 `HTTPS_PROXY` / `HTTP_PROXY` 傳給 `langgraph-api`，需要自行加到 `langgraph-api.environment`。
 
 ## Tools
@@ -441,20 +443,24 @@ Browser
 - `web_search`
 - `web_fetch`
 - `current_weather`
+- `weather_forecast`
 
 注意：
 
 - `web_search` 使用 Tavily API，需要 `TAVILY_API_KEY`。
-- `current_weather` 使用 Open-Meteo，不需要 API key。
+- `current_weather` 使用 Open-Meteo current weather，不需要 API key。
+- `weather_forecast` 使用 Open-Meteo hourly / daily forecast，不需要 API key。
 - `web_fetch` 目前限制 HTTP/HTTPS 與允許 port，但不是完整 SSRF sandbox。
 - MCP tools 是選用功能，透過 backend env flags 控制。
 - Tool governance 可透過 `TOOL_ALLOWLIST`、`TOOL_DENYLIST`、`TOOL_TIMEOUT_MS`、`TOOL_MAX_INPUT_CHARS`、`TOOL_MAX_OUTPUT_CHARS` 控制。
 
-### Weather location resolution
+### Weather location resolution and forecast
 
-`current_weather` 使用 Open-Meteo geocoding 與 Open-Meteo current weather，不需要 API key。
+`current_weather` 使用 Open-Meteo geocoding 與 Open-Meteo current weather；`weather_forecast` 使用 Open-Meteo geocoding 與 hourly / daily forecast。兩者都不需要 API key。
 
 Weather flow 會接收 planner 輸出的地點，保留使用者原始文字於 `requestedLocation.raw`，並只做 trim、Unicode NFKC、空白清理與控制字元移除等不改變語意的 normalization。地理事實仍由 geocoding provider 候選決定。
+
+Forecast flow 由 planner 輸出 `weather.weatherCapability` 與 `weather.timeRange`，目前支援 `hourly` / `daily` forecast，以及 `today`、`tonight`、`tomorrow`、`weekend`、`date_range` 等 time range。`current_weather` 只負責目前觀測；明天、今晚、週末、日期區間或降雨機率等預報問題會走 `weather_forecast`。
 
 Tool 會回傳 structured `WeatherToolResult`：
 
@@ -523,7 +529,8 @@ npm run test -- src/tools/weather.live-smoke.test.ts
 
 限制：
 
-- 目前工具回報最新 current observation，不承諾完整日預報、週末預報或天氣建議。
+- `current_weather` 回報最新 current observation，不承諾完整日預報或週末預報。
+- `weather_forecast` 回報結構化 hourly / daily forecast；不承諾歷史天氣、氣候知識，或超出結構化欄位的獨立天氣建議。
 - 歧義地點需要使用者補充 country、region 或其他辨識資訊。
 - Provider error 與 timeout 會回報為服務失敗，不會被包裝成地點不存在。
 - Cancellation 應以 `weather_cancelled` 結束，frontend 不應停留在 running 狀態。
