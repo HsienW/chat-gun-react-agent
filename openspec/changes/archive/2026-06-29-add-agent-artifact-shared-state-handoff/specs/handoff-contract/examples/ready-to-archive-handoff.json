@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "1.0.0",
+  "handoffId": "hdo-weather-006",
+  "changeId": "generalize-weather-location-resolution",
+  "runId": "run-2026-06-29-001",
+  "from": "CCR",
+  "to": "Codex",
+  "stage": "archive-change",
+  "reason": "CCR readiness-check 通過，所有 Gate 為 true，無 Blocker。需要 Codex 產生 execution-summary 並準備 commit message 建議。",
+  "requiredInputRefs": [
+    {
+      "artifactId": "current-state",
+      "changeId": "generalize-weather-location-resolution",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/current-state.json"
+    },
+    {
+      "artifactId": "rr-weather-location-002",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "review_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/review-result.json"
+    },
+    {
+      "artifactId": "ir-weather-location-002",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "implementation_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/implementation-result.json"
+    }
+  ],
+  "expectedOutputKind": "archive_result",
+  "acceptanceCriteriaRefs": [],
+  "onSuccess": {
+    "nextStage": "ARCHIVED_AWAITING_HUMAN_COMMIT",
+    "nextOwner": "Human"
+  },
+  "onFailure": {
+    "nextStage": "NEEDS_COORDINATOR_ARBITRATION",
+    "nextOwner": "CCR",
+    "reason": "Archive 過程中發現問題"
+  },
+  "requiresHumanApproval": true,
+  "status": "PENDING",
+  "createdAt": "2026-06-29T16:00:00Z"
+}

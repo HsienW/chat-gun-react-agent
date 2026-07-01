@@ -27,6 +27,9 @@ interface ToolMessageDisplayProps {
   toolMessage?: ToolMessage;
   isExpanded: boolean;
   onToggle: () => void;
+  isResumingClarification?: boolean;
+  onClarificationReply?: (replyText: string) => void;
+  onClarificationCancel?: () => void;
 }
 
 const getStatusBadge = (toolCall: ToolCall, toolMessage?: ToolMessage) => {
@@ -161,6 +164,9 @@ export function ToolMessageDisplay({
   toolMessage,
   isExpanded,
   onToggle,
+  isResumingClarification = false,
+  onClarificationReply,
+  onClarificationCancel,
 }: ToolMessageDisplayProps) {
   const errorEnvelope = parseErrorEnvelope(toolMessage?.content);
   const displayContent = errorEnvelope
@@ -222,7 +228,12 @@ export function ToolMessageDisplay({
                   </h4>
                   {/* Weather structured result card — Task 6.2 */}
                   {isStructuredWeather ? (
-                    <WeatherToolResultCard content={toolMessage.content} />
+                    <WeatherToolResultCard
+                      content={toolMessage.content}
+                      isResuming={isResumingClarification}
+                      onClarificationReply={onClarificationReply}
+                      onClarificationCancel={onClarificationCancel}
+                    />
                   ) : (
                     <div
                       className={cn(

@@ -6,6 +6,8 @@ import { WelcomeScreen } from '@/components/WelcomeScreen';
 import { ChatMessagesView } from '@/components/ChatMessagesView';
 import {
   extractAgentRuntimeEvents,
+  extractWeatherClarificationInterruptToolResult,
+  isLangGraphInterruptEvent,
   runtimeEventToProcessedEvent,
 } from '@/lib/agent-runtime-events';
 import { getAgentRunConfig } from '@/lib/agent-run-config';
@@ -25,6 +27,8 @@ import {
 } from '@/lib/stream-error-classification';
 
 const STREAM_ERROR_MESSAGE_ID = 'stream-error';
+const WEATHER_CLARIFICATION_AI_MESSAGE_ID = 'weather-clarification-interrupt-ai';
+const WEATHER_CLARIFICATION_TOOL_MESSAGE_ID = 'weather-clarification-interrupt-tool';
 
 function formatStreamError(error: unknown): string {
   const envelope =
@@ -81,6 +85,33 @@ function getCurrentFinalAssistantMessageId(messages: Message[]): string | undefi
   return lastMessage?.type === 'ai' ? lastMessage.id : undefined;
 }
 
+function createWeatherClarificationDisplayMessages(
+  toolResult: NonNullable<ReturnType<typeof extractWeatherClarificationInterruptToolResult>>
+): Message[] {
+  return [
+    {
+      type: 'ai',
+      content: '',
+      id: WEATHER_CLARIFICATION_AI_MESSAGE_ID,
+      tool_calls: [
+        {
+          id: toolResult.toolCallId,
+          name: toolResult.toolName,
+          args: {},
+          type: 'tool_call',
+        },
+      ],
+    },
+    {
+      type: 'tool',
+      content: toolResult.content,
+      id: WEATHER_CLARIFICATION_TOOL_MESSAGE_ID,
+      tool_call_id: toolResult.toolCallId,
+      name: toolResult.toolName,
+    },
+  ] as Message[];
+}
+
 export default function App() {
   const [streamActivityState, dispatchStreamActivity] = useReducer(
     streamActivityReducer,
@@ -90,6 +121,8 @@ export default function App() {
   const [selectedAgentId, setSelectedAgentId] = useState(DEFAULT_AGENT);
   const [streamErrorMessage, setStreamErrorMessage] = useState<string | null>(null);
   const [cancelledMessage, setCancelledMessage] = useState<Message | null>(null);
+  const [weatherClarificationMessages, setWeatherClarificationMessages] =
+    useState<Message[] | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const selectedAgentIdRef = useRef(selectedAgentId);
   const messagesRef = useRef<Message[]>([]);
@@ -121,6 +154,7 @@ export default function App() {
           clearHistorical: true,
         });
         setCancelledMessage(null);
+        setWeatherClarificationMessages(null);
       }
     },
     [selectedAgentId, validateAgentId]
@@ -165,6 +199,20 @@ export default function App() {
   }, []);
 
   const handleStreamUpdate = useCallback((event: Record<string, unknown>) => {
+    if (isLangGraphInterruptEvent(event)) {
+      const toolResult = extractWeatherClarificationInterruptToolResult(event);
+      if (toolResult) {
+        setWeatherClarificationMessages(
+          createWeatherClarificationDisplayMessages(toolResult)
+        );
+      }
+      dispatchStreamActivity({
+        type: 'streamFinished',
+        messagesLengthAtTerminal: messagesRef.current.length,
+        archiveMessageId: getCurrentFinalAssistantMessageId(messagesRef.current),
+      });
+    }
+
     const currentAgent = getAgentById(selectedAgentIdRef.current);
     if (!currentAgent?.showActivityTimeline) return;
 
@@ -232,6 +280,7 @@ export default function App() {
       dispatchStreamActivity({ type: 'streamStarted' });
       setStreamErrorMessage(null);
       setCancelledMessage(null);
+      setWeatherClarificationMessages(null);
 
       const messageContent: Message['content'] =
         attachments.length > 0
@@ -304,13 +353,21 @@ export default function App() {
         : thread.messages,
     [thread.messages, streamErrorMessage]
   );
+  const messagesWithWeatherClarification = useMemo(
+    () =>
+      weatherClarificationMessages
+        ? [...messagesWithStreamError, ...weatherClarificationMessages]
+        : messagesWithStreamError,
+    [messagesWithStreamError, weatherClarificationMessages]
+  );
   const displayMessages = useMemo(
     () =>
       cancelledMessage
-        ? [...messagesWithStreamError, cancelledMessage]
-        : messagesWithStreamError,
-    [messagesWithStreamError, cancelledMessage]
+        ? [...messagesWithWeatherClarification, cancelledMessage]
+        : messagesWithWeatherClarification,
+    [messagesWithWeatherClarification, cancelledMessage]
   );
+  const isChatLoading = thread.isLoading && !weatherClarificationMessages;
 
   useEffect(() => {
     if (scrollAreaRef.current) {
@@ -342,7 +399,7 @@ export default function App() {
           ) : (
             <ChatMessagesView
               messages={displayMessages}
-              isLoading={thread.isLoading}
+              isLoading={isChatLoading}
               scrollAreaRef={scrollAreaRef}
               onSubmit={handleSubmit}
               onCancel={handleCancel}

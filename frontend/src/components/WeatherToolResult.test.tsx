@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { WeatherToolResultCard } from './WeatherToolResult';
 import { ToolMessageDisplay } from './ToolMessageDisplay';
 import { parseWeatherToolResult, type WeatherToolResult } from '@/types/weather';
@@ -196,6 +196,72 @@ describe('WeatherToolResultCard', () => {
     expect(screen.getByText('需補充地點')).toBeTruthy();
     expect(screen.getByText('Springfield, Illinois')).toBeTruthy();
     expect(screen.getByText('Springfield, Missouri')).toBeTruthy();
+  });
+
+  it('renders interactive clarification and only submits after manual confirmation', () => {
+    const onReply = vi.fn();
+    const result: WeatherToolResult = {
+      schemaVersion: '1.0',
+      tool: 'current_weather',
+      status: 'needs_clarification',
+      requestedLocation: { raw: 'Springfield', location: 'Springfield' },
+      candidates: [
+        { name: 'Springfield', displayName: 'Springfield, Illinois', country: 'United States', admin1: 'Illinois' },
+        { name: 'Springfield', displayName: 'Springfield, Missouri', country: 'United States', admin1: 'Missouri' },
+      ],
+      message: 'Which Springfield?',
+      summary: 'Ambiguous location',
+    };
+
+    render(<WeatherToolResultCard content={JSON.stringify(result)} onClarificationReply={onReply} />);
+
+    fireEvent.click(screen.getByText('Springfield, Missouri'));
+    expect(onReply).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue('Springfield, Missouri')).toBeTruthy();
+
+    fireEvent.change(screen.getByDisplayValue('Springfield, Missouri'), {
+      target: { value: 'Springfield, Missouri, United States' },
+    });
+    fireEvent.click(screen.getByText('Submit'));
+
+    expect(onReply).toHaveBeenCalledWith('Springfield, Missouri, United States');
+  });
+
+  it('prevents empty clarification submission and disables controls while resuming', () => {
+    const onReply = vi.fn();
+    const onCancel = vi.fn();
+    const result: WeatherToolResult = {
+      schemaVersion: '1.0',
+      tool: 'current_weather',
+      status: 'needs_clarification',
+      requestedLocation: { raw: 'Springfield', location: 'Springfield' },
+      candidates: [],
+      message: 'Which Springfield?',
+      summary: 'Ambiguous location',
+    };
+
+    const { rerender } = render(
+      <WeatherToolResultCard
+        content={JSON.stringify(result)}
+        onClarificationReply={onReply}
+        onClarificationCancel={onCancel}
+      />
+    );
+
+    const submitButton = screen.getByText('Submit').closest('button');
+    expect(submitButton?.hasAttribute('disabled')).toBe(true);
+
+    rerender(
+      <WeatherToolResultCard
+        content={JSON.stringify(result)}
+        isResuming
+        onClarificationReply={onReply}
+        onClarificationCancel={onCancel}
+      />
+    );
+
+    expect(screen.getByPlaceholderText('Enter a more specific location').hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText('Cancel').closest('button')?.hasAttribute('disabled')).toBe(true);
   });
 
   it('should render not_found status', () => {

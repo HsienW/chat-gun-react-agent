@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "1.0.0",
+  "artifactId": "ir-weather-location-001",
+  "changeId": "generalize-weather-location-resolution",
+  "runId": "run-2026-06-29-001",
+  "producer": "Codex",
+  "stage": "apply-change",
+  "kind": "implementation_result",
+  "status": "success",
+  "createdAt": "2026-06-29T15:00:00Z",
+  "summary": "完成 generalize-weather-location-resolution 實作。修改 8 個檔案，新增 LocationResolution Domain Type、Geocoding Provider Adapter、結構化 Weather Tool Result、前端狀態顯示。Lint/Test/Build 全部通過。",
+  "inputRefs": [
+    {
+      "artifactId": "proposal-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "proposal",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/proposal.md"
+    },
+    {
+      "artifactId": "design-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "design",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/design.md"
+    },
+    {
+      "artifactId": "tasks-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "tasks",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/tasks.md"
+    }
+  ],
+  "outputRefs": [
+    {
+      "artifactId": "tasks-weather-location-updated",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "tasks",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/tasks.md"
+    },
+    {
+      "artifactId": "ir-weather-location-001",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "implementation_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/implementation-result.json"
+    }
+  ],
+  "verification": {
+    "executed": [
+      "cd backend && npm run lint",
+      "cd backend && npm run test",
+      "cd backend && npm run build",
+      "cd frontend && npm run lint",
+      "cd frontend && npm run test",
+      "cd frontend && npm run build",
+      "cd bff && npm run build"
+    ],
+    "passed": [
+      "cd backend && npm run lint",
+      "cd backend && npm run test",
+      "cd backend && npm run build",
+      "cd frontend && npm run lint",
+      "cd frontend && npm run test",
+      "cd frontend && npm run build",
+      "cd bff && npm run build"
+    ],
+    "failed": [],
+    "notExecuted": ["live smoke test with Open-Meteo API"]
+  },
+  "risks": [
+    {
+      "severity": "Low",
+      "description": "Live smoke test 未執行（需外部網路）",
+      "mitigation": "Mock 測試已覆蓋核心路徑"
+    }
+  ],
+  "nextHandoff": {
+    "stage": "review-result",
+    "to": "Qwen",
+    "reason": "實作完成，lint/test/build 全部通過，需要 Qwen 獨立審查"
+  }
+}

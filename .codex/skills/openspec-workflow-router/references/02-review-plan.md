@@ -51,3 +51,10 @@ Change：
 
 請使用繁體中文。
 ```
+
+## Artifact Contract
+
+- **Input**：CurrentState 的 proposal/design/tasks/coordinatorResult 與目前 Handoff。
+- **Output**：Qwen stdout 的 `review_result`；由人工或 CLIHost 驗證後保存。
+- **State Transition**：`PLAN_REVIEW` → `PLAN_APPROVED`、`PLAN_DRAFT` 或 `INCOMPLETE`。
+- **Validation**：缺 Base、OpenSpec 或必要輸入時輸出 `INCOMPLETE`；Qwen 不寫檔。

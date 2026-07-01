@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "1.0.0",
+  "changeId": "add-agent-artifact-shared-state-handoff",
+  "runId": "run-2026-06-29-001",
+  "currentPhase": "PLAN_DRAFT",
+  "currentOwner": "CCR",
+  "attempt": 1,
+  "latestArtifactRefs": {},
+  "latestHandoff": {
+    "handoffId": "",
+    "stage": "",
+    "from": "CCR",
+    "to": "CCR",
+    "status": "PENDING"
+  },
+  "gateStatus": {
+    "proposalApproved": false,
+    "reviewPassed": false,
+    "implementationVerified": false,
+    "readinessConfirmed": false
+  },
+  "blockers": [],
+  "nextActions": [
+    "CCR 正在建立 proposal、design、tasks",
+    "完成後進入 PLAN_REVIEW 並交接給 Qwen"
+  ],
+  "updatedAt": "2026-06-29T09:00:00Z",
+  "terminalStatus": "NON_TERMINAL"
+}

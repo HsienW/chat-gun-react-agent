@@ -18,6 +18,12 @@ type RuntimeEventRule = {
   toEvents: (nodeValue: unknown) => AgentRuntimeEvent[];
 };
 
+export type WeatherClarificationInterruptToolResult = {
+  toolName: 'current_weather' | 'weather_forecast';
+  toolCallId: string;
+  content: string;
+};
+
 const KNOWN_RUNTIME_EVENT_TYPES = new Set<AgentRuntimeEvent['type']>([
   'agent.plan.start',
   'agent.tool.start',
@@ -85,6 +91,15 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object'
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  try {
+    return asRecord(JSON.parse(value));
+  } catch {
+    return undefined;
+  }
 }
 
 function isSerializablePrimitive(value: unknown): boolean {
@@ -406,6 +421,91 @@ export function extractAgentRuntimeEvents(
     ...extractNestedAgentRuntimeEvents(event),
     ...extractNodeAdapterRuntimeEvents(event),
   ];
+}
+
+export function isLangGraphInterruptEvent(event: Record<string, unknown>): boolean {
+  if (event.event === 'interrupt' || event.type === 'interrupt') {
+    return true;
+  }
+  if (Array.isArray(event.__interrupt__)) {
+    return true;
+  }
+  const values = Object.values(event);
+  return values.some((value) => {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    const record = value as Record<string, unknown>;
+    return Array.isArray(record.__interrupt__) || record.event === 'interrupt' || record.type === 'interrupt';
+  });
+}
+
+function getInterruptPayloads(value: unknown, depth = 0): Record<string, unknown>[] {
+  if (depth > 4) return [];
+
+  const parsed = parseJsonRecord(value);
+  if (parsed) return getInterruptPayloads(parsed, depth + 1);
+
+  const record = asRecord(value);
+  if (!record) return [];
+
+  const direct = record.type === 'weather_clarification' ? [record] : [];
+  const fromInterruptArray = Array.isArray(record.__interrupt__)
+    ? record.__interrupt__.flatMap((entry) =>
+        getInterruptPayloads(asRecord(entry)?.value ?? entry, depth + 1)
+      )
+    : [];
+  const fromValue = record.value ? getInterruptPayloads(record.value, depth + 1) : [];
+  const fromData = record.data ? getInterruptPayloads(record.data, depth + 1) : [];
+  const fromNested = Object.values(record).flatMap((entry) => {
+    if (entry === record.value || entry === record.data || entry === record.__interrupt__) {
+      return [];
+    }
+    return getInterruptPayloads(entry, depth + 1);
+  });
+
+  return [...direct, ...fromInterruptArray, ...fromValue, ...fromData, ...fromNested];
+}
+
+function getWeatherClarificationToolName(
+  payload: Record<string, unknown>,
+  result?: Record<string, unknown>
+): 'current_weather' | 'weather_forecast' {
+  if (result?.tool === 'weather_forecast') return 'weather_forecast';
+  if (result?.tool === 'current_weather') return 'current_weather';
+  return payload.weatherCapability === 'hourly' || payload.weatherCapability === 'daily'
+    ? 'weather_forecast'
+    : 'current_weather';
+}
+
+export function extractWeatherClarificationInterruptToolResult(
+  event: Record<string, unknown>
+): WeatherClarificationInterruptToolResult | undefined {
+  const payload = getInterruptPayloads(event)[0];
+  if (!payload) return undefined;
+
+  const execution = asRecord(payload.weatherExecution);
+  const executionResult = asRecord(execution?.result);
+  const toolName = getWeatherClarificationToolName(payload, executionResult);
+  const content =
+    executionResult?.status === 'needs_clarification'
+      ? JSON.stringify({ ...executionResult, tool: toolName })
+      : JSON.stringify({
+          schemaVersion: toolName === 'weather_forecast' ? '1.1' : '1.0',
+          tool: toolName,
+          status: 'needs_clarification',
+          requestedLocation:
+            asRecord(payload.originalQuery) ?? { raw: '', location: '' },
+          candidates: Array.isArray(payload.candidates) ? payload.candidates : [],
+          message: typeof payload.summary === 'string' ? payload.summary : 'Location clarification is required.',
+          summary: typeof payload.summary === 'string' ? payload.summary : 'Location clarification is required.',
+        });
+
+  return {
+    toolName,
+    toolCallId: 'weather-clarification-interrupt',
+    content,
+  };
 }
 
 export function extractDirectAgentRuntimeEvents(

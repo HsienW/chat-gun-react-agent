@@ -472,3 +472,18 @@ Mock 測試通過不得等同於真實模型驗收完成。
 - 仍存在的規格與程式差異。
 
 不得在驗證失敗或證據不足時宣稱完成。
+
+---
+
+## 15. Agent Runtime Artifact 邊界
+
+`.agent-runtime/<change-id>/` 是本機、latest-only 且不進 Git 的 Agent 交接區域；`current-state.json` 是該 Change 階段、owner、Gate、Blocker 與最新 Artifact Reference 的單一事實來源。
+
+Agent 預設不得讀取 `.gitignore` 已忽略內容。只有下列條件全部成立時，才可例外讀取指定 Runtime Artifact：
+
+1. 讀取目前 Change 的 `.agent-runtime/<change-id>/current-state.json`，或檔案被目前 Handoff 的 `requiredInputRefs`／CurrentState 的 `latestArtifactRefs` 明確引用。
+2. Reference 的 `changeId` 與目前 Change 一致；若有 `runId`，亦須與目前 Run 一致或由目前 Handoff 明確引用。
+3. `relativePath` 只能以 `openspec/changes/` 或 `.agent-runtime/` 開頭，不得包含 `..`、絕對路徑或指向 Repository／Runtime Root 外。
+4. 讀取前確認檔案存在；內容不得包含 Secret、API Key、Token、Password 或 Credential。
+
+不得遞迴掃描 `.agent-runtime/`、讀取其他 Change／Run、建立歷史事件流，或將 Runtime Artifact 加入版本控制。Qwen 的唯讀邊界不因本例外而放寬。

@@ -36,3 +36,23 @@ Commit message 格式：
 
 注意：git commit / push 由人手動完成。請使用繁體中文。
 ```
+
+## Artifact Contract
+
+- **Input**：CurrentState 必須為 `READY_FOR_ARCHIVE`，且 readinessResult、implementationResult、reviewResult 與 Evidence 均可讀。
+- **Output**：`execution-summary.md`、`artifacts/archive-result.json` 與 Human Handoff。
+- **State Transition**：`READY_FOR_ARCHIVE` → `ARCHIVED_AWAITING_HUMAN_COMMIT`，owner → Human，`terminalStatus` 保持 `NON_TERMINAL`；人工 commit 後才進入 `COMPLETED/TERMINAL`。
+- **Validation**：不得 commit／push；Gate 或 blockers 不合格時拒絕 archive。
+
+### execution-summary.md 模板
+
+```markdown
+# Execution Summary
+## 實際完成內容與 Design 差異
+## 主要修改檔案
+## 驗證結果
+## 接受的風險與理由
+## 未完成項目
+## 重要決策與取捨
+## Commit 建議
+```

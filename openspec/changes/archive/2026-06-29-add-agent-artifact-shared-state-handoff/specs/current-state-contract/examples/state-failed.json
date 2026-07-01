@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "1.0.0",
+  "changeId": "some-failed-change",
+  "runId": "run-2026-06-29-001",
+  "currentPhase": "FAILED",
+  "currentOwner": "Human",
+  "attempt": 1,
+  "latestArtifactRefs": {
+    "proposal": {
+      "artifactId": "proposal-failed",
+      "changeId": "some-failed-change",
+      "kind": "proposal",
+      "relativePath": "openspec/changes/some-failed-change/proposal.md"
+    }
+  },
+  "latestHandoff": {
+    "handoffId": "",
+    "stage": "",
+    "from": "CCR",
+    "to": "Human",
+    "status": "FAILED"
+  },
+  "gateStatus": {
+    "proposalApproved": false,
+    "reviewPassed": false,
+    "implementationVerified": false,
+    "readinessConfirmed": false
+  },
+  "blockers": [
+    {
+      "severity": "Blocker",
+      "description": "需求所需的 Tool 能力不存在且 Provider 不支援",
+      "source": "CCR capability boundary check",
+      "status": "unresolved"
+    }
+  ],
+  "nextActions": [
+    "人工確認失敗原因",
+    "如需繼續，需要新的 OpenSpec Change 或能力擴充"
+  ],
+  "updatedAt": "2026-06-29T10:00:00Z",
+  "terminalStatus": "TERMINAL"
+}

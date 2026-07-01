@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "1.0.0",
+  "changeId": "example-incomplete-change",
+  "runId": "run-2026-06-29-001",
+  "currentPhase": "INCOMPLETE",
+  "currentOwner": "CCR",
+  "attempt": 1,
+  "latestArtifactRefs": {
+    "reviewResult": {
+      "artifactId": "rr-incomplete-001",
+      "changeId": "example-incomplete-change",
+      "runId": "run-2026-06-29-001",
+      "kind": "review_result",
+      "relativePath": ".agent-runtime/example-incomplete-change/artifacts/review-result.json"
+    }
+  },
+  "latestHandoff": {
+    "handoffId": "hdo-incomplete-001",
+    "stage": "review-result",
+    "from": "Qwen",
+    "to": "CCR",
+    "status": "COMPLETED"
+  },
+  "gateStatus": {
+    "proposalApproved": true,
+    "reviewPassed": false,
+    "implementationVerified": true,
+    "readinessConfirmed": false
+  },
+  "blockers": [],
+  "nextActions": [
+    "CCR 補齊 Qwen 列出的缺失輸入",
+    "依合法狀態轉移重新提交審查"
+  ],
+  "updatedAt": "2026-06-29T17:00:00Z",
+  "terminalStatus": "NON_TERMINAL"
+}

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "1.0.0",
+  "handoffId": "hdo-weather-001",
+  "changeId": "generalize-weather-location-resolution",
+  "runId": "run-2026-06-29-001",
+  "from": "CCR",
+  "to": "Qwen",
+  "stage": "review-plan",
+  "reason": "Proposal/design/tasks 已完成，需要 Qwen 執行獨立架構審查",
+  "requiredInputRefs": [
+    {
+      "artifactId": "cr-weather-location-001",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "coordinator_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/coordinator-result.json"
+    },
+    {
+      "artifactId": "proposal-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "proposal",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/proposal.md"
+    },
+    {
+      "artifactId": "design-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "design",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/design.md"
+    },
+    {
+      "artifactId": "tasks-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "tasks",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/tasks.md"
+    }
+  ],
+  "expectedOutputKind": "review_result",
+  "acceptanceCriteriaRefs": [
+    {
+      "artifactId": "spec-tool-execution",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "spec",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/specs/tool-execution/spec.md"
+    }
+  ],
+  "onSuccess": {
+    "nextStage": "apply-change",
+    "nextOwner": "Codex"
+  },
+  "onFailure": {
+    "nextStage": "plan-change",
+    "nextOwner": "CCR",
+    "reason": "Qwen 找到 Blocker 或 REQUEST_CHANGES，需要 CCR 修改 proposal/design/tasks"
+  },
+  "onConflict": {
+    "strategy": "coordinator_arbitration",
+    "nextOwner": "CCR",
+    "reason": "若 Qwen 與 CCR 對規格判斷衝突，由 CCR 仲裁"
+  },
+  "requiresHumanApproval": false,
+  "status": "PENDING",
+  "createdAt": "2026-06-29T10:00:00Z"
+}

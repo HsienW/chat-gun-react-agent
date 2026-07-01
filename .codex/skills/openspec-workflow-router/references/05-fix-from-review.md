@@ -40,3 +40,10 @@ Qwen findings：
 
 請使用繁體中文。
 ```
+
+## Artifact Contract
+
+- **Input**：CurrentState 最新 reviewResult、implementationResult、OpenSpec 與 Evidence；不要求重貼 Findings。
+- **Output**：覆蓋 latest implementation-result、更新 Evidence 與 review-result Handoff。
+- **State Transition**：`CHANGES_REQUESTED` → `IMPLEMENTING` → `READY_FOR_REVIEW`；衝突時 → `NEEDS_COORDINATOR_ARBITRATION`。
+- **Validation**：只修正 artifact 中確認的 Findings；每輪 `attempt` 遞增並遵守停止線。

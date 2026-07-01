@@ -12,9 +12,12 @@ Use this skill as Claude Code/CCR's coordination routing layer for the repositor
 At the start of every task in this repository:
 
 1. Decide whether the request belongs to the OpenSpec change lifecycle.
-2. If it does, select exactly one stage from the route table below.
-3. If another host owns the stage, produce the handoff prompt and required evidence list.
-4. If it does not, keep the context policy below in force and continue with `CLAUDE.md`.
+2. If a change name is known, read only `.agent-runtime/<change-id>/current-state.json`.
+3. During `plan-change`, initialize CurrentState when absent; otherwise treat `currentPhase` as the source of truth.
+4. Select exactly one stage and read only its reference.
+5. Read only `latestArtifactRefs` and current Handoff `requiredInputRefs`; validate changeId/runId, safe paths, existence, and absence of Secrets.
+6. If another host owns the stage, produce the handoff and evidence list, then update CurrentState only after output persistence.
+7. If it is not a lifecycle task, keep the context policy below in force and continue with `CLAUDE.md`.
 
 ## Context Policy
 
@@ -25,6 +28,7 @@ At the start of every task in this repository:
 - Expand context only for contract conflicts, security concerns, unclear architecture, or test failures that cannot be localized.
 - Keep all user-facing output in Traditional Chinese.
 - Preserve Claude/CCR's coordinator role from `CLAUDE.md`.
+- Never recursively scan `.agent-runtime/` or read another Change/Run.
 
 ## Route Table
 
@@ -44,3 +48,5 @@ At the start of every task in this repository:
 2. Read only the artifacts needed for that stage.
 3. Follow `CLAUDE.md` for coordination, arbitration, and final acceptance.
 4. If the stage is ambiguous, ask one concise Traditional Chinese question.
+
+The matching Codex reference is the canonical stage contract. Claude references add only CCR initialization, arbitration, persistence, and state-update responsibilities.

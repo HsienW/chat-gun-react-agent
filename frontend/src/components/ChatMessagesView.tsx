@@ -21,6 +21,7 @@ import {
 } from '@/types/messages';
 import { ToolCall } from '@/types/tools';
 import type { ProcessedImageAttachment } from '@/lib/image-upload';
+import { DEFAULT_MODEL } from '@/types/models';
 
 type ToolMessageDisplayProps = React.ComponentProps<typeof ToolMessageDisplay>;
 
@@ -47,6 +48,9 @@ const areToolMessageDisplayPropsEqual = (
   previousProps.toolCall.id === nextProps.toolCall.id &&
   previousProps.toolCall.name === nextProps.toolCall.name &&
   previousProps.toolCall.type === nextProps.toolCall.type &&
+  previousProps.isResumingClarification === nextProps.isResumingClarification &&
+  previousProps.onClarificationReply === nextProps.onClarificationReply &&
+  previousProps.onClarificationCancel === nextProps.onClarificationCancel &&
   areToolArgsEqual(previousProps.toolCall.args, nextProps.toolCall.args) &&
   areToolMessagesEqual(previousProps.toolMessage, nextProps.toolMessage);
 
@@ -355,6 +359,8 @@ interface AiMessageBubbleProps {
   copiedMessageId: string | null;
   selectedAgentId: string;
   allMessages: Message[];
+  onClarificationReply: (replyText: string) => void;
+  onClarificationCancel: () => void;
 }
 
 // AiMessageBubble component
@@ -369,6 +375,8 @@ const AiMessageBubble = React.memo(function AiMessageBubble({
   copiedMessageId,
   selectedAgentId,
   allMessages,
+  onClarificationReply,
+  onClarificationCancel,
 }: AiMessageBubbleProps) {
   // Tool message state
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
@@ -467,6 +475,9 @@ const AiMessageBubble = React.memo(function AiMessageBubble({
                       }
                       isExpanded={expandedTools.has(toolCall.id)}
                       onToggle={() => toggleTool(toolCall.id)}
+                      isResumingClarification={isOverallLoading && isLastGroup}
+                      onClarificationReply={onClarificationReply}
+                      onClarificationCancel={onClarificationCancel}
                     />
                   ))}
                 </div>
@@ -552,6 +563,17 @@ export function ChatMessagesView({
   }, []);
 
   // 將 messages 分組，合併相關 AI responses 與 tool calls
+  const handleClarificationReply = useCallback(
+    (replyText: string) => {
+      onSubmit(replyText, 'medium', DEFAULT_MODEL, selectedAgentId, []);
+    },
+    [onSubmit, selectedAgentId]
+  );
+
+  const handleClarificationCancel = useCallback(() => {
+    onSubmit('cancel', 'medium', DEFAULT_MODEL, selectedAgentId, []);
+  }, [onSubmit, selectedAgentId]);
+
   const messageGroups = useMemo(() => groupMessages(messages), [messages]);
 
   return (
@@ -586,6 +608,8 @@ export function ChatMessagesView({
                       copiedMessageId={copiedMessageId}
                       selectedAgentId={selectedAgentId}
                       allMessages={messages}
+                      onClarificationReply={handleClarificationReply}
+                      onClarificationCancel={handleClarificationCancel}
                     />
                   )}
                 </div>

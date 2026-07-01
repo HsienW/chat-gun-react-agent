@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "1.0.0",
+  "changeId": "generalize-weather-location-resolution",
+  "runId": "run-2026-06-29-001",
+  "currentPhase": "READY_FOR_ARCHIVE",
+  "currentOwner": "Codex",
+  "attempt": 2,
+  "latestArtifactRefs": {
+    "proposal": {
+      "artifactId": "proposal-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "proposal",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/proposal.md"
+    },
+    "design": {
+      "artifactId": "design-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "design",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/design.md"
+    },
+    "tasks": {
+      "artifactId": "tasks-weather-location",
+      "changeId": "generalize-weather-location-resolution",
+      "kind": "tasks",
+      "relativePath": "openspec/changes/generalize-weather-location-resolution/tasks.md"
+    },
+    "implementationResult": {
+      "artifactId": "ir-weather-location-002",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "implementation_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/implementation-result.json"
+    },
+    "reviewResult": {
+      "artifactId": "rr-weather-location-002",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "review_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/review-result.json"
+    },
+    "readinessResult": {
+      "artifactId": "rdr-weather-location-001",
+      "changeId": "generalize-weather-location-resolution",
+      "runId": "run-2026-06-29-001",
+      "kind": "readiness_result",
+      "relativePath": ".agent-runtime/generalize-weather-location-resolution/artifacts/readiness-result.json"
+    }
+  },
+  "latestHandoff": {
+    "handoffId": "hdo-weather-006",
+    "stage": "archive-change",
+    "from": "CCR",
+    "to": "Codex",
+    "status": "PENDING"
+  },
+  "gateStatus": {
+    "proposalApproved": true,
+    "reviewPassed": true,
+    "implementationVerified": true,
+    "readinessConfirmed": true
+  },
+  "blockers": [],
+  "nextActions": [
+    "Codex 執行 archive-change，產生 execution-summary.md",
+    "人工確認後 git commit"
+  ],
+  "updatedAt": "2026-06-29T16:00:00Z",
+  "terminalStatus": "NON_TERMINAL"
+}

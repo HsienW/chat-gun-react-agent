@@ -99,6 +99,9 @@ Claude 必須確保：
 - Tasks 可獨立施工、驗證並追溯至 Requirement。
 
 需求變更必須先更新 OpenSpec，再修改程式；不得讓實作反向成為未核准需求。
+### 特別約束
+- OpenSpect 產生的 design、proposal、tasks、spec 等約束文件，自然語言優先使用繁體中文
+- 技術單字、特殊命名等留使用英文
 
 ## 6. 多 Agent 角色
 ### Specification Coordinator
@@ -203,3 +206,15 @@ Claude 必須拒絕以硬編碼或硬映射替代正式能力，包括：
 - `tasks.md` 只勾選真正完成且驗證的工作。
 
 最終回覆必須區分：已完成、已驗證、尚待驗證、已知限制與後續建議，不得捏造結果。
+
+## 12. CurrentState 與 Artifact 交接責任
+
+CCR 在 `plan-change` 建立 OpenSpec artifacts 後，必須初始化 `.agent-runtime/<change-id>/current-state.json`，寫入符合 `agent-result.schema.json` 的 `coordinator_result`，並以 Handoff 將 `currentPhase`、`currentOwner` 與 `latestArtifactRefs` 推進至下一階段。
+
+CCR 讀取或交接 Runtime Artifact 時必須：
+
+- 先讀取目前 Change 的 CurrentState，確認合法 Phase、owner 與 Gate。
+- 只使用 `latestArtifactRefs` 或目前 Handoff `requiredInputRefs` 明確引用的檔案。
+- 驗證 changeId／runId、允許的相對路徑前綴、檔案存在與無 Secret。
+- 仲裁後更新 CurrentState；不得只在聊天中描述狀態。
+- Qwen 輸出的 `review_result` 必須先由人工或 CLIHost 驗證並保存，CCR 才能更新其 Reference 與狀態。

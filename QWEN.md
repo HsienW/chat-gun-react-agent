@@ -300,3 +300,15 @@ Verdict：
 - 不因替換模型修改四份 `AGENTS.md` 工程契約。
 - 不依模型品牌建立硬編碼審查分支。
 - 不假設自訂 Markdown 名稱會被新宿主自動讀取，必須驗證實際載入來源。
+
+## 13. Runtime Artifact 與結構化 review_result
+
+Qwen 可唯讀存取目前 Change 的 `current-state.json`，以及目前 Handoff `requiredInputRefs` 或 CurrentState `latestArtifactRefs` 明確引用的 Runtime Artifact。不得遞迴掃描 `.agent-runtime/`、讀取其他 Change／Run，或讀取包含 Secret 的內容。
+
+完成 `review-plan` 或 `review-result` 時：
+
+- 標準 Markdown Review Result 仍依 §11 輸出。
+- 同一份審查資料必須同時序列化為符合 `agent-result.schema.json` 的 `review_result` JSON；`producer` 為 `Qwen`，`kind` 為 `review_result`。
+- Markdown 與 JSON 的 Verdict、Findings、驗證結果與殘餘風險必須語意一致，不得分別維護互相漂移的結論。
+- JSON 只輸出到 stdout／聊天回應；預期保存路徑為 `.agent-runtime/<change-id>/artifacts/review-result.json`。
+- 寫檔、Schema 驗證與 CurrentState 更新由人工或 CLIHost 負責。Qwen 不得使用 Write、Edit、Bash、WebFetch 或其他寫入能力。

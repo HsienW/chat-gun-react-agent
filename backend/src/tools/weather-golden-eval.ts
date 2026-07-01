@@ -13,7 +13,7 @@ export type WeatherGoldenCapabilityCategory =
   | "cancelled"
   | "planner_error"
   | "synthesis_error"
-  | "multi_turn_gap"
+  | "clarification"
   | "relationship";
 
 export type WeatherGoldenEvalClassification = "pass" | "fail" | "known_gap" | "skipped";
@@ -282,16 +282,94 @@ export const WEATHER_GOLDEN_EVAL_CASES: WeatherGoldenEvalCase[] = [
   {
     id: "WGE-MULTITURN-CANDIDATE-KNOWN-GAP",
     mode: "deterministic",
-    capabilityCategory: "multi_turn_gap",
+    capabilityCategory: "clarification",
     input: {
       prompt: "第三個",
     },
     expected: {
-      classification: "known_gap",
-      owner: "Phase 3",
-      summary: "Candidate follow-up selection is a known Phase 3 clarification workflow gap.",
+      status: "success",
+      summary: "Candidate follow-up selection is handled by the Phase 3 clarification workflow.",
     },
-    diagnosticTags: ["multi-turn", "candidate-selection", "known-gap"],
+    diagnosticTags: ["multi-turn", "candidate-selection", "clarification"],
+  },
+  {
+    id: "clarification-candidate-index",
+    mode: "deterministic",
+    capabilityCategory: "clarification",
+    input: {
+      prompt: "Springfield weather, choose option 1",
+    },
+    expected: {
+      status: "success",
+      summary: "Clarification resume can select a provider-backed candidate by index.",
+    },
+    diagnosticTags: ["clarification", "candidate-index", "resume"],
+  },
+  {
+    id: "clarification-region-supplement",
+    mode: "deterministic",
+    capabilityCategory: "clarification",
+    input: {
+      prompt: "Springfield weather, I mean Illinois",
+    },
+    expected: {
+      status: "success",
+      summary: "Clarification resume can filter ambiguous candidates by supplied region.",
+    },
+    diagnosticTags: ["clarification", "region-filter", "resume"],
+  },
+  {
+    id: "clarification-location-change",
+    mode: "deterministic",
+    capabilityCategory: "clarification",
+    input: {
+      prompt: "Springfield weather, actually Tokyo",
+    },
+    expected: {
+      status: "success",
+      summary: "Clarification resume can switch to a newly supplied location.",
+    },
+    diagnosticTags: ["clarification", "new-location", "resume"],
+  },
+  {
+    id: "clarification-cancel",
+    mode: "deterministic",
+    capabilityCategory: "clarification",
+    input: {
+      prompt: "Springfield weather, cancel",
+    },
+    expected: {
+      status: "error",
+      code: "weather_cancelled",
+      summary: "Clarification resume can terminate as a user cancellation.",
+    },
+    diagnosticTags: ["clarification", "cancel", "terminal"],
+  },
+  {
+    id: "clarification-unrecognizable-reply",
+    mode: "deterministic",
+    capabilityCategory: "clarification",
+    input: {
+      prompt: "Springfield weather, not enough information",
+    },
+    expected: {
+      status: "needs_clarification",
+      summary: "Unrecognizable clarification replies re-enter clarification without becoming not_found.",
+    },
+    diagnosticTags: ["clarification", "unrecognized", "retry"],
+  },
+  {
+    id: "clarification-ambiguous-forecast",
+    mode: "mock_integration",
+    capabilityCategory: "clarification",
+    input: {
+      prompt: "Springfield forecast tomorrow",
+    },
+    expected: {
+      status: "success",
+      summary: "Ambiguous forecast requests can clarify location and resume weather_forecast.",
+    },
+    diagnosticTags: ["clarification", "forecast", "ambiguous-location"],
   },
   {
     id: "WGE-RELATION-TAIPEI-VARIANTS",

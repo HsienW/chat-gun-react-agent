@@ -198,7 +198,7 @@ describe("weather golden eval matrix", () => {
     vi.unstubAllEnvs();
   });
 
-  it("covers current, forecast, ambiguous, missing-location, failure, timeout, cancellation, and multi-turn boundaries", () => {
+  it("covers current, forecast, ambiguous, missing-location, failure, timeout, cancellation, and clarification boundaries", () => {
     const categories = new Set(WEATHER_GOLDEN_EVAL_CASES.map((testCase) => testCase.capabilityCategory));
     expect(categories).toEqual(
       new Set([
@@ -212,13 +212,13 @@ describe("weather golden eval matrix", () => {
         "cancelled",
         "planner_error",
         "synthesis_error",
-        "multi_turn_gap",
+        "clarification",
         "relationship",
       ])
     );
   });
 
-  it("classifies Phase 2 forecast cases as pass and keeps multi-turn as a Phase 3 known gap", () => {
+  it("classifies Phase 2 forecast and Phase 3 clarification cases as pass", () => {
     const results = [
       evaluateWeatherGoldenCase(caseById("WGE-FORECAST-TOMORROW"), {
         status: "success",
@@ -233,13 +233,49 @@ describe("weather golden eval matrix", () => {
         summary: "Daily weather_forecast returned weekend forecast entries.",
       }),
       evaluateWeatherGoldenCase(caseById("WGE-MULTITURN-CANDIDATE-KNOWN-GAP"), {
+        status: "success",
+        summary: "Candidate follow-up continued through clarification.",
+      }),
+      evaluateWeatherGoldenCase(caseById("clarification-candidate-index"), {
+        status: "success",
+        summary: "Selected first candidate.",
+      }),
+      evaluateWeatherGoldenCase(caseById("clarification-region-supplement"), {
+        status: "success",
+        summary: "Filtered by Illinois.",
+      }),
+      evaluateWeatherGoldenCase(caseById("clarification-location-change"), {
+        status: "success",
+        summary: "Changed to Tokyo.",
+      }),
+      evaluateWeatherGoldenCase(caseById("clarification-cancel"), {
+        status: "error",
+        code: "weather_cancelled",
+        summary: "User cancelled clarification.",
+      }),
+      evaluateWeatherGoldenCase(caseById("clarification-unrecognizable-reply"), {
         status: "needs_clarification",
-        summary: "Candidate follow-up is not continued.",
+        summary: "Asked for more detail.",
+      }),
+      evaluateWeatherGoldenCase(caseById("clarification-ambiguous-forecast"), {
+        status: "success",
+        summary: "Forecast resumed after clarification.",
       }),
     ];
 
-    expect(results.map((result) => result.classification)).toEqual(["pass", "pass", "pass", "known_gap"]);
-    expect(results.map((result) => result.owner)).toEqual([undefined, undefined, undefined, "Phase 3"]);
+    expect(results.map((result) => result.classification)).toEqual([
+      "pass",
+      "pass",
+      "pass",
+      "pass",
+      "pass",
+      "pass",
+      "pass",
+      "pass",
+      "pass",
+      "pass",
+    ]);
+    expect(results.every((result) => result.owner === undefined)).toBe(true);
   });
 
   it("marks live smoke cases as skipped by default", () => {
