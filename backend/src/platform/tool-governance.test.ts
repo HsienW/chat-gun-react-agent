@@ -1,3 +1,4 @@
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { tool, type StructuredToolInterface } from "@langchain/core/tools";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -19,6 +20,7 @@ function createEchoTool(output: string): StructuredToolInterface {
 
 describe("applyToolGovernance", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllEnvs();
   });
 
@@ -41,5 +43,44 @@ describe("applyToolGovernance", () => {
 
     expect(result).toContain("[Tool output truncated by governance: contract_echo, 1000 characters]");
     expect(String(result).length).toBeLessThan(1200);
+  });
+
+  it("aborts the underlying operation and marks governance timeouts with a stable prefix", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("TOOL_AUDIT_ENABLED", "false");
+    vi.stubEnv("TOOL_CONTRACT_WAIT_TIMEOUT_MS", "1000");
+    let receivedAbort = false;
+    const waitingTool = tool(
+      async (_input: { value: string }, config?: RunnableConfig) => {
+        const configurable = config?.configurable as
+          | { abortSignal?: AbortSignal }
+          | undefined;
+        const signal = configurable?.abortSignal ?? config?.signal;
+
+        return await new Promise<string>((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => {
+              receivedAbort = true;
+              reject(signal.reason);
+            },
+            { once: true }
+          );
+        });
+      },
+      {
+        name: "contract_wait",
+        description: "Waits until the governed deadline aborts the operation.",
+        schema: z.object({ value: z.string() }),
+      }
+    ) as StructuredToolInterface;
+
+    const [governedTool] = applyToolGovernance([waitingTool]);
+    const resultPromise = governedTool.invoke({ value: "valid" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await resultPromise;
+
+    expect(receivedAbort).toBe(true);
+    expect(result).toContain("[governance_timeout]");
   });
 });

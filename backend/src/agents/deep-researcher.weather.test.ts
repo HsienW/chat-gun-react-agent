@@ -501,6 +501,78 @@ describe("Deep Research weather structured result integration", () => {
     expect(content).toContain("Humidity: 65%");
   });
 
+  it("converts an unstructured governance timeout into a safe terminal tool outcome", () => {
+    const outcome = deepResearcherWeatherTestInternals.resolveWeatherToolOutcome(
+      "Error: current_weather failed by tool governance - [governance_timeout] tool execution timed out",
+      { raw: "London", location: "London" },
+      "current_weather"
+    );
+
+    expect(outcome.result.status).toBe("error");
+    if (outcome.result.status === "error") {
+      expect(outcome.result.code).toBe("weather_timeout");
+    }
+    expect(() => JSON.parse(outcome.messageContent)).not.toThrow();
+    expect(outcome.messageContent).not.toContain("failed by tool governance");
+  });
+
+  it("synthesizes weather timeout from weatherExecution without reusing old clarification evidence", async () => {
+    const timeoutResult: WeatherToolResult = {
+      schemaVersion: "1.0",
+      tool: "current_weather",
+      status: "error",
+      requestedLocation: { raw: "London", location: "London" },
+      code: "weather_timeout",
+      retryable: true,
+      message: "Weather lookup exceeded the governed deadline.",
+      summary: "Weather lookup timed out.",
+    };
+    const oldClarification = {
+      name: "current_weather",
+      tool_call_id: "current_weather_old",
+      content: JSON.stringify({
+        schemaVersion: "1.0",
+        tool: "current_weather",
+        status: "needs_clarification",
+        requestedLocation: { raw: "London", location: "London" },
+        candidates: [
+          { name: "London", displayName: "London, England, United Kingdom" },
+        ],
+        message: "Location is ambiguous.",
+        summary: "London matches multiple candidates.",
+      }),
+      getType: () => "tool",
+    };
+    const invoke = vi.fn(async () => new AIMessage("London matches multiple candidates."));
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({ invoke });
+    const state = ({
+      ...stateWithWeather(timeoutResult),
+      plan: {
+        question: "London weather",
+        answerMode: "weather",
+        rationale: "weather",
+        queries: [],
+        urls: [],
+        weather: { location: "London" },
+        requiredSourceCount: 1,
+      },
+      messages: [oldClarification],
+      imageObservations: [],
+      extractedSources: [],
+      reasoning_model: "qwen-plus",
+    } as unknown) as WeatherState;
+
+    const synthesized = await deepResearcherWeatherTestInternals.synthesizeAnswer(
+      state,
+      {}
+    );
+    const content = String(synthesized.messages?.[0]?.content);
+
+    expect(content).toContain("did not respond in time");
+    expect(content).not.toContain("multiple candidates");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("keeps not_found as a failed terminal state with clarification text", () => {
     const result: WeatherToolResult = {
       schemaVersion: "1.0",

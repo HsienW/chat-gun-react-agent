@@ -359,6 +359,46 @@ describe("WeatherToolResult contract (Task 4.1-4.8)", () => {
     }
   });
 
+  it("does not retry after the governance deadline aborts during backoff", async () => {
+    const fetchSpy = vi.fn(async () =>
+      jsonResponse({ reason: "temporary failure" }, { status: 503, statusText: "Unavailable" })
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const controller = new AbortController();
+    const abortTimer = setTimeout(
+      () => controller.abort(new Error("[governance_timeout] current_weather")),
+      10
+    );
+
+    try {
+      const raw = await weatherTool.invoke(
+        {
+          location: "London",
+          resolvedCandidate: {
+            provider: "open-meteo",
+            name: "London",
+            displayName: "London, England, United Kingdom",
+            country: "United Kingdom",
+            admin1: "England",
+            latitude: 51.5085,
+            longitude: -0.1257,
+            timezone: "Europe/London",
+          },
+        },
+        { configurable: { abortSignal: controller.signal } }
+      );
+      const result = JSON.parse(String(raw)) as WeatherToolResult;
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe("error");
+      if (result.status === "error") {
+        expect(result.code).toBe("weather_timeout");
+      }
+    } finally {
+      clearTimeout(abortTimer);
+    }
+  });
+
   it("rejects queryName that exceeds the configured location length", async () => {
     const originalMaxChars = process.env.WEATHER_LOCATION_MAX_CHARS;
     process.env.WEATHER_LOCATION_MAX_CHARS = "5";

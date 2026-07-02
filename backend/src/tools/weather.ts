@@ -89,7 +89,10 @@ export function getWeatherConfig(): WeatherConfig {
 }
 
 function getRunnableSignal(config: RunnableConfig | undefined): AbortSignal | undefined {
-  const maybeSignal = (config as { signal?: unknown } | undefined)?.signal;
+  const configurable = config?.configurable as
+    | { abortSignal?: unknown }
+    | undefined;
+  const maybeSignal = configurable?.abortSignal ?? config?.signal;
   return maybeSignal instanceof AbortSignal ? maybeSignal : undefined;
 }
 
@@ -99,6 +102,21 @@ function isCancelError(message: string): boolean {
 
 function isTimeoutError(message: string): boolean {
   return message === "weather_fetch_timeout" || message === "weather_geocoding_timeout" || message.includes("timeout");
+}
+
+function getFetchAbortError(signal: AbortSignal | undefined): Error {
+  const reasonMessage =
+    signal?.reason instanceof Error
+      ? signal.reason.message
+      : typeof signal?.reason === "string"
+        ? signal.reason
+        : "";
+
+  return new Error(
+    reasonMessage.includes("[governance_timeout]")
+      ? "weather_governance_timeout"
+      : "weather_fetch_cancelled"
+  );
 }
 
 function validateOptionalQueryName(
@@ -227,21 +245,16 @@ export function describeWindDirection(degrees: number | undefined): string {
 async function fetchJsonWithTimeout<T>(url: URL, timeoutMs: number, externalSignal?: AbortSignal): Promise<T> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const forwardExternalAbort = () => controller.abort(externalSignal?.reason);
 
-  // Merge external signal
   if (externalSignal) {
     if (externalSignal.aborted) {
       clearTimeout(timeoutId);
-      throw new Error("weather_fetch_cancelled");
+      throw getFetchAbortError(externalSignal);
     }
-    externalSignal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timeoutId);
-        controller.abort();
-      },
-      { once: true }
-    );
+    externalSignal.addEventListener("abort", forwardExternalAbort, {
+      once: true,
+    });
   }
 
   try {
@@ -260,7 +273,7 @@ async function fetchJsonWithTimeout<T>(url: URL, timeoutMs: number, externalSign
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       if (externalSignal?.aborted) {
-        throw new Error("weather_fetch_cancelled");
+        throw getFetchAbortError(externalSignal);
       }
       throw new Error("weather_fetch_timeout");
     }
@@ -278,7 +291,26 @@ async function fetchJsonWithTimeout<T>(url: URL, timeoutMs: number, externalSign
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    externalSignal?.removeEventListener("abort", forwardExternalAbort);
   }
+}
+
+async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    throw getFetchAbortError(signal);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const handleAbort = () => {
+      clearTimeout(timeoutId);
+      reject(getFetchAbortError(signal));
+    };
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener("abort", handleAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", handleAbort, { once: true });
+  });
 }
 
 /**
@@ -289,6 +321,10 @@ async function fetchWithRetry<T>(url: URL, timeoutMs: number, signal?: AbortSign
   let lastError: Error | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal?.aborted) {
+      throw getFetchAbortError(signal);
+    }
+
     try {
       return await fetchJsonWithTimeout<T>(url, timeoutMs, signal);
     } catch (error) {
@@ -312,9 +348,7 @@ async function fetchWithRetry<T>(url: URL, timeoutMs: number, signal?: AbortSign
       }
 
       // Bounded backoff: 250ms + jitter
-      await new Promise((resolve) =>
-        setTimeout(resolve, 250 + Math.random() * 250)
-      );
+      await waitForRetry(250 + Math.random() * 250, signal);
       await recordMetric("weather.provider.retry", {
         url: url.hostname,
         attempt,
