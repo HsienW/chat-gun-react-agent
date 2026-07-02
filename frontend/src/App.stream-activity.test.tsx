@@ -61,6 +61,11 @@ vi.mock('@/components/ChatMessagesView', () => ({
     messages: Message[];
     isLoading: boolean;
     onCancel: () => void;
+    onClarificationResume?: (
+      value:
+        | { userReply: string; candidateIndex?: number }
+        | { cancel: true }
+    ) => void;
     onSubmit: (
       input: string,
       effort: string,
@@ -99,6 +104,23 @@ vi.mock('@/components/ChatMessagesView', () => ({
       >
         submit-next
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          props.onClarificationResume?.({
+            userReply: 'Springfield, Illinois, United States',
+            candidateIndex: 1,
+          })
+        }
+      >
+        resume-candidate
+      </button>
+      <button
+        type="button"
+        onClick={() => props.onClarificationResume?.({ cancel: true })}
+      >
+        resume-cancel
+      </button>
     </div>
   ),
 }));
@@ -131,6 +153,43 @@ function emitPlanEvent(title = 'Plan') {
 
 function startStream() {
   fireEvent.click(screen.getByText('submit-next'));
+}
+
+function emitWeatherClarificationInterrupt() {
+  act(() => {
+    mocks.options?.onUpdateEvent?.({
+      __interrupt__: [
+        {
+          value: {
+            type: 'weather_clarification',
+            weatherCapability: 'current',
+            weatherExecution: {
+              status: 'needs_clarification',
+              result: {
+                schemaVersion: '1.0',
+                tool: 'current_weather',
+                status: 'needs_clarification',
+                requestedLocation: {
+                  raw: 'Springfield',
+                  location: 'Springfield',
+                },
+                candidates: [
+                  {
+                    name: 'Springfield',
+                    displayName: 'Springfield, Illinois, United States',
+                    latitude: 39.78,
+                    longitude: -89.65,
+                  },
+                ],
+                message: 'Location is ambiguous.',
+                summary: 'Choose a location.',
+              },
+            },
+          },
+        },
+      ],
+    });
+  });
 }
 
 describe('App stream activity state', () => {
@@ -184,6 +243,68 @@ describe('App stream activity state', () => {
     expect(screen.getByTestId('historical-activity')).toHaveTextContent(
       'ai-final:Plan'
     );
+  });
+
+  it('resumes weather clarification with Command(resume) and blocks regular submit', () => {
+    render(<App />);
+
+    emitWeatherClarificationInterrupt();
+    expect(screen.getByText(/Springfield, Illinois, United States/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('submit-next'));
+    expect(mocks.thread.submit).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText('resume-candidate'));
+
+    expect(mocks.thread.submit).toHaveBeenCalledTimes(1);
+    expect(mocks.thread.submit).toHaveBeenCalledWith(null, {
+      command: {
+        resume: {
+          userReply: 'Springfield, Illinois, United States',
+          candidateIndex: 1,
+        },
+      },
+    });
+  });
+
+  it('resumes cancellation with a structured cancel signal', () => {
+    render(<App />);
+
+    emitWeatherClarificationInterrupt();
+    fireEvent.click(screen.getByText('resume-cancel'));
+
+    expect(mocks.thread.submit).toHaveBeenCalledWith(null, {
+      command: { resume: { cancel: true } },
+    });
+  });
+
+  it('clears stale clarification once on the first non-interrupt resume event', () => {
+    render(<App />);
+
+    emitWeatherClarificationInterrupt();
+    fireEvent.click(screen.getByText('resume-candidate'));
+    expect(screen.getByText(/Springfield, Illinois, United States/)).toBeInTheDocument();
+
+    act(() => {
+      mocks.options?.onUpdateEvent?.({ runtimeEvents: [] });
+    });
+    expect(screen.queryByText(/Springfield, Illinois, United States/)).not.toBeInTheDocument();
+
+    emitWeatherClarificationInterrupt();
+    expect(screen.getByText(/Springfield, Illinois, United States/)).toBeInTheDocument();
+  });
+
+  it('clears stale clarification when a resume finishes without an update event', () => {
+    render(<App />);
+
+    emitWeatherClarificationInterrupt();
+    fireEvent.click(screen.getByText('resume-candidate'));
+
+    act(() => {
+      mocks.options?.onFinish?.({});
+    });
+
+    expect(screen.queryByText(/Springfield, Illinois, United States/)).not.toBeInTheDocument();
   });
 
   it('keeps error terminal activity archived once and ignores late events', () => {

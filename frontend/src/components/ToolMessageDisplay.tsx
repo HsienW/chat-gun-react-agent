@@ -15,7 +15,10 @@ import {
 import { ToolCall, ToolMessage } from '@/types/tools';
 import { cn } from '@/lib/utils';
 import { formatErrorEnvelope, parseErrorEnvelope } from '@/types/errors';
-import { WeatherToolResultCard } from './WeatherToolResult';
+import {
+  WeatherToolResultCard,
+  type ClarificationReplyPayload,
+} from './WeatherToolResult';
 import {
   parseWeatherToolResult,
   getWeatherDisplayStatus,
@@ -28,7 +31,7 @@ interface ToolMessageDisplayProps {
   isExpanded: boolean;
   onToggle: () => void;
   isResumingClarification?: boolean;
-  onClarificationReply?: (replyText: string) => void;
+  onClarificationReply?: (payload: ClarificationReplyPayload) => void;
   onClarificationCancel?: () => void;
 }
 
