@@ -14,6 +14,69 @@ const SUPPORTED_SCHEMA_MAJOR_VERSION = 1;
 const VALID_RESULT_STATUSES = new Set(["success", "failure", "partial"]);
 const VALID_REVIEW_VERDICTS = new Set(["APPROVE", "REQUEST_CHANGES", "COMMENT_ONLY", "INCOMPLETE"]);
 
+const VALID_CURRENT_STATE_PHASES = new Set([
+  "PLAN_DRAFT",
+  "PLAN_REVIEW",
+  "PLAN_APPROVED",
+  "READY_FOR_IMPLEMENTATION",
+  "IMPLEMENTING",
+  "READY_FOR_REVIEW",
+  "REVIEWING",
+  "CHANGES_REQUESTED",
+  "NEEDS_COORDINATOR_ARBITRATION",
+  "READY_FOR_READINESS_CHECK",
+  "READY_FOR_ARCHIVE",
+  "ARCHIVED_AWAITING_HUMAN_COMMIT",
+  "COMPLETED",
+  "FAILED",
+  "INCOMPLETE",
+]);
+
+const VALID_CURRENT_STATE_OWNERS = new Set(["CCR", "Codex", "Qwen", "Human"]);
+
+const REQUIRED_CURRENT_STATE_FIELDS = [
+  "schemaVersion",
+  "changeId",
+  "runId",
+  "currentPhase",
+  "currentOwner",
+  "attempt",
+  "latestArtifactRefs",
+  "latestHandoff",
+  "gateStatus",
+  "blockers",
+  "nextActions",
+  "updatedAt",
+  "terminalStatus",
+];
+
+const VERDICT_TRANSITIONS = {
+  APPROVE: {
+    currentPhase: "READY_FOR_READINESS_CHECK",
+    currentOwner: "CCR",
+    reviewPassed: true,
+    handoffStatus: "COMPLETED",
+  },
+  COMMENT_ONLY: {
+    currentPhase: "READY_FOR_READINESS_CHECK",
+    currentOwner: "CCR",
+    reviewPassed: true,
+    handoffStatus: "COMPLETED",
+  },
+  REQUEST_CHANGES: {
+    currentPhase: "CHANGES_REQUESTED",
+    currentOwner: "Codex",
+    reviewPassed: false,
+    handoffStatus: "COMPLETED",
+  },
+  INCOMPLETE: {
+    currentPhase: "INCOMPLETE",
+    currentOwner: "CCR",
+    reviewPassed: false,
+    handoffStatus: "FAILED",
+  },
+};
+
 export function extractJsonObjectFromOutput(output) {
   if (typeof output !== "string" || output.trim().length === 0) {
     throw new Error("Qwen stdout is empty; no review_result JSON found.");
@@ -137,7 +200,7 @@ export async function captureQwenReviewResult({
   });
 
   const currentState = await readCurrentState(currentStatePath, { expectedChangeId: changeId, expectedRunId: runId });
-  const updatedState = withReviewResultReference(currentState, reviewResult, {
+  const updatedState = applyVerdictTransition(currentState, reviewResult, {
     changeId,
     runId,
     relativePath: toPosixPath(path.relative(root, artifactPath)),
@@ -155,9 +218,19 @@ export async function captureQwenReviewResult({
   };
 }
 
-function withReviewResultReference(currentState, reviewResult, { changeId, runId, relativePath, now }) {
+function applyVerdictTransition(currentState, reviewResult, { changeId, runId, relativePath, now }) {
+  const verdict = reviewResult.payload.verdict;
+  const transition = VERDICT_TRANSITIONS[verdict];
+
+  if (!transition) {
+    throw new Error(`Unknown verdict: ${verdict}`);
+  }
+
   return {
     ...currentState,
+    currentPhase: transition.currentPhase,
+    currentOwner: transition.currentOwner,
+    attempt: currentState.attempt,
     latestArtifactRefs: {
       ...currentState.latestArtifactRefs,
       reviewResult: {
@@ -168,8 +241,108 @@ function withReviewResultReference(currentState, reviewResult, { changeId, runId
         relativePath,
       },
     },
+    latestHandoff: {
+      ...currentState.latestHandoff,
+      status: transition.handoffStatus,
+    },
+    gateStatus: {
+      ...currentState.gateStatus,
+      reviewPassed: transition.reviewPassed,
+    },
+    blockers: buildBlockerEntries(reviewResult, changeId, runId),
+    nextActions: buildNextActions(verdict, reviewResult),
     updatedAt: now().toISOString(),
   };
+}
+
+function buildBlockerEntries(reviewResult, changeId, runId) {
+  const entries = [];
+
+  for (const finding of reviewResult.payload.findings.blocker) {
+    entries.push({
+      severity: "Blocker",
+      description: finding.description ?? finding.summary ?? JSON.stringify(finding),
+      source: `${reviewResult.artifactId}:blocker:${finding.id ?? finding.title ?? ""}`,
+      status: "unresolved",
+    });
+  }
+
+  for (const finding of reviewResult.payload.findings.major) {
+    entries.push({
+      severity: "Blocker",
+      description: finding.description ?? finding.summary ?? JSON.stringify(finding),
+      source: `${reviewResult.artifactId}:major:${finding.id ?? finding.title ?? ""}`,
+      status: "unresolved",
+    });
+  }
+
+  return entries;
+}
+
+function buildNextActions(verdict, reviewResult) {
+  const actions = [];
+
+  if (verdict === "APPROVE" || verdict === "COMMENT_ONLY") {
+    actions.push("CCR 執行 readiness check");
+  } else if (verdict === "REQUEST_CHANGES") {
+    actions.push("Codex 修正 Blocker 和 Major findings 後重新提交");
+    for (const finding of reviewResult.payload.findings.blocker) {
+      actions.push(`修正 Blocker: ${finding.description ?? finding.summary ?? finding.title ?? "unnamed"}`);
+    }
+    for (const finding of reviewResult.payload.findings.major) {
+      actions.push(`修正 Major: ${finding.description ?? finding.summary ?? finding.title ?? "unnamed"}`);
+    }
+  } else if (verdict === "INCOMPLETE") {
+    actions.push("CCR 檢查 INCOMPLETE 原因並決定下一步");
+  }
+
+  return actions;
+}
+
+function validateCanonicalCurrentState(currentState, { expectedChangeId, expectedRunId }) {
+  for (const field of REQUIRED_CURRENT_STATE_FIELDS) {
+    if (!(field in currentState)) {
+      throw new Error(`current-state.json missing required field: ${field}`);
+    }
+  }
+
+  if (currentState.changeId !== expectedChangeId) {
+    throw new Error(`current-state.json changeId mismatch: ${currentState.changeId}`);
+  }
+
+  if (currentState.runId !== expectedRunId) {
+    throw new Error(`current-state.json runId mismatch: ${currentState.runId}`);
+  }
+
+  if (!isPlainObject(currentState.latestArtifactRefs)) {
+    throw new Error("current-state.json latestArtifactRefs must be an object.");
+  }
+
+  if (!VALID_CURRENT_STATE_PHASES.has(currentState.currentPhase)) {
+    throw new Error(`current-state.json invalid currentPhase: ${currentState.currentPhase}`);
+  }
+
+  if (!VALID_CURRENT_STATE_OWNERS.has(currentState.currentOwner)) {
+    throw new Error(`current-state.json invalid currentOwner: ${currentState.currentOwner}`);
+  }
+
+  if (!isPlainObject(currentState.gateStatus)) {
+    throw new Error("current-state.json gateStatus must be an object.");
+  }
+
+  if (!isPlainObject(currentState.latestHandoff)) {
+    throw new Error("current-state.json latestHandoff must be an object.");
+  }
+
+  if (!Array.isArray(currentState.blockers)) {
+    throw new Error("current-state.json blockers must be an array.");
+  }
+
+  if (typeof currentState.attempt !== "number" || currentState.attempt < 1) {
+    throw new Error("current-state.json attempt must be a positive integer.");
+  }
+
+  return currentState;
 }
 
 async function readCurrentState(currentStatePath, { expectedChangeId, expectedRunId }) {
@@ -186,19 +359,7 @@ async function readCurrentState(currentStatePath, { expectedChangeId, expectedRu
 
   const currentState = parseJsonObject(raw);
 
-  if (currentState.changeId !== expectedChangeId) {
-    throw new Error(`current-state.json changeId mismatch: ${currentState.changeId}`);
-  }
-
-  if (currentState.runId !== expectedRunId) {
-    throw new Error(`current-state.json runId mismatch: ${currentState.runId}`);
-  }
-
-  if (!isPlainObject(currentState.latestArtifactRefs)) {
-    throw new Error("current-state.json latestArtifactRefs must be an object.");
-  }
-
-  return currentState;
+  return validateCanonicalCurrentState(currentState, { expectedChangeId, expectedRunId });
 }
 
 async function writeJsonAtomic(finalPath, tempPath, value) {

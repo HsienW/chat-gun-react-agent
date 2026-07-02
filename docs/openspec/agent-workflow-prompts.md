@@ -106,6 +106,39 @@ Codex 摘要如下：
 
 每個 Stage 產生一份 latest-only Result 與 Handoff，再由有寫入權的 Agent、人工或 CLIHost 更新 CurrentState。Qwen 只輸出 JSON／Markdown，不直接寫入。結構化 JSON 是機器可讀來源；Markdown 是同一結果的人類可讀投影。
 
+## Qwen Review 啟動規範（強制使用 adapter wrapper）
+
+Qwen 的 review-plan 或 review-result 階段 MUST 由 `qwen-capture-adapter.mjs` wrapper 啟動，不得直接呼叫 Qwen CLI：
+
+```bash
+node tools/qwen-capture-adapter.mjs \
+  --change-id <change-id> \
+  --run-id <run-id> \
+  --stage review-result \
+  -- qwen <review-arguments>
+```
+
+Adapter 負責：
+1. 啟動 Qwen process 並擷取 stdout。
+2. 從 markdown／JSON 輸出中提取 review_result。
+3. 驗證 review_result 符合 `agent-result.schema.json`（changeId、runId、stage、kind、producer）。
+4. 原子寫入 `.agent-runtime/<change-id>/artifacts/review-result.json`。
+5. 依 verdict 執行 CurrentState transition（phase、owner、gateStatus、handoff、blockers、nextActions）。
+6. 原子寫入 `.agent-runtime/<change-id>/current-state.json`。
+
+若直接啟動 Qwen（不經由 adapter），Qwen 的唯讀邊界（`QWEN.md` §13, `openspec/specs/qwen-readonly-result-capture/spec.md`）禁止其寫入 `.agent-runtime/`；Review 完成後，人工必須手動執行 adapter 或手動更新 CurrentState。
+
+CurrentState Transition 規則：
+
+| Verdict | currentPhase | currentOwner | reviewPassed | handoffStatus |
+|---------|-------------|-------------|-------------|---------------|
+| APPROVE | READY_FOR_READINESS_CHECK | CCR | true | COMPLETED |
+| COMMENT_ONLY | READY_FOR_READINESS_CHECK | CCR | true | COMPLETED |
+| REQUEST_CHANGES | CHANGES_REQUESTED | Codex | false | COMPLETED |
+| INCOMPLETE | INCOMPLETE | CCR | false | FAILED |
+
+Adapter 只接受符合 canonical `current-state.schema.json` 根層 schema 的 current-state.json（必須有 `currentPhase`、`currentOwner`、`gateStatus`、`latestHandoff` 等 required fields）。使用舊 coordinator_result wrapper 形狀的檔案將被拒絕。
+
 ## 專案注意事項
 
 - 本文件是本 repo 的專案版 workflow，不是通用開源版。
