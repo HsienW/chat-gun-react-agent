@@ -56,7 +56,7 @@
 - [x] 6.1 `cd frontend && npm run lint`
 - [x] 6.2 `cd frontend && npm run test`
 - [x] 6.3 `cd frontend && npm run build`
-- [ ] 6.4 人工 live smoke：「大寮天氣」→ 點選候選 → 確認直接顯示天氣結果（非再次要求補充地點）
-- [ ] 6.5 人工 live smoke：一般對話 submit（非 clarification）→ 確認仍正常運作
-- [ ] 6.6 人工 live smoke：「大寮天氣」→ 手動輸入文字 → 確認 resume 正常
-- [ ] 6.7 人工 live smoke：「大寮天氣」→ 按取消 → 確認 cancelled 狀態
+- [x] 6.4 人工 live smoke：「大寮天氣」→ 點選候選 → 確認直接顯示天氣結果（非再次要求補充地點）
+- [x] 6.5 人工 live smoke：一般對話 submit（非 clarification）→ 確認仍正常運作
+- [x] 6.6 人工 live smoke：「大寮天氣」→ 手動輸入文字 → 確認 resume 正常
+- [x] 6.7 人工 live smoke：「大寮天氣」→ 按取消 → 確認 cancelled 狀態
