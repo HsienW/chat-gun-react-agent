@@ -63,7 +63,7 @@
   - [x] `weather_unknown_error`
 - [x] 4.8 所有結果提供安全、可閱讀的 `summary`。
 - [x] 4.9 成功結果保留 Provider、Source URL、Observation Time、Timezone 與 Units。
-- [x] 4.10 Weather Provider Fetch 支援真正的 Abort，而不只依賴外層 Promise Race。
+- [x] 4.10 Weather Provider Fetch 支援真正的 Abort，而不只依賴外層 Promise Race。（2026-07-03 人工測試證明不完整：Promise.race 未傳遞 AbortSignal 至底層 fetch，retry budget 可超過外層 deadline）
 - [x] 4.11 只對可重試的暫時性 Provider Error 重試一次。
 - [x] 4.12 不對 invalid、ambiguous、not_found 或 user cancel 重試。
 - [x] 4.13 增加 Weather Tool Contract Unit Test。
@@ -72,13 +72,13 @@
 ## 5. Deep Research Runtime
 
 - [x] 5.1 在 Deep Research State 新增可序列化的 `weatherExecution`。
-- [x] 5.2 修改 `targeted_tools`，以 structured result 更新 `weatherExecution`。
+- [x] 5.2 修改 `targeted_tools`，以 structured result 更新 `weatherExecution`。（2026-07-03 人工測試證明不完整：governance timeout 回傳非 JSON 字串時 parseWeatherToolResult 失敗，weatherExecution 未收斂為 terminal error）
 - [x] 5.3 移除以 `Provider:`、`Resolved location:`、`Temperature:` 等標籤取得核心資料的主要流程。
 - [x] 5.4 移除以錯誤文字 Regex 作為主要狀態判斷的流程。
 - [x] 5.5 `success` 生成目前天氣回答。
 - [x] 5.6 `needs_clarification` 生成地點補充問題與候選列表。
 - [x] 5.7 `not_found` 要求使用者提供更完整地點，不捏造座標。
-- [x] 5.8 `provider_error` 與 `timeout` 回傳服務失敗訊息，不誤稱地點不存在。
+- [x] 5.8 `provider_error` 與 `timeout` 回傳服務失敗訊息，不誤稱地點不存在。（2026-07-03 人工測試證明不完整：governance timeout 回傳自然語言字串而非 WeatherToolResult，synthesis 無法辨識為 weather_timeout）
 - [x] 5.9 修改 Planner Prompt，保留原地點文字並移除「必須翻成英文才能查詢」的依賴。
 - [x] 5.10 Planner 不得輸出 latitude / longitude。
 - [x] 5.11 LLM Repair 只允許在第一次 `not_found` 後執行一次。
@@ -172,3 +172,24 @@ Status legend: `[mock]` = mock smoke verified (no real model / provider / browse
 - [x] 11.4 更新專案規則 `AGENTS.md` 與 `CLAUDE.md`，讓後續實作與 Review 將此類方案視為 Major 或 Blocker。
 - [x] 11.5 後續 source code 修正時，移除或降級任何以 `WEATHER_QUERY_WORDS`、`CJK_WEATHER_QUERY_PARTS`、`QUESTION_PUNCTUATION` 或等價固定詞表作為主要地點抽取流程的實作。
 - [x] 11.6 後續驗證時，新增或調整測試以證明地點抽取不依賴固定自然語言刪字詞表，且 `台北現在天氣如何？`、`高雄鳳山今天會下雨嗎？`、`Springfield weather` 等案例走 Planner/Resolver 契約。
+
+## 12. Corrective Tasks — Timeout / Cancellation / Terminal State Closure（2026-07-03）
+
+人工測試發現（`倫敦天氣？` → 點選 London 候選 → governance timeout → 再次輸出多候選），根因為 timeout budget 衝突、底層 fetch 未取消、terminal state 不收斂、synthesis 重用舊 clarification evidence。
+
+- [x] C1 修改 `fetchWithRetry`（`backend/src/tools/weather.ts`）使其接收外層 deadline signal，確保 retry 預算（含 250ms backoff）不超過外層 deadline。若 deadline 在 retry 前已過期，直接 throw `weather_timeout` 不進行第二次 fetch。
+- [x] C2 修改 `current_weather` 主流程，將 tool governance timeout 傳遞為 AbortSignal，合併 Provider Timeout Signal（`backend/src/tools/weather.ts`）。確保 governance timeout → AbortController.abort() → fetch 取消 → fetchWithRetry 不再 retry。
+  - **實施明確化（Qwen M1）**：weather.ts 內部建立一個主 AbortController，從 `RunnableConfig.configurable?.abortSignal` 提取外層 governance signal 並監聽其 `abort` 事件觸發內部 AbortController.abort()。合併後的 signal 傳入 fetchJsonWithTimeout。governance 層不需修改；weather.ts 在 invoke 時主動從 config 取得 signal。
+- [x] C3 修改 `targeted_tools`（`backend/src/agents/deep-researcher.ts`），在 weather tool 返回後若 `parseWeatherToolResult` 失敗（非 JSON / governance error 字串），建立 `weatherExecution: { status: "failed", result: { status: "error", code: "weather_timeout", ... } }`。不得讓 weatherExecution 停留於 `running`。
+  - **實施明確化（Qwen M2）**：在 targeted_tools 的 weather invoke catch / result 處理中，若 `parseWeatherToolResult` 回傳 undefined，檢查原始 error 或回傳字串是否包含 `timed out` 以判定 `weather_timeout`，否則設為 `weather_unknown_error`。同時在 tool-governance.ts 的 error message 中加入 machine-readable prefix（如 `[governance_timeout]`），供 parseWeatherToolResult fallback 正則匹配。
+- [x] C4 確認 `parseWeatherToolResult` 失敗時，不將非結構化 governance error 字串直接寫入 messages（可寫入 summary 欄位，但不得讓 synthesis 視為 Tool 成功輸出）。
+- [x] C5 修改 synthesis / `buildWeatherToolAnswer`（`backend/src/agents/deep-researcher.ts`）或 `formatEvidence`，在 weather resume 後不採用先前的 `needs_clarification` ToolResult。只使用 `weatherExecution.result` 產生 final answer。
+  - **實施明確化（Qwen M3）**：採用 weatherExecution 驅動模式。`buildWeatherToolAnswer` 已在 L2308 優先讀取 weatherExecution；本 task 確保：(a) 所有 weather Tool 返回路徑（含 governance error）都設定 weatherExecution，(b) buildWeatherToolAnswer 在 weatherExecution 非 success/failed/needs_clarification 時回傳 undefined 而不 fallback 到 messages 掃描，(c) synthesis node 在 buildWeatherToolAnswer 回傳 undefined 且 plan.answerMode === 'weather' 時輸出 safety fallback（「天氣查詢服務暫時無法回應」等），不重用舊 ToolResult。
+- [x] C6 新增整合測試（`backend/src/tools/weather.test.ts` 或新檔案）：Mock forecast 延遲 > governance timeout，驗證：
+  - Tool 返回 weather_timeout 結構化結果
+  - weatherExecution 收斂為 `failed`
+  - 最終 AI 訊息不包含舊的多候選提示
+  - messages 不包含非結構化 governance error 字串
+- [x] C7 `cd backend && npm run test` 通過（含新增 C6 測試）。
+- [x] C8 `cd backend && npm run build` 通過。
+- [x] C9 人工 live smoke：重現「倫敦天氣？→ 點選候選 → 等待 timeout」情境，確認最終輸出為 weather_timeout 而非多候選提示。
