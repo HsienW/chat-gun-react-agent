@@ -103,6 +103,25 @@ describe("llm-gateway provider selection", () => {
     ).toThrow(/ccr.*supportsStructuredOutput/i);
   });
 
+  it("reports native structured-output capability by configured provider", async () => {
+    vi.stubEnv("LLM_PROVIDER", "ccr");
+    vi.stubEnv("CCR_BASE_URL", "http://127.0.0.1:3456/v1");
+    vi.resetModules();
+
+    let gatewayModule = await import("./llm-gateway.js");
+    expect(
+      gatewayModule.getConfiguredLlmCapabilities("research").supportsStructuredOutput
+    ).toBe(false);
+
+    vi.stubEnv("LLM_PROVIDER", "qwen");
+    vi.resetModules();
+
+    gatewayModule = await import("./llm-gateway.js");
+    expect(
+      gatewayModule.getConfiguredLlmCapabilities("research").supportsStructuredOutput
+    ).toBe(true);
+  });
+
   it("routes OpenAI-compatible provider through chat completions endpoint", async () => {
     vi.stubEnv("LLM_PROVIDER", "openai-compatible");
     vi.stubEnv("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:9999/v1");

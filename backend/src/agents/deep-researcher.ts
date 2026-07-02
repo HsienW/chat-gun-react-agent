@@ -20,6 +20,7 @@ import {
 import {
   describeLlmGatewayConfig,
   formatLlmError,
+  getConfiguredLlmCapabilities,
   llmGateway,
 } from "../platform/llm-gateway.js";
 import { auditLogger, recordMetric, recordWeatherAuditEvent } from "../platform/observability.js";
@@ -458,6 +459,24 @@ function coerceWeatherRequest(value: unknown): WeatherRequest | undefined {
   };
 }
 
+function normalizePlanTextForComparison(value: string): string {
+  return value.normalize("NFKC").trim().replace(/\s+/gu, " ");
+}
+
+function coerceWeatherRequestForQuestion(
+  value: unknown,
+  question: string
+): WeatherRequest | undefined {
+  const weather = coerceWeatherRequest(value);
+  if (!weather) {
+    return undefined;
+  }
+
+  const normalizedLocation = normalizePlanTextForComparison(weather.location);
+  const normalizedQuestion = normalizePlanTextForComparison(question);
+  return normalizedLocation === normalizedQuestion ? undefined : weather;
+}
+
 function missingWeatherLocationPlan(question: string, rationale: string): ResearchPlan {
   return {
     question,
@@ -474,20 +493,47 @@ function isMissingWeatherLocationClarification(value: string | undefined): boole
   return value?.trim() === BACKEND_ERROR_MESSAGES.planner.missingWeatherLocation;
 }
 
+function normalizeWeatherPlanConsistency(
+  answerMode: AnswerMode,
+  weather: WeatherRequest | undefined
+): {
+  answerMode: AnswerMode;
+  weather: WeatherRequest | undefined;
+  gateActivated: boolean;
+} {
+  if (
+    answerMode === "clarify" &&
+    weather !== undefined &&
+    weather.location.trim().length > 0
+  ) {
+    return { answerMode: "weather", weather, gateActivated: true };
+  }
+
+  return { answerMode, weather, gateActivated: false };
+}
+
 function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string, state: typeof DeepResearchState.State): ResearchPlan {
   const fallback = fallbackPlan(question, state);
   const modes: AnswerMode[] = ["direct", "weather", "calculation", "research", "clarify"];
-  const answerMode = modes.includes(rawPlan?.answerMode as AnswerMode)
+  const rawAnswerMode = modes.includes(rawPlan?.answerMode as AnswerMode)
     ? (rawPlan?.answerMode as AnswerMode)
     : fallback.answerMode;
   const maxQueries = clampInt(state.initial_search_query_count, DEFAULT_SEARCH_QUERY_COUNT, 1, 5);
-  const weather = coerceWeatherRequest(rawPlan?.weather);
+  const normalizedWeatherPlan = normalizeWeatherPlanConsistency(
+    rawAnswerMode,
+    coerceWeatherRequestForQuestion(rawPlan?.weather, question)
+  );
+  const answerMode = normalizedWeatherPlan.answerMode;
+  const weather = normalizedWeatherPlan.weather;
   const calculation =
     rawPlan?.calculation && typeof rawPlan.calculation.expression === "string"
       ? { expression: rawPlan.calculation.expression }
       : undefined;
-  const clarification =
+  let clarification =
     typeof rawPlan?.clarification === "string" ? rawPlan.clarification : undefined;
+  if (normalizedWeatherPlan.gateActivated) {
+    clarification = undefined;
+  }
 
   if (answerMode === "weather" && !weather?.location.trim()) {
     return missingWeatherLocationPlan(
@@ -746,6 +792,22 @@ type WeatherLlmDiagnosticFailureCode =
   | "empty_candidates";
 
 const SENSITIVE_DIAGNOSTIC_KEY = /(api[-_]?key|authorization|token|password|secret|credential)/i;
+const JSON_OBJECT_RESPONSE_FORMAT = { type: "json_object" } as const;
+
+function createResearchJsonChatModel(
+  state: typeof DeepResearchState.State
+) {
+  const model = state.reasoning_model.trim() || undefined;
+  const capabilities = getConfiguredLlmCapabilities("research");
+  return llmGateway.createChatModel({
+    purpose: "research",
+    model,
+    temperature: 0,
+    ...(capabilities.supportsStructuredOutput
+      ? { responseFormat: JSON_OBJECT_RESPONSE_FORMAT }
+      : {}),
+  });
+}
 
 function truncateDiagnosticString(value: string): string {
   return value.length > 160 ? `${value.slice(0, 160)}...` : value;
@@ -844,13 +906,7 @@ async function repairWeatherRequest(
   ].join("\n");
 
   try {
-    const model = state.reasoning_model.trim() || undefined;
-    const llm = llmGateway.createChatModel({
-      purpose: "research",
-      model,
-      temperature: 0,
-      responseFormat: { type: "json_object" },
-    });
+    const llm = createResearchJsonChatModel(state);
     const response = await llm.invoke(prompt);
     const rawContent = messageContentToString(response);
     const parsedResult = parseJsonObjectWithDiagnostics<WeatherRepairResponse>(rawContent);
@@ -979,8 +1035,14 @@ function shouldRepairWeatherRequest(
   return result.status === "not_found";
 }
 
-function plannerReturnedWeatherWithoutLocation(rawPlan: Partial<ResearchPlan> | undefined): boolean {
-  return rawPlan?.answerMode === "weather" && !coerceWeatherRequest(rawPlan.weather);
+function plannerReturnedWeatherWithoutLocation(
+  rawPlan: Partial<ResearchPlan> | undefined,
+  question: string
+): boolean {
+  return (
+    rawPlan?.answerMode === "weather" &&
+    !coerceWeatherRequestForQuestion(rawPlan.weather, question)
+  );
 }
 
 function shouldRetryWeatherPlannerExtraction(
@@ -998,7 +1060,7 @@ function shouldRetryWeatherPlannerExtraction(
     isMissingWeatherLocationClarification(fallbackDecision.clarification);
 
   return (
-    plannerReturnedWeatherWithoutLocation(rawPlan) ||
+    plannerReturnedWeatherWithoutLocation(rawPlan, question) ||
     isMissingWeatherLocationClarification(rawClarification) ||
     (plan.answerMode === "clarify" &&
       isMissingWeatherLocationClarification(plan.clarification)) ||
@@ -1027,7 +1089,7 @@ function coerceWeatherPlannerExtractionPlan(
     return undefined;
   }
 
-  const weather = coerceWeatherRequest(parsed.weather);
+  const weather = coerceWeatherRequestForQuestion(parsed.weather, question);
   if (weather) {
     return {
       question,
@@ -1081,13 +1143,7 @@ async function retryWeatherPlannerExtraction(
   ].join("\n");
 
   try {
-    const model = state.reasoning_model.trim() || undefined;
-    const llm = llmGateway.createChatModel({
-      purpose: "research",
-      model,
-      temperature: 0,
-      responseFormat: { type: "json_object" },
-    });
+    const llm = createResearchJsonChatModel(state);
     const response = await llm.invoke(prompt);
     const rawContent = messageContentToString(response);
     const parsedResult = parseJsonObjectWithDiagnostics<WeatherPlannerExtractionResponse>(rawContent);
@@ -1192,13 +1248,7 @@ async function planResearch(
   ].join("\n");
 
   try {
-    const model = state.reasoning_model.trim() || undefined;
-    const llm = llmGateway.createChatModel({
-      purpose: "research",
-      model,
-      temperature: 0,
-      responseFormat: { type: "json_object" },
-    });
+    const llm = createResearchJsonChatModel(state);
     const response = await llm.invoke(prompt);
     const rawContent = messageContentToString(response);
     const parsedResult = parseJsonObjectWithDiagnostics<Partial<ResearchPlan>>(rawContent);
@@ -1676,13 +1726,7 @@ async function resolveClarificationWithPlanner(
   ].join("\n");
 
   try {
-    const model = state.reasoning_model.trim() || undefined;
-    const llm = llmGateway.createChatModel({
-      purpose: "research",
-      model,
-      temperature: 0,
-      responseFormat: { type: "json_object" },
-    });
+    const llm = createResearchJsonChatModel(state);
     const response = await llm.invoke(prompt);
     const parsedResult = parseJsonObjectWithDiagnostics<WeatherClarificationResolutionResponse>(
       messageContentToString(response)
@@ -2413,6 +2457,7 @@ function buildTargetedToolAnswer(
 
 export const deepResearcherWeatherTestInternals = {
   planResearch,
+  normalizeWeatherPlanConsistency,
   routeAfterPlan,
   parseWeatherToolResult,
   repairWeatherRequest,

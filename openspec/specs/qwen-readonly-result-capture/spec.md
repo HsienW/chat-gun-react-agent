@@ -49,18 +49,101 @@ AND JSON 中的 `payload.findings` MUST 與 markdown 中的 Findings 對應
 
 ---
 
-### Requirement: review_result 保存方式（第一階段）
+### Requirement: Verdict 驅動的 CurrentState Transition
 
-第一階段 MUST 由人工或 CLIHost 輔助保存 Qwen 輸出到 Runtime Artifact 路徑。
+Adapter MUST 依 review_result payload.verdict 執行 phase、owner、gate 與 blocker 轉換。
 
-#### Scenario: CLIHost stdout capture 保存
+#### Scenario: APPROVE transition
 
-GIVEN Qwen 輸出包含 review_result JSON
-WHEN CLIHost 擷取 stdout
-AND 提取 JSON（從 markdown code fence 或 raw JSON）
-AND 驗證符合 `agent-result.schema.json`
-THEN CLIHost MAY 寫入 `.agent-runtime/<change-id>/artifacts/review-result.json`
-AND 寫入後 `current-state.json` 的 `latestArtifactRefs.reviewResult` MUST 更新為指向該檔案
+GIVEN review_result 的 `payload.verdict` 為 `APPROVE`
+WHEN adapter 寫入 `current-state.json`
+THEN `currentPhase` MUST 設為 `READY_FOR_READINESS_CHECK`
+AND `currentOwner` MUST 設為 `CCR`
+AND `gateStatus.reviewPassed` MUST 為 `true`
+AND `latestHandoff.status` MUST 設為 `COMPLETED`
+AND `nextActions` MUST 包含「CCR 執行 readiness check」
+
+#### Scenario: REQUEST_CHANGES transition
+
+GIVEN review_result 的 `payload.verdict` 為 `REQUEST_CHANGES`
+WHEN adapter 寫入 `current-state.json`
+THEN `currentPhase` MUST 設為 `CHANGES_REQUESTED`
+AND `currentOwner` MUST 設為 `Codex`
+AND `gateStatus.reviewPassed` MUST 為 `false`
+AND `blockers` MUST 包含所有 blocker 和 major findings（severity: Blocker, status: unresolved）
+AND `nextActions` MUST 包含修正指示
+
+#### Scenario: INCOMPLETE transition
+
+GIVEN review_result 的 `payload.verdict` 為 `INCOMPLETE`
+WHEN adapter 寫入 `current-state.json`
+THEN `currentPhase` MUST 設為 `INCOMPLETE`
+AND `currentOwner` MUST 設為 `CCR`
+AND `gateStatus.reviewPassed` MUST 為 `false`
+AND `latestHandoff.status` MUST 設為 `FAILED`
+
+#### Scenario: COMMENT_ONLY transition
+
+GIVEN review_result 的 `payload.verdict` 為 `COMMENT_ONLY`
+AND findings 無 blocker 或 major
+WHEN adapter 寫入 `current-state.json`
+THEN `currentPhase` MUST 設為 `READY_FOR_READINESS_CHECK`
+AND `currentOwner` MUST 設為 `CCR`
+AND `gateStatus.reviewPassed` MUST 為 `true`
+AND `latestHandoff.status` MUST 設為 `COMPLETED`
+
+---
+
+### Requirement: Canonical CurrentState Schema Validation
+
+Adapter MUST 驗證 current-state.json 符合 `current-state.schema.json` 根層 schema。
+
+#### Scenario: 拒絕非 canonical current-state.json
+
+GIVEN current-state.json 缺少根層 required field（如 `currentPhase`, `currentOwner`, `gateStatus`）
+OR 使用舊 coordinator_result wrapper 形狀
+WHEN adapter 讀取 current-state.json
+THEN adapter MUST 拋出明確的 schema validation error
+AND MUST 指出缺少的欄位名稱
+AND MUST NOT 寫入任何檔案
+
+---
+
+### Requirement: review_result 保存方式
+
+Qwen review workflow MUST 由 `qwen-capture-adapter.mjs` wrapper 啟動，確保 review_result 自動保存與 CurrentState 轉換。
+
+#### Scenario: CLIHost adapter wrapper 強制保存
+
+GIVEN Qwen review 需要執行
+AND CurrentState 的 `currentPhase` 為 `REVIEWING`
+AND CurrentState 符合 `current-state.schema.json` 根層 schema
+WHEN CLIHost 透過 `node tools/qwen-capture-adapter.mjs --change-id <change-id> --run-id <run-id> -- qwen <args...>` 啟動 Qwen
+AND Qwen 輸出包含符合 `agent-result.schema.json` 的 review_result JSON
+THEN adapter MUST 從 stdout 提取並驗證 JSON
+AND adapter MUST 寫入 `.agent-runtime/<change-id>/artifacts/review-result.json`
+AND adapter MUST 依 verdict 更新 `current-state.json`：
+  - `APPROVE` → `currentPhase: "READY_FOR_READINESS_CHECK"`, `currentOwner: "CCR"`, `gateStatus.reviewPassed: true`
+  - `COMMENT_ONLY` → `currentPhase: "READY_FOR_READINESS_CHECK"`, `currentOwner: "CCR"`, `gateStatus.reviewPassed: true`
+  - `REQUEST_CHANGES` → `currentPhase: "CHANGES_REQUESTED"`, `currentOwner: "Codex"`, `gateStatus.reviewPassed: false`, blockers 來自 findings
+  - `INCOMPLETE` → `currentPhase: "INCOMPLETE"`, `currentOwner: "CCR"`, `gateStatus.reviewPassed: false`, `latestHandoff.status: "FAILED"`
+AND adapter MUST 更新 `latestHandoff.status` 與 `latestArtifactRefs.reviewResult`
+AND adapter MUST 原子寫入（atomic write）所有檔案
+
+#### Scenario: 直接啟動 Qwen 不可保存
+
+GIVEN Qwen 被直接啟動（不經由 adapter wrapper）
+WHEN Qwen 完成 review 並輸出 review_result JSON
+THEN Qwen MUST NOT 自行寫入 `.agent-runtime/`
+AND 人工 MUST 手動執行 adapter 或手動複製 JSON 到 artifact 路徑
+AND 人工 MUST 手動更新 `current-state.json` 的 phase、owner、gateStatus
+
+#### Scenario: CLIHost adapter wrapper 保存（legacy fallback）
+
+GIVEN current-state.json 不符合 canonical 根層 schema（缺少 required field）
+WHEN adapter 嘗試讀取
+THEN adapter MUST 拒絕並回報 schema validation error
+AND 不得寫入任何檔案
 
 #### Scenario: 人工複製保存
 

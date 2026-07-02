@@ -798,6 +798,49 @@ describe("resolveLocation", () => {
     expect(result.status).toBe("ambiguous");
   });
 
+  it("keeps queryName-matched short CJK places ambiguous when country leaves multiple regions", async () => {
+    const result = await resolveLocation(
+      { raw: "\u5927\u5bee", location: "\u5927\u5bee", country: "TW" },
+      providerFor([
+        {
+          provider: "open-meteo",
+          providerId: "daliao-new-taipei",
+          name: "Daliao",
+          displayName: "Daliao, New Taipei City, Taiwan",
+          country: "Taiwan",
+          countryCode: "TW",
+          admin1: "Taipei",
+          admin2: "New Taipei City",
+          latitude: 25.09755,
+          longitude: 121.78241,
+          population: 100_000,
+        },
+        {
+          provider: "open-meteo",
+          providerId: "daliao-kaohsiung",
+          name: "Daliao",
+          displayName: "Daliao, Kaohsiung, Taiwan",
+          country: "Taiwan",
+          countryCode: "TW",
+          admin1: "Kaohsiung",
+          admin2: "Kaohsiung",
+          latitude: 22.78167,
+          longitude: 120.3,
+          population: 100_000,
+        },
+      ]),
+      {
+        ...DEFAULT_RESOLVER_OPTIONS,
+        queryName: "Daliao",
+      }
+    );
+
+    expect(result.status).toBe("ambiguous");
+    if (result.status === "ambiguous") {
+      expect(result.candidates).toHaveLength(2);
+    }
+  });
+
   it("resolves München Bavaria Germany by conservative Latin prominence dominance", async () => {
     const result = await resolveLocation(
       { raw: "M\u00fcnchen", location: "M\u00fcnchen" },

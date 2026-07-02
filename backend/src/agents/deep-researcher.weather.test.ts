@@ -2,7 +2,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deepResearcherWeatherTestInternals } from "./deep-researcher.js";
-import { llmGateway } from "../platform/llm-gateway.js";
+import {
+  getConfiguredLlmCapabilities,
+  llmGateway,
+} from "../platform/llm-gateway.js";
 import type { WeatherToolResult } from "../tools/weather-types.js";
 
 type WeatherState = Parameters<
@@ -14,6 +17,7 @@ type ResumeClarifyState = Parameters<
 
 const MISSING_WEATHER_LOCATION =
   "\u8acb\u63d0\u4f9b\u8981\u67e5\u8a62\u5929\u6c23\u7684\u57ce\u5e02\u6216\u5730\u5340\u3002";
+const KAOHSIUNG_DALIAO = "\u9ad8\u96c4\u5927\u5bee";
 const KAOHSIUNG_FENGSHAN = "\u9ad8\u96c4\u9cf3\u5c71";
 const BEIJING_CITY = "\u5317\u4eac\u5e02";
 const MUNCHEN = "M\u00fcnchen";
@@ -330,6 +334,107 @@ function installRepairWeatherFetchMock(): void {
       throw new Error(`Unexpected network call: ${url.toString()}`);
     })
   );
+}
+
+function installDaliaoWeatherFetchMock(): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+    const url = new URL(
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url
+    );
+
+    if (url.hostname === "geocoding-api.open-meteo.com") {
+      return jsonResponse({
+        results: [
+          {
+            name: KAOHSIUNG_DALIAO,
+            latitude: 22.584,
+            longitude: 120.395,
+            country: "Taiwan",
+            country_code: "TW",
+            admin1: "Kaohsiung City",
+            admin2: "Daliao District",
+            timezone: "Asia/Taipei",
+            population: 111_000,
+          },
+        ],
+      });
+    }
+
+    if (url.hostname === "api.open-meteo.com") {
+      return jsonResponse({
+        latitude: 22.584,
+        longitude: 120.395,
+        timezone: "Asia/Taipei",
+        current: {
+          time: "2026-06-29T12:00",
+          temperature_2m: 30,
+          relative_humidity_2m: 72,
+          weather_code: 61,
+          wind_speed_10m: 9,
+          wind_direction_10m: 180,
+        },
+        current_units: {
+          temperature_2m: "\u00b0C",
+          relative_humidity_2m: "%",
+          wind_speed_10m: "km/h",
+          wind_direction_10m: "\u00b0",
+        },
+      });
+    }
+
+    throw new Error(`Unexpected network call: ${url.toString()}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function installAmbiguousSpringfieldFetchMock(): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+    const url = new URL(
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url
+    );
+
+    if (url.hostname === "geocoding-api.open-meteo.com") {
+      return jsonResponse({
+        results: [
+          {
+            id: 1,
+            name: "Springfield",
+            latitude: 39.7817,
+            longitude: -89.6501,
+            country: "United States",
+            country_code: "US",
+            admin1: "Illinois",
+            timezone: "America/Chicago",
+            population: 114_000,
+          },
+          {
+            id: 2,
+            name: "Springfield",
+            latitude: 37.209,
+            longitude: -93.2923,
+            country: "United States",
+            country_code: "US",
+            admin1: "Missouri",
+            timezone: "America/Chicago",
+            population: 170_000,
+          },
+        ],
+      });
+    }
+
+    throw new Error(`Unexpected network call: ${url.toString()}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
 function makePlannerState(
@@ -685,6 +790,321 @@ describe("Deep Research weather structured result integration", () => {
       expect(weatherResult.code).toBe("weather_cancelled");
       expect(weatherResult.retryable).toBe(false);
     }
+  });
+
+  it("normalizes only contradictory clarify plans with a valid weather location", () => {
+    const normalize =
+      deepResearcherWeatherTestInternals.normalizeWeatherPlanConsistency;
+    const weather = { location: KAOHSIUNG_DALIAO };
+
+    expect(normalize("clarify", weather)).toEqual({
+      answerMode: "weather",
+      weather,
+      gateActivated: true,
+    });
+    expect(normalize("clarify", undefined)).toEqual({
+      answerMode: "clarify",
+      weather: undefined,
+      gateActivated: false,
+    });
+    expect(normalize("clarify", { location: "   " })).toEqual({
+      answerMode: "clarify",
+      weather: { location: "   " },
+      gateActivated: false,
+    });
+    expect(normalize("weather", weather)).toEqual({
+      answerMode: "weather",
+      weather,
+      gateActivated: false,
+    });
+    for (const answerMode of ["direct", "research", "calculation"] as const) {
+      expect(normalize(answerMode, weather)).toEqual({
+        answerMode,
+        weather,
+        gateActivated: false,
+      });
+    }
+  });
+
+  it("routes a contradictory weather plan through current_weather without another LLM call", async () => {
+    const fetchMock = installDaliaoWeatherFetchMock();
+    const question = `${KAOHSIUNG_DALIAO}\u4eca\u5929\u6703\u4e0b\u96e8\u55ce`;
+    const invoke = vi.fn(async () =>
+      new AIMessage(
+        JSON.stringify({
+          question,
+          answerMode: "clarify",
+          rationale: "The place may need clarification.",
+          queries: [],
+          urls: [],
+          weather: { location: KAOHSIUNG_DALIAO },
+          clarification: "\u8acb\u63d0\u4f9b\u66f4\u5177\u9ad4\u7684\u4f4d\u7f6e",
+          requiredSourceCount: 1,
+        })
+      )
+    );
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({ invoke });
+
+    const state = makePlannerState([new HumanMessage(question)]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+
+    expect(planned.plan?.answerMode).toBe("weather");
+    expect(planned.plan?.weather?.location).toBe(KAOHSIUNG_DALIAO);
+    expect(planned.plan?.clarification).toBeUndefined();
+    expect(
+      deepResearcherWeatherTestInternals.routeAfterPlan({
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterPlan>[0])
+    ).toBe("targeted_tools");
+
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+
+    expect((toolResult.messages?.[0] as { name?: string } | undefined)?.name).toBe("current_weather");
+    expect(toolResult.weatherExecution?.status).toBe("success");
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.filter(([input]) => {
+        const url = new URL(
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url
+        );
+        return url.hostname === "api.open-meteo.com";
+      })
+    ).toHaveLength(1);
+  });
+
+  it("runs bounded extraction once when a weather planner clarifies without a location", async () => {
+    const question = `${KAOHSIUNG_DALIAO}\u4eca\u5929\u6703\u4e0b\u96e8\u55ce`;
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            question,
+            answerMode: "clarify",
+            rationale: "The location was not extracted.",
+            queries: [],
+            urls: [],
+            clarification: "\u8acb\u554f\u60a8\u6307\u7684\u662f\u54ea\u500b\u5730\u5340\uff1f",
+            requiredSourceCount: 1,
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            answerMode: "weather",
+            weather: { location: KAOHSIUNG_DALIAO },
+          })
+        )
+      );
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({ invoke });
+
+    const state = makePlannerState([new HumanMessage(question)]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+
+    expect(planned.plan?.answerMode).toBe("weather");
+    expect(planned.plan?.weather?.location).toBe(KAOHSIUNG_DALIAO);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(
+      deepResearcherWeatherTestInternals.routeAfterPlan({
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterPlan>[0])
+    ).toBe("targeted_tools");
+  });
+
+  it("limits missing-location weather extraction to one retry and skips the weather tool", async () => {
+    const question = "\u660e\u5929\u6703\u4e0b\u96e8\u55ce\uff1f";
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            question,
+            answerMode: "clarify",
+            rationale: "A location is required.",
+            queries: [],
+            urls: [],
+            clarification: "\u8acb\u554f\u8981\u67e5\u8a62\u54ea\u500b\u5730\u5340\uff1f",
+            requiredSourceCount: 1,
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            answerMode: "clarify",
+            clarification: "\u8acb\u63d0\u4f9b\u5730\u9ede\u3002",
+          })
+        )
+      );
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({ invoke });
+
+    const state = makePlannerState([new HumanMessage(question)]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+
+    expect(planned.plan?.answerMode).toBe("clarify");
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(toolResult.weatherExecution).toBeUndefined();
+    expect(toolResult.messages).toEqual([]);
+  });
+
+  it("rejects whole-question echoes as weather locations in planner and bounded extraction", async () => {
+    const question = "\u660e\u5929\u6703\u4e0b\u96e8\u55ce\uff1f";
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("Weather tool must not run for a missing-location request.");
+    }));
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            question,
+            answerMode: "weather",
+            rationale: "Weather forecast request.",
+            queries: [],
+            urls: [],
+            weather: {
+              location: question,
+              weatherCapability: "daily",
+              timeRange: { kind: "tomorrow", granularity: "daily" },
+            },
+            requiredSourceCount: 1,
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new AIMessage(
+          JSON.stringify({
+            answerMode: "weather",
+            weather: {
+              location: question,
+              weatherCapability: "daily",
+              timeRange: { kind: "tomorrow", granularity: "daily" },
+            },
+          })
+        )
+      );
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({ invoke });
+
+    const state = makePlannerState([new HumanMessage(question)]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+
+    expect(planned.plan?.answerMode).toBe("clarify");
+    expect(planned.plan?.weather).toBeUndefined();
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(toolResult.weatherExecution).toBeUndefined();
+    expect(toolResult.messages).toEqual([]);
+  });
+
+  it("does not run weather recovery or tools for a non-weather research plan", async () => {
+    const question = "\u4ecb\u7d39\u4e00\u4e0b\u5927\u5bee\u7684\u6b77\u53f2";
+    const invoke = vi.fn(async () =>
+      new AIMessage(
+        JSON.stringify({
+          question,
+          answerMode: "research",
+          rationale: "The user asks for local history.",
+          queries: [question],
+          urls: [],
+          requiredSourceCount: 3,
+        })
+      )
+    );
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({ invoke });
+
+    const state = makePlannerState([new HumanMessage(question)]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+
+    expect(planned.plan?.answerMode).toBe("research");
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(toolResult.weatherExecution).toBeUndefined();
+    expect(toolResult.messages).toEqual([]);
+  });
+
+  it("keeps provider ambiguity on the resolver clarification path", async () => {
+    const fetchMock = installAmbiguousSpringfieldFetchMock();
+    const invoke = vi.fn(async () =>
+      new AIMessage(
+        JSON.stringify({
+          question: "Springfield weather",
+          answerMode: "weather",
+          rationale: "Weather request with an ambiguous location.",
+          queries: [],
+          urls: [],
+          weather: { location: "Springfield" },
+          requiredSourceCount: 1,
+        })
+      )
+    );
+    vi.spyOn(llmGateway, "createChatModel").mockReturnValue({ invoke });
+
+    const state = makePlannerState([new HumanMessage("Springfield weather")]);
+    const planned = await deepResearcherWeatherTestInternals.planResearch(state, {});
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      {
+        ...state,
+        plan: planned.plan,
+      } as Parameters<typeof deepResearcherWeatherTestInternals.targetedTools>[0],
+      {}
+    );
+    const routedState = {
+      ...state,
+      ...toolResult,
+      plan: planned.plan,
+    } as Parameters<typeof deepResearcherWeatherTestInternals.routeAfterTargetedTools>[0];
+
+    expect(toolResult.weatherExecution?.status).toBe("needs_clarification");
+    expect(deepResearcherWeatherTestInternals.routeAfterTargetedTools(routedState)).toBe(
+      "clarify_interrupt"
+    );
+    expect((toolResult.messages?.[0] as { name?: string } | undefined)?.name).toBe(
+      "current_weather"
+    );
+    expect(
+      fetchMock.mock.calls.every(([input]) => {
+        const url = new URL(
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url
+        );
+        return url.hostname === "geocoding-api.open-meteo.com";
+      })
+    ).toBe(true);
   });
 
   it("plans a full Taipei weather question into a location request before invoking current_weather", async () => {
@@ -1488,7 +1908,7 @@ describe("Deep Research weather structured result integration", () => {
     expect(logs).not.toContain("sk-secret-value");
   });
 
-  it("uses JSON object response format for the planner model call", async () => {
+  it("uses native JSON mode only when the configured provider supports it", async () => {
     const createChatModel = vi.spyOn(llmGateway, "createChatModel").mockReturnValue({
       invoke: vi.fn(async () =>
         new AIMessage(
@@ -1508,11 +1928,14 @@ describe("Deep Research weather structured result integration", () => {
     const state = makePlannerState([new HumanMessage("Tokyo weather now")]);
     await deepResearcherWeatherTestInternals.planResearch(state, {});
 
-    expect(createChatModel).toHaveBeenCalledWith(
-      expect.objectContaining({
-        purpose: "research",
-        responseFormat: { type: "json_object" },
-      })
-    );
+    const options = createChatModel.mock.calls[0]?.[0];
+    expect(options).toEqual(expect.objectContaining({ purpose: "research" }));
+    if (getConfiguredLlmCapabilities("research").supportsStructuredOutput) {
+      expect(options).toEqual(
+        expect.objectContaining({ responseFormat: { type: "json_object" } })
+      );
+    } else {
+      expect(options).not.toHaveProperty("responseFormat");
+    }
   });
 });
