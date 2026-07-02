@@ -43,7 +43,7 @@ export interface LlmGateway {
 export type LlmProviderName = "ccr" | "openai-compatible" | "qwen";
 export type LlmEndpointKind = "anthropic-messages" | "openai-chat-completions";
 
-type LlmCapabilities = {
+export type LlmCapabilities = {
   supportsStructuredOutput: boolean;
   supportsToolCalling: boolean;
   supportsVision: boolean;
@@ -1076,6 +1076,12 @@ export function describeLlmGatewayConfig(): Record<string, string | boolean> {
         ? Boolean(getOpenAiCompatibleApiKey())
         : Boolean(getQwenApiKey()),
   };
+}
+
+export function getConfiguredLlmCapabilities(
+  purpose: ModelPurpose = "chat"
+): Readonly<LlmCapabilities> {
+  return capabilitiesForProvider(getConfiguredLlmProvider(), purpose);
 }
 
 export const llmGateway: LlmGateway = createGateway();

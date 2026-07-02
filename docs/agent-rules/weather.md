@@ -65,6 +65,14 @@ weatherCapability
 
 不得直接宣稱地理實體解析成功。
 
+Planner 輸出進入 Graph 路由前，必須通過 Weather Plan Consistency Gate：
+
+- `answerMode = "clarify"` 且既有 Runtime Validation 已接受非空 `weather.location` 時，正規化為 `answerMode = "weather"`。
+- Gate 啟動時必須清除 Planner 留下的 `clarification`，避免 plan 同時表達 weather execution 與 stale clarification。
+- Gate 必須是 deterministic pure function，不得增加 LLM call、Provider call 或 I/O。
+- `answerMode = "clarify"` 且沒有有效 location 時不得觸發 Gate，仍由既有 bounded extraction 或 Planner clarification 處理。
+- `direct`、`research`、`calculation` 與合法 `weather` plan 不得被 Gate 改變。
+
 `queryName` is an optional planner hint for Chinese or mixed-Chinese weather locations.
 It may contain a geocoding-friendly Latin place name, but it must not replace the
 user's original `location`/raw location text. The resolver may try `queryName`
@@ -140,6 +148,8 @@ Resolver 必須：
 - 在 Provider 失敗時回傳 `provider_error`，不得回傳 `not_found`。
 - 在逾時時回傳 `timeout`。
 - 在取消時回傳 `cancelled`。
+- country只能排除不同國家候選；若同國候選分數接近但行政區不同，且沒有region，
+  必須回傳 `ambiguous`，不得因 queryName存在而自動選擇第一候選。
 
 受限制的 LLM Repair 只能：
 

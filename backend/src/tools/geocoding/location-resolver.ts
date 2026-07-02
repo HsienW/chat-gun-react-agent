@@ -205,6 +205,25 @@ function scoreAndResolve(
     };
   }
 
+  const hasUnresolvedAdministrativeAmbiguity =
+    Boolean(query.country) &&
+    !query.region &&
+    second !== undefined &&
+    best.score - second.score < options.ambiguityDelta &&
+    isSameCandidateCountry(best.candidate, second.candidate) &&
+    hasDifferentAdministrativeAreas(best.candidate, second.candidate);
+  if (hasUnresolvedAdministrativeAmbiguity) {
+    return {
+      status: "ambiguous",
+      query,
+      candidates: scored
+        .slice(0, options.maxCandidates)
+        .map((scoredCandidate) => scoredCandidate.candidate),
+      reason: "missing_country_or_region",
+      attemptedQueries,
+    };
+  }
+
   const dominant = !hasContext
     ? findDominantProminence(query, scored, options.minScore)
     : undefined;
@@ -265,6 +284,32 @@ function dedupKey(candidate: LocationCandidate): string {
   const lat = Math.round(candidate.latitude * 100) / 100;
   const lng = Math.round(candidate.longitude * 100) / 100;
   return `${candidate.provider}:coords:${lat}:${lng}`;
+}
+
+function isSameCandidateCountry(
+  first: LocationCandidate,
+  second: LocationCandidate
+): boolean {
+  const firstCountry = first.countryCode || first.country;
+  const secondCountry = second.countryCode || second.country;
+  return Boolean(
+    firstCountry &&
+    secondCountry &&
+    normalizeComparable(firstCountry) === normalizeComparable(secondCountry)
+  );
+}
+
+function hasDifferentAdministrativeAreas(
+  first: LocationCandidate,
+  second: LocationCandidate
+): boolean {
+  const firstArea = [first.admin1, first.admin2].filter(Boolean).join("|");
+  const secondArea = [second.admin1, second.admin2].filter(Boolean).join("|");
+  return Boolean(
+    firstArea &&
+    secondArea &&
+    normalizeComparable(firstArea) !== normalizeComparable(secondArea)
+  );
 }
 
 function mergeLocationCandidate(

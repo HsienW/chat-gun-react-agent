@@ -88,6 +88,15 @@ describe("deep researcher query workflow contract", () => {
     ).toBe("targeted_tools");
     expect(
       deepResearcherQueryContractTestInternals.routeAfterPlan(
+        stateWithPlan({
+          ...basePlan,
+          answerMode: "weather",
+          weather: { location: "Kaohsiung Daliao" },
+        })
+      )
+    ).toBe("targeted_tools");
+    expect(
+      deepResearcherQueryContractTestInternals.routeAfterPlan(
         stateWithPlan({ ...basePlan, answerMode: "clarify", clarification: "Need detail." })
       )
     ).toBe("synthesize");
