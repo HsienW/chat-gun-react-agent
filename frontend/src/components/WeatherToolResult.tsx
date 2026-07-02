@@ -11,10 +11,19 @@ import { useState, type KeyboardEvent } from 'react';
 import { MapPin, AlertTriangle, SearchX, Clock, CheckCircle, HelpCircle, CloudSun, Send, XCircle } from 'lucide-react';
 import type { WeatherForecastSuccessResult, WeatherSuccessResult, WeatherToolResult } from '@/types/weather';
 
+export type ClarificationReplyPayload = {
+  userReply: string;
+  candidateIndex?: number;
+};
+
+export type ClarificationResumeValue =
+  | ClarificationReplyPayload
+  | { cancel: true };
+
 interface WeatherToolResultCardProps {
   content: string;
   isResuming?: boolean;
-  onClarificationReply?: (replyText: string) => void;
+  onClarificationReply?: (payload: ClarificationReplyPayload) => void;
   onClarificationCancel?: () => void;
 }
 
@@ -311,17 +320,21 @@ export function WeatherClarificationInteractive({
 }: {
   result: NonNullable<ReturnType<typeof parseWeatherToolResult>> & { status: 'needs_clarification' };
   isResuming: boolean;
-  onReply: (replyText: string) => void;
+  onReply: (payload: ClarificationReplyPayload) => void;
   onCancel?: () => void;
 }) {
   const candidates = result.candidates.slice(0, 5);
   const [replyText, setReplyText] = useState('');
+  const [selectedIndex, setSelectedIndex] = useState<number | undefined>();
   const trimmedReply = replyText.trim();
   const canSubmit = Boolean(trimmedReply) && !isResuming;
 
   const submitReply = () => {
     if (!canSubmit) return;
-    onReply(trimmedReply);
+    onReply({
+      userReply: trimmedReply,
+      ...(selectedIndex !== undefined ? { candidateIndex: selectedIndex } : {}),
+    });
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -340,13 +353,17 @@ export function WeatherClarificationInteractive({
       {candidates.length > 0 ? (
         <div className="space-y-1.5">
           {candidates.map((candidate, index) => {
-            const isSelected = replyText === candidate.displayName;
+            const candidateIndex = index + 1;
+            const isSelected = selectedIndex === candidateIndex;
             return (
               <button
                 key={`${candidate.name}-${candidate.countryCode ?? 'unknown'}-${index}`}
                 type="button"
                 disabled={isResuming}
-                onClick={() => setReplyText(candidate.displayName)}
+                onClick={() => {
+                  setReplyText(candidate.displayName);
+                  setSelectedIndex(candidateIndex);
+                }}
                 className={`w-full text-left text-xs px-2 py-2 rounded border transition-colors ${
                   isSelected
                     ? 'bg-blue-500/15 border-blue-400/50'
@@ -378,7 +395,16 @@ export function WeatherClarificationInteractive({
         <input
           value={replyText}
           disabled={isResuming}
-          onChange={(event) => setReplyText(event.target.value)}
+          onChange={(event) => {
+            const nextReplyText = event.target.value;
+            setReplyText(nextReplyText);
+            if (
+              selectedIndex !== undefined &&
+              candidates[selectedIndex - 1]?.displayName !== nextReplyText
+            ) {
+              setSelectedIndex(undefined);
+            }
+          }}
           onKeyDown={handleKeyDown}
           placeholder="Enter a more specific location"
           className="min-w-0 flex-1 rounded border border-[#5A4036]/60 bg-[#1a1a1a]/70 px-3 py-2 text-xs text-[#F8F1E7] outline-none focus:border-blue-400/60 disabled:opacity-60"

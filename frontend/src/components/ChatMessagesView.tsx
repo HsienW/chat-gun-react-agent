@@ -21,7 +21,10 @@ import {
 } from '@/types/messages';
 import { ToolCall } from '@/types/tools';
 import type { ProcessedImageAttachment } from '@/lib/image-upload';
-import { DEFAULT_MODEL } from '@/types/models';
+import type {
+  ClarificationReplyPayload,
+  ClarificationResumeValue,
+} from '@/components/WeatherToolResult';
 
 type ToolMessageDisplayProps = React.ComponentProps<typeof ToolMessageDisplay>;
 
@@ -359,7 +362,7 @@ interface AiMessageBubbleProps {
   copiedMessageId: string | null;
   selectedAgentId: string;
   allMessages: Message[];
-  onClarificationReply: (replyText: string) => void;
+  onClarificationReply: (payload: ClarificationReplyPayload) => void;
   onClarificationCancel: () => void;
 }
 
@@ -525,6 +528,7 @@ interface ChatMessagesViewProps {
   historicalActivities: Record<string, ProcessedEvent[]>;
   selectedAgentId: string;
   onAgentChange: (agentId: string) => void;
+  onClarificationResume?: (resumeValue: ClarificationResumeValue) => void;
 }
 
 export function ChatMessagesView({
@@ -537,6 +541,7 @@ export function ChatMessagesView({
   historicalActivities,
   selectedAgentId,
   onAgentChange,
+  onClarificationResume,
 }: ChatMessagesViewProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -564,15 +569,15 @@ export function ChatMessagesView({
 
   // 將 messages 分組，合併相關 AI responses 與 tool calls
   const handleClarificationReply = useCallback(
-    (replyText: string) => {
-      onSubmit(replyText, 'medium', DEFAULT_MODEL, selectedAgentId, []);
+    (payload: ClarificationReplyPayload) => {
+      onClarificationResume?.(payload);
     },
-    [onSubmit, selectedAgentId]
+    [onClarificationResume]
   );
 
   const handleClarificationCancel = useCallback(() => {
-    onSubmit('cancel', 'medium', DEFAULT_MODEL, selectedAgentId, []);
-  }, [onSubmit, selectedAgentId]);
+    onClarificationResume?.({ cancel: true });
+  }, [onClarificationResume]);
 
   const messageGroups = useMemo(() => groupMessages(messages), [messages]);
 

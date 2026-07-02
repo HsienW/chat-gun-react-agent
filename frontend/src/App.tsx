@@ -25,6 +25,7 @@ import {
   classifyStreamError,
   isStreamAbortError,
 } from '@/lib/stream-error-classification';
+import type { ClarificationResumeValue } from '@/components/WeatherToolResult';
 
 const STREAM_ERROR_MESSAGE_ID = 'stream-error';
 const WEATHER_CLARIFICATION_AI_MESSAGE_ID = 'weather-clarification-interrupt-ai';
@@ -127,6 +128,7 @@ export default function App() {
   const selectedAgentIdRef = useRef(selectedAgentId);
   const messagesRef = useRef<Message[]>([]);
   const streamActivityStateRef = useRef(streamActivityState);
+  const clarificationResumePendingRef = useRef(false);
 
   useEffect(() => {
     selectedAgentIdRef.current = selectedAgentId;
@@ -155,6 +157,7 @@ export default function App() {
         });
         setCancelledMessage(null);
         setWeatherClarificationMessages(null);
+        clarificationResumePendingRef.current = false;
       }
     },
     [selectedAgentId, validateAgentId]
@@ -169,6 +172,10 @@ export default function App() {
   );
 
   const handleStreamError = useCallback((error: unknown) => {
+    if (clarificationResumePendingRef.current) {
+      setWeatherClarificationMessages(null);
+    }
+    clarificationResumePendingRef.current = false;
     // Best-effort fast path; reducer terminal idempotency is the primary guard.
     if (
       isStreamAbortError(error) &&
@@ -191,6 +198,10 @@ export default function App() {
 
   const handleStreamFinish = useCallback((event: unknown) => {
     void event;
+    if (clarificationResumePendingRef.current) {
+      setWeatherClarificationMessages(null);
+    }
+    clarificationResumePendingRef.current = false;
     dispatchStreamActivity({
       type: 'streamFinished',
       messagesLengthAtTerminal: messagesRef.current.length,
@@ -199,7 +210,9 @@ export default function App() {
   }, []);
 
   const handleStreamUpdate = useCallback((event: Record<string, unknown>) => {
-    if (isLangGraphInterruptEvent(event)) {
+    const isInterruptEvent = isLangGraphInterruptEvent(event);
+    if (isInterruptEvent) {
+      clarificationResumePendingRef.current = false;
       const toolResult = extractWeatherClarificationInterruptToolResult(event);
       if (toolResult) {
         setWeatherClarificationMessages(
@@ -211,6 +224,9 @@ export default function App() {
         messagesLengthAtTerminal: messagesRef.current.length,
         archiveMessageId: getCurrentFinalAssistantMessageId(messagesRef.current),
       });
+    } else if (clarificationResumePendingRef.current) {
+      clarificationResumePendingRef.current = false;
+      setWeatherClarificationMessages(null);
     }
 
     const currentAgent = getAgentById(selectedAgentIdRef.current);
@@ -272,6 +288,8 @@ export default function App() {
       agentId: string,
       attachments: ProcessedImageAttachment[]
     ) => {
+      if (weatherClarificationMessages) return;
+
       const validAgentId = validateAgentId(agentId);
       if (!submittedInputValue.trim() && attachments.length === 0) return;
 
@@ -325,10 +343,27 @@ export default function App() {
         });
       }
     },
-    [validateAgentId, handleAgentSwitch, thread]
+    [validateAgentId, handleAgentSwitch, thread, weatherClarificationMessages]
+  );
+
+  const handleClarificationResume = useCallback(
+    (resumeValue: ClarificationResumeValue) => {
+      dispatchStreamActivity({ type: 'resetForAgentOrSubmit' });
+      dispatchStreamActivity({ type: 'streamStarted' });
+      setStreamErrorMessage(null);
+      setCancelledMessage(null);
+      clarificationResumePendingRef.current = true;
+
+      thread.submit(null, {
+        command: { resume: resumeValue },
+      });
+    },
+    [thread]
   );
 
   const handleCancel = useCallback(() => {
+    clarificationResumePendingRef.current = false;
+    setWeatherClarificationMessages(null);
     const localCancelledMessage = createCancelledAssistantMessage();
     dispatchStreamActivity({
       type: 'streamCancelled',
@@ -367,7 +402,9 @@ export default function App() {
         : messagesWithWeatherClarification,
     [messagesWithWeatherClarification, cancelledMessage]
   );
-  const isChatLoading = thread.isLoading && !weatherClarificationMessages;
+  const isChatLoading =
+    thread.isLoading &&
+    (!weatherClarificationMessages || clarificationResumePendingRef.current);
 
   useEffect(() => {
     if (scrollAreaRef.current) {
@@ -411,6 +448,7 @@ export default function App() {
               historicalActivities={streamActivityState.historicalActivities}
               selectedAgentId={selectedAgentId}
               onAgentChange={handleAgentChange}
+              onClarificationResume={handleClarificationResume}
             />
           )}
         </div>

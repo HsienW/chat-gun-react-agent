@@ -198,7 +198,7 @@ describe('WeatherToolResultCard', () => {
     expect(screen.getByText('Springfield, Missouri')).toBeTruthy();
   });
 
-  it('renders interactive clarification and only submits after manual confirmation', () => {
+  it('submits a selected candidate with its 1-based candidate index', () => {
     const onReply = vi.fn();
     const result: WeatherToolResult = {
       schemaVersion: '1.0',
@@ -218,13 +218,43 @@ describe('WeatherToolResultCard', () => {
     fireEvent.click(screen.getByText('Springfield, Missouri'));
     expect(onReply).not.toHaveBeenCalled();
     expect(screen.getByDisplayValue('Springfield, Missouri')).toBeTruthy();
+    fireEvent.click(screen.getByText('Submit'));
 
+    expect(onReply).toHaveBeenCalledWith({
+      userReply: 'Springfield, Missouri',
+      candidateIndex: 2,
+    });
+  });
+
+  it('clears candidateIndex after editing a selected candidate', () => {
+    const onReply = vi.fn();
+    const result: WeatherToolResult = {
+      schemaVersion: '1.0',
+      tool: 'current_weather',
+      status: 'needs_clarification',
+      requestedLocation: { raw: 'Springfield', location: 'Springfield' },
+      candidates: [
+        { name: 'Springfield', displayName: 'Springfield, Illinois', country: 'United States', admin1: 'Illinois' },
+        { name: 'Springfield', displayName: 'Springfield, Missouri', country: 'United States', admin1: 'Missouri' },
+      ],
+      message: 'Which Springfield?',
+      summary: 'Ambiguous location',
+    };
+
+    render(<WeatherToolResultCard content={JSON.stringify(result)} onClarificationReply={onReply} />);
+
+    fireEvent.click(screen.getByText('Springfield, Missouri'));
     fireEvent.change(screen.getByDisplayValue('Springfield, Missouri'), {
       target: { value: 'Springfield, Missouri, United States' },
     });
+    fireEvent.change(screen.getByDisplayValue('Springfield, Missouri, United States'), {
+      target: { value: 'Springfield, Missouri' },
+    });
     fireEvent.click(screen.getByText('Submit'));
 
-    expect(onReply).toHaveBeenCalledWith('Springfield, Missouri, United States');
+    expect(onReply).toHaveBeenCalledWith({
+      userReply: 'Springfield, Missouri',
+    });
   });
 
   it('prevents empty clarification submission and disables controls while resuming', () => {
@@ -262,6 +292,33 @@ describe('WeatherToolResultCard', () => {
 
     expect(screen.getByPlaceholderText('Enter a more specific location').hasAttribute('disabled')).toBe(true);
     expect(screen.getByText('Cancel').closest('button')?.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('calls onClarificationCancel when the user cancels', () => {
+    const onReply = vi.fn();
+    const onCancel = vi.fn();
+    const result: WeatherToolResult = {
+      schemaVersion: '1.0',
+      tool: 'current_weather',
+      status: 'needs_clarification',
+      requestedLocation: { raw: 'Springfield', location: 'Springfield' },
+      candidates: [],
+      message: 'Which Springfield?',
+      summary: 'Ambiguous location',
+    };
+
+    render(
+      <WeatherToolResultCard
+        content={JSON.stringify(result)}
+        onClarificationReply={onReply}
+        onClarificationCancel={onCancel}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Cancel'));
+
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onReply).not.toHaveBeenCalled();
   });
 
   it('should render not_found status', () => {
