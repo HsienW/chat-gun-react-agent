@@ -234,3 +234,25 @@ WEATHER_STRUCTURED_RESULT_ENABLED=true
 8. Backend、BFF、Frontend Build 全部通過。
 9. 新增的 Backend 與 Frontend Test 全部通過。
 10. `openspec validate generalize-weather-location-resolution` 通過。
+
+## Reopen record
+
+### 2026-07-03 Reopen: Timeout / Cancellation / Terminal State Closure
+
+人工測試發現（`倫敦天氣？` → 點選 London 候選 → 15s governance timeout → 模型再次輸出「倫敦對應多個城市」）：
+
+**根因**：
+- Tool governance 15s deadline < forecast retry budget ≈ 16.5s（8s × 2 + backoff）
+- Governance `Promise.race` 未傳遞 AbortSignal 至底層 fetch
+- Governance error 回傳自然語言字串，`parseWeatherToolResult()` 無法解析 → `weatherExecution` 不收斂為 terminal
+- Messages reducer 為累加模式，舊 clarification ToolResult 仍存在
+- Synthesis 將所有歷史 ToolMessage 餵給模型 → 模型重新輸出多候選
+
+**修正方向**（不另開新 change，在現有 change 內補充 corrective tasks）：
+1. fetchWithRetry 接收外層 deadline，retry 預算不得超過 deadline
+2. Governance timeout 透過 AbortSignal 取消底層 fetch
+3. parseWeatherToolResult 失敗時仍建立 weatherExecution: failed
+4. Resume 後的 synthesis 不採用舊 clarification evidence
+5. 新增 timeout-resume 整合測試
+
+詳見 `tasks.md` §12 Corrective Tasks。

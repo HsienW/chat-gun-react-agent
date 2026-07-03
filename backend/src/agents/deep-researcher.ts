@@ -89,6 +89,8 @@ const DEEP_RESEARCH_TOOL_NAMES = {
   webFetch: "web_fetch",
   weatherGeocodingStage: "weather_geocoding",
 } as const;
+const WEATHER_SYNTHESIS_FALLBACK_MESSAGE =
+  "The weather service is temporarily unable to respond. Please try again later.";
 
 type AnswerMode = "direct" | "weather" | "calculation" | "research" | "clarify";
 type Freshness = "pd" | "pw" | "pm" | "py";
@@ -745,7 +747,60 @@ function parseWeatherToolResult(content: string): WeatherToolResult | undefined 
   return undefined;
 }
 
-function getWeatherToolNameForRequest(request: WeatherRequest): string {
+type WeatherToolName = "current_weather" | "weather_forecast";
+
+function resolveWeatherToolOutcome(
+  content: string,
+  request: LocationQuery,
+  toolName: WeatherToolName
+): { result: WeatherToolResult; messageContent: string } {
+  const parsedResult = parseWeatherToolResult(content);
+  if (parsedResult) {
+    return { result: parsedResult, messageContent: content };
+  }
+
+  const isGovernanceTimeout =
+    /\[governance_timeout\]/i.test(content) ||
+    /tool execution timed out/i.test(content);
+  const code = isGovernanceTimeout
+    ? "weather_timeout"
+    : "weather_unknown_error";
+  const message = isGovernanceTimeout
+    ? "Weather lookup exceeded the governed deadline."
+    : "Weather tool returned an invalid result.";
+  const summary = isGovernanceTimeout
+    ? "Weather lookup timed out."
+    : "Weather service returned an invalid response.";
+  const result: WeatherToolResult =
+    toolName === DEEP_RESEARCH_TOOL_NAMES.weatherForecast
+      ? {
+          schemaVersion: "1.1",
+          tool: "weather_forecast",
+          status: "error",
+          requestedLocation: request,
+          code,
+          retryable: isGovernanceTimeout,
+          message,
+          summary,
+        }
+      : {
+          schemaVersion: "1.0",
+          tool: "current_weather",
+          status: "error",
+          requestedLocation: request,
+          code,
+          retryable: isGovernanceTimeout,
+          message,
+          summary,
+        };
+
+  return {
+    result,
+    messageContent: JSON.stringify(result),
+  };
+}
+
+function getWeatherToolNameForRequest(request: WeatherRequest): WeatherToolName {
   return request.weatherCapability === "hourly" || request.weatherCapability === "daily"
     ? DEEP_RESEARCH_TOOL_NAMES.weatherForecast
     : DEEP_RESEARCH_TOOL_NAMES.currentWeather;
@@ -1340,13 +1395,17 @@ async function targetedTools(
     if (rawRequest.locale) {
       input.locale = rawRequest.locale;
     }
-    let content = await invokeTool(toolName, input, _config);
-
-    // Try to parse as structured result
-    let parsedResult = parseWeatherToolResult(content);
+    const initialContent = await invokeTool(toolName, input, _config);
+    const initialOutcome = resolveWeatherToolOutcome(
+      initialContent,
+      request,
+      toolName
+    );
+    let content = initialOutcome.messageContent;
+    let parsedResult = initialOutcome.result;
 
     // LLM Repair: only for not_found, and only once — Task 5.11, 5.12, 5.13
-    if (parsedResult && shouldRepairWeatherRequest(parsedResult) && !requestWasAlreadyRepaired(request, state)) {
+    if (shouldRepairWeatherRequest(parsedResult) && !requestWasAlreadyRepaired(request, state)) {
       await recordWeatherAuditEvent("weather.location.repair.attempt", {
         raw: request.raw,
         strategy: "llm_repair",
@@ -1381,10 +1440,12 @@ async function targetedTools(
           } as Record<string, unknown>,
           _config
         );
-        const retryParsed = parseWeatherToolResult(retryContent);
-        if (!retryParsed) {
-          continue;
-        }
+        const retryOutcome = resolveWeatherToolOutcome(
+          retryContent,
+          repairedRequest,
+          toolName
+        );
+        const retryParsed = retryOutcome.result;
 
         await recordWeatherAuditEvent("weather.location.repair.result", {
           raw: repairedRequest.raw,
@@ -1396,17 +1457,26 @@ async function targetedTools(
         });
 
         if (retryParsed.status === "success" || retryParsed.status === "error") {
-          terminalRepairResult = { content: retryContent, result: retryParsed };
+          terminalRepairResult = {
+            content: retryOutcome.messageContent,
+            result: retryParsed,
+          };
           break;
         }
 
         if (retryParsed.status === "needs_clarification" && !firstClarification) {
-          firstClarification = { content: retryContent, result: retryParsed };
+          firstClarification = {
+            content: retryOutcome.messageContent,
+            result: retryParsed,
+          };
           continue;
         }
 
         if (retryParsed.status === "not_found") {
-          lastNotFound = { content: retryContent, result: retryParsed };
+          lastNotFound = {
+            content: retryOutcome.messageContent,
+            result: retryParsed,
+          };
         }
       }
 
@@ -1426,16 +1496,12 @@ async function targetedTools(
     }
 
     // Set weatherExecution based on structured result — Task 5.2
-    if (parsedResult) {
-      if (parsedResult.status === "success") {
-        weatherExecution = { status: "success", result: parsedResult };
-      } else if (parsedResult.status === "needs_clarification") {
-        weatherExecution = { status: "needs_clarification", result: parsedResult };
-      } else if (parsedResult.status === "not_found") {
-        weatherExecution = { status: "failed", result: parsedResult };
-      } else {
-        weatherExecution = { status: "failed", result: parsedResult };
-      }
+    if (parsedResult.status === "success") {
+      weatherExecution = { status: "success", result: parsedResult };
+    } else if (parsedResult.status === "needs_clarification") {
+      weatherExecution = { status: "needs_clarification", result: parsedResult };
+    } else {
+      weatherExecution = { status: "failed", result: parsedResult };
     }
 
     messages.push(createToolMessage(toolName, content));
@@ -2460,8 +2526,10 @@ export const deepResearcherWeatherTestInternals = {
   normalizeWeatherPlanConsistency,
   routeAfterPlan,
   parseWeatherToolResult,
+  resolveWeatherToolOutcome,
   repairWeatherRequest,
   buildWeatherToolAnswer,
+  synthesizeAnswer,
   targetedTools,
   routeAfterTargetedTools,
   clarifyInterrupt,
@@ -2517,6 +2585,15 @@ async function synthesizeAnswer(
     const content = plan.clarification ?? "Please clarify the request before I continue.";
     return {
       messages: [new AIMessage(content)],
+    };
+  }
+
+  if (plan.answerMode === "weather") {
+    const weatherAnswer = buildWeatherToolAnswer(state);
+    return {
+      messages: [
+        weatherAnswer ?? new AIMessage(WEATHER_SYNTHESIS_FALLBACK_MESSAGE),
+      ],
     };
   }
 

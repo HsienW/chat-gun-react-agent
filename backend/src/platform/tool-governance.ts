@@ -1,4 +1,5 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
+import type { RunnableConfig } from "@langchain/core/runnables";
 
 import { auditLogger, recordMetric } from "./observability.js";
 
@@ -21,6 +22,7 @@ export interface GovernedTool {
 const DEFAULT_TOOL_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_INPUT_CHARS = 8_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 24_000;
+const GOVERNANCE_TIMEOUT_PREFIX = "[governance_timeout]";
 const governedTools = new WeakSet<object>();
 
 function toolEnvName(toolName: string): string {
@@ -80,19 +82,74 @@ function truncateOutput(toolName: string, output: unknown, maxOutputChars: numbe
   return `${text.slice(0, maxOutputChars)}\n\n[Tool output truncated by governance: ${toolName}, ${maxOutputChars} characters]`;
 }
 
-function withTimeout<T>(operation: Promise<T>, timeoutMs: number, toolName: string): Promise<T> {
+function getAbortSignal(config: unknown): AbortSignal | undefined {
+  if (!config || typeof config !== "object") {
+    return undefined;
+  }
+
+  const runnableConfig = config as RunnableConfig;
+  const configurable = runnableConfig.configurable as
+    | { abortSignal?: unknown }
+    | undefined;
+  const signal = configurable?.abortSignal ?? runnableConfig.signal;
+  return signal instanceof AbortSignal ? signal : undefined;
+}
+
+function withGovernanceSignal(
+  config: unknown,
+  signal: AbortSignal
+): RunnableConfig {
+  const runnableConfig =
+    config && typeof config === "object" ? (config as RunnableConfig) : {};
+  const configurable =
+    runnableConfig.configurable &&
+    typeof runnableConfig.configurable === "object"
+      ? runnableConfig.configurable
+      : {};
+
+  return {
+    ...runnableConfig,
+    signal,
+    configurable: {
+      ...configurable,
+      abortSignal: signal,
+    },
+  };
+}
+
+function withTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  toolName: string,
+  externalSignal?: AbortSignal
+): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
+  const controller = new AbortController();
+  const forwardExternalAbort = () => controller.abort(externalSignal?.reason);
+
+  if (externalSignal?.aborted) {
+    forwardExternalAbort();
+  } else {
+    externalSignal?.addEventListener("abort", forwardExternalAbort, {
+      once: true,
+    });
+  }
 
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {
-      reject(new Error(`tool execution timed out after ${timeoutMs}ms: ${toolName}`));
+      const timeoutError = new Error(
+        `${GOVERNANCE_TIMEOUT_PREFIX} tool execution timed out after ${timeoutMs}ms: ${toolName}`
+      );
+      controller.abort(timeoutError);
+      reject(timeoutError);
     }, timeoutMs);
   });
 
-  return Promise.race([operation, timeoutPromise]).finally(() => {
+  return Promise.race([operation(controller.signal), timeoutPromise]).finally(() => {
     if (timeout) {
       clearTimeout(timeout);
     }
+    externalSignal?.removeEventListener("abort", forwardExternalAbort);
   });
 }
 
@@ -178,10 +235,16 @@ function wrapToolWithGovernance(
     await auditToolEvent("tool.invoke.start", policy, commonAuditPayload);
 
     try {
+      const externalSignal = getAbortSignal(config);
       const result = await withTimeout(
-        sourceTool.invoke(input as never, config as never),
+        (signal) =>
+          sourceTool.invoke(
+            input as never,
+            withGovernanceSignal(config, signal) as never
+          ),
         policy.timeoutMs,
-        sourceTool.name
+        sourceTool.name,
+        externalSignal
       );
       const governedResult = truncateOutput(
         sourceTool.name,
