@@ -4,9 +4,18 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-JS-06B6D4)](https://langchain-ai.github.io/langgraphjs/)
 [![Source](https://img.shields.io/badge/Source-Ylang--Labs%2Flanggraph--react--agent--studio-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
 
-Chat Gun React Agent 是一個以 React、TypeScript、LangGraph JS、Qwen / OpenAI-compatible 模型供應商、原生 tools 與選用 MCP tools 組成的 Fullstack AI agent studio。
+Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 為核心的全端 Agent Chat 系統，整合 Qwen／OpenAI-compatible 模型供應商、原生 Tools 與可選用的 MCP Tools。
 
-💡 本專案僅做個人研究使用 (This project is for personal research use only)。
+專案涵蓋多階段 Agent Workflow、Tool Calling、Human-in-the-Loop、串流執行事件、圖片輸入、Deep Research、BFF 服務層、工具安全治理與容器化部署，定位為可部署、可擴充，並面向準生產環境驗證的產品化 Agent Chat 實作。
+
+💡 本專案主要用於個人研究、Agent 工程實踐與架構驗證。目前適合在受控環境中部署與試運行，尚不代表已完成公開多租戶、高併發及 SLA 等級的正式生產驗證。
+
+
+Chat Gun React Agent is a full-stack Agent Chat system built with React, TypeScript, and LangGraph JS. It integrates Qwen and OpenAI-compatible model providers, native tools, and optional MCP tools.
+
+The project includes multi-stage agent workflows, tool calling, human-in-the-loop interactions, streaming execution events, image input, deep research, a BFF service layer, tool security governance, and containerized deployment. It is designed as a deployable and extensible Agent Chat implementation for production-oriented engineering and pre-production validation.
+
+This project is primarily intended for personal research, agent engineering practice, and architecture validation. It is suitable for deployment and evaluation in controlled environments, but it has not yet completed the multi-tenant, high-concurrency, and SLA validation required for a public production service.
 
 ## Demo
 
