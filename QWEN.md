@@ -48,7 +48,7 @@ Qwen Code／百煉千問是 Secondary Architecture Reviewer，預設唯讀，負
 Reviewer 工作階段一律不得：
 - 修改原始碼、OpenSpec 或設定。
 - 安裝、移除或升級套件。
-- 執行會寫入工作目錄的命令。
+- 執行會寫入工作目錄的命令（`.agent-runtime/<change-id>/artifacts/` 除外）。
 - 切換分支、提交、推送或改寫 Git 歷史。
 - 執行破壞性、正式環境或高風險外部操作。
 
@@ -58,8 +58,9 @@ Qwen Reviewer 的強制邊界：
 - 主工作階段不得以 `auto-edit` 或 `yolo` 啟動。
 - 必須使用 `secondary-architecture-reviewer` Subagent。
 - Subagent 必須維持 `approvalMode: plan`。
-- 只允許讀檔、批次讀檔、搜尋、Glob、列目錄與載入 Skill。
-- 不得使用 Shell、Edit、Write、Web Fetch 或任何未列入白名單的 MCP Tool。
+- 只允許讀檔、批次讀檔、搜尋、Glob、列目錄、載入 Skill 與 Write。
+- Write 僅限寫入 `.agent-runtime/<change-id>/artifacts/` 路徑，不得寫入其他任何位置。
+- 不得使用 Shell、Edit、Web Fetch 或任何未列入白名單的 MCP Tool。
 - 若父工作階段的權限可能覆蓋 Subagent 的 `plan` 邊界，必須停止並輸出 `INCOMPLETE`。
 
 ## 3. 載入順序
@@ -310,5 +311,6 @@ Qwen 可唯讀存取目前 Change 的 `current-state.json`，以及目前 Handof
 - 標準 Markdown Review Result 仍依 §11 輸出。
 - 同一份審查資料必須同時序列化為符合 `agent-result.schema.json` 的 `review_result` JSON；`producer` 為 `Qwen`，`kind` 為 `review_result`。
 - Markdown 與 JSON 的 Verdict、Findings、驗證結果與殘餘風險必須語意一致，不得分別維護互相漂移的結論。
-- JSON 只輸出到 stdout／聊天回應；預期保存路徑為 `.agent-runtime/<change-id>/artifacts/review-result.json`。
-- 寫檔、Schema 驗證與 CurrentState 更新由人工或 CLIHost 負責。Qwen 不得使用 Write、Edit、Bash、WebFetch 或其他寫入能力。
+- Qwen 必須使用 Write 將 `review_result` JSON 寫入 `.agent-runtime/<change-id>/artifacts/review-result.json`。
+- Write 僅允許寫入 `.agent-runtime/<change-id>/artifacts/` 路徑，不得寫入 `current-state.json`、`openspec/`、原始碼或任何其他位置。
+- `current-state.json` 更新與 Schema 驗證仍由人工或 CLIHost 負責。

@@ -244,7 +244,7 @@ export const InputForm: React.FC<InputFormProps> = ({
   };
 
   const controlClass =
-    'flex flex-row gap-2 bg-card/90 border border-border text-[#E7D9C1] rounded-xl rounded-t-sm pl-2 max-w-[100%] sm:max-w-[90%] shadow-sm';
+    'flex flex-row gap-2 bg-card/90 border border-border text-[#E7D9C1] rounded-xl rounded-t-sm pl-2 pr-2 max-w-[100%] sm:max-w-[90%] shadow-sm';
   const selectContentClass =
     'bg-card border-border text-[#E7D9C1] cursor-pointer';
   const selectItemClass =

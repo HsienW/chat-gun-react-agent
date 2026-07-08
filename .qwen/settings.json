@@ -8,12 +8,12 @@
   "permissions": {
     "deny": [
       "Edit",
-      "Write",
       "Bash",
       "WebFetch"
     ],
     "allow": [
-      "Agent(general-purpose)"
+      "Agent(general-purpose)",
+      "Write"
     ]
   },
   "memory": {
