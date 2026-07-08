@@ -486,4 +486,6 @@ Agent 預設不得讀取 `.gitignore` 已忽略內容。只有下列條件全部
 3. `relativePath` 只能以 `openspec/changes/` 或 `.agent-runtime/` 開頭，不得包含 `..`、絕對路徑或指向 Repository／Runtime Root 外。
 4. 讀取前確認檔案存在；內容不得包含 Secret、API Key、Token、Password 或 Credential。
 
-不得遞迴掃描 `.agent-runtime/`、讀取其他 Change／Run、建立歷史事件流，或將 Runtime Artifact 加入版本控制。Qwen 的唯讀邊界不因本例外而放寬。
+不得遞迴掃描 `.agent-runtime/`、讀取其他 Change／Run、建立歷史事件流，或將 Runtime Artifact 加入版本控制。
+Qwen Reviewer 在完成 `review-plan` 或 `review-result` 時，例外允許寫入 `.agent-runtime/<change-id>/artifacts/`
+路徑下的 artifact 檔案（如 `review-result.json`）。寫入必須滿足： 路徑必須以 `.agent-runtime/<change-id>/artifacts/` 開頭，不得包含 `..` 或絕對路徑。 不得寫入 `current-state.json` 或其他非 `artifacts/` 目錄的檔案。 寫入內容不得包含 Secret、API Key、Token、Password 或 Credential。此例外不放寬對原始碼、OpenSpec、設定的唯讀約束。
