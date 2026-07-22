@@ -17,6 +17,34 @@
 
 ---
 
+## 執行狀態
+
+- [x] T1：LangGraph Checkpointer 原始碼分析
+- [x] T2：LangGraph Server Queue/Worker 原始碼分析
+- [x] T3：LangGraph Store（跨 Thread 記憶體）API 分析
+- [x] T4：Background Run 與 Interrupt/Resume 實際執行驗證
+- [x] T5：Checkpointer 邊界實際執行驗證
+- [x] T6：Queue/Worker 行為實際執行驗證
+- [x] T7：撰寫 Decision Record `docs/decisions/langgraph-runtime-boundary.md`
+- [x] T8：與 `second-stage-plan.md` 對齊，更新 Layer 1 設計前提
+
+### 完成證據
+
+- Decision Record 已產出：`docs/decisions/langgraph-runtime-boundary.md`
+- `second-stage-plan.md` Layer 0 能力矩陣已對齊驗證結果
+- 已執行 `MemorySaver` + `interrupt()` + `Command(resume)` + `InMemoryStore` 本地 smoke
+- 已執行 `langgraphjs dev --no-browser -n 2` server smoke，確認 4 個 graph 註冊與 2 workers 啟動
+- 已透過 SDK 執行 `assistants.search()`、`threads.create()` 與 `math_agent` deterministic `/runs/wait`
+- 已執行 backend 相鄰測試與全量驗證：`npm run lint`、`npm run test`、`npm run build`
+
+### 未執行項
+
+- 未安裝或驗證 `@langchain/langgraph-checkpoint-postgres`、`PostgresSaver`、`PostgresStore`
+- 未執行 live `deep_researcher` weather interrupt/resume，因其依賴 LLM provider、Open-Meteo 網路與互動式澄清輸入
+- 未新增測試 harness 或修改現有 Agent Graph，符合本 Change 的非目標
+
+---
+
 ## T1：LangGraph Checkpointer 原始碼分析
 
 ### 目標
