@@ -36,6 +36,7 @@
 - 已執行 `langgraphjs dev --no-browser -n 2` server smoke，確認 4 個 graph 註冊與 2 workers 啟動
 - 已透過 SDK 執行 `assistants.search()`、`threads.create()` 與 `math_agent` deterministic `/runs/wait`
 - 已執行 backend 相鄰測試與全量驗證：`npm run lint`、`npm run test`、`npm run build`
+- spec 格式統一化：`specs/langgraph-runtime-boundary.md` 全形冒號改半形（`：`→`:`，共 20 處 Requirement/Scenario 標題）
 
 ### 未執行項
 
