@@ -3,17 +3,17 @@
     "name": "qwen3.7-plus"
   },
   "tools": {
-    "approvalMode": "plan"
+    "approvalMode": "auto-edit"
   },
   "permissions": {
     "deny": [
-      "Edit",
-      "Bash",
       "WebFetch"
     ],
     "allow": [
       "Agent(general-purpose)",
-      "Write"
+      "Write",
+      "Edit",
+      "Bash"
     ]
   },
   "memory": {
