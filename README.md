@@ -31,6 +31,10 @@ This project is primarily intended for personal research, agent engineering prac
   <img src="./chat-gun-02.png" alt="Chat Agent Results" width="1280" />
 </p>
 
+<p align="center">
+  <img src="./chat-gun-03.png" alt="Chat Agent Results" width="1280" />
+</p>
+
 ## 目前架構
 
 實際程式碼目前分成三個主要 package：
