@@ -1,10 +1,11 @@
-# Specs：add-agent-task-state-machine
+# task-step-state-machine Specification
 
-## ADDED Requirements
+## Purpose
+TBD - created by archiving change add-agent-task-state-machine. Update Purpose after archive.
+## Requirements
+### Requirement: Task 狀態機 MUST 支援完整生命週期
 
-### Requirement: Task 狀態機必須支援完整生命週期
-
-Task 狀態機必須涵蓋 created、running、waiting_confirmation、completed、partially_failed、compensating、failed 與 cancelled 八種狀態，以及所有合法轉移路徑。
+Task 狀態機 MUST 涵蓋 created、running、waiting_confirmation、completed、partially_failed、compensating、failed 與 cancelled 八種狀態，以及所有合法轉移路徑。
 
 #### Scenario: Task 正常完成
 
@@ -60,9 +61,9 @@ AND Task status MUST NOT 改變
 
 ---
 
-### Requirement: Step 狀態機必須支援完整生命週期
+### Requirement: Step 狀態機 MUST 支援完整生命週期
 
-Step 狀態機必須涵蓋 pending、running、waiting_confirmation、succeeded、retryable_failed、terminal_failed、compensating、compensated 與 skipped 九種狀態，以及所有合法轉移路徑。
+Step 狀態機 MUST 涵蓋 pending、running、waiting_confirmation、succeeded、retryable_failed、terminal_failed、compensating、compensated 與 skipped 九種狀態，以及所有合法轉移路徑。
 
 #### Scenario: Step 正常完成
 
@@ -126,9 +127,9 @@ AND Step status MUST NOT 改變
 
 ---
 
-### Requirement: Task/Step 型別系統必須為泛型設計
+### Requirement: Task/Step 型別系統 MUST 為泛型設計
 
-型別系統必須不依賴任何具體業務 Step 名稱，使用 TypeScript 泛型讓使用方定義自己的 Step 集合。
+型別系統 MUST NOT 依賴任何具體業務 Step 名稱，使用 TypeScript 泛型讓使用方定義自己的 Step 集合。
 
 #### Scenario: 不同業務可使用不同 Step 名稱
 
@@ -147,9 +148,9 @@ AND metadata MUST NOT 影響狀態機行為
 
 ---
 
-### Requirement: TaskEvent 必須涵蓋所有生命週期事件
+### Requirement: TaskEvent MUST 涵蓋所有生命週期事件
 
-事件類型必須完整覆蓋 Task 和 Step 的狀態變化，讓消費方可重建完整生命週期。
+事件類型 MUST 完整覆蓋 Task 和 Step 的狀態變化，讓消費方可重建完整生命週期。
 
 #### Scenario: Task 層級事件
 
@@ -181,9 +182,9 @@ AND 事件 MAY 包含 `payload`（任意附加資料）
 
 ---
 
-### Requirement: PostgreSQL 持久層必須正確儲存與查詢 Task/Step/Event
+### Requirement: PostgreSQL 持久層 MUST 正確儲存與查詢 Task/Step/Event
 
-PostgreSQL 必須作為 Task/Step/Event 的持久儲存層，提供完整的 CRUD 操作。
+PostgreSQL MUST 作為 Task/Step/Event 的持久儲存層，提供完整的 CRUD 操作。
 
 #### Scenario: 建立與查詢 Task
 
@@ -222,9 +223,9 @@ AND up migration 再次執行後 MUST 成功重建
 
 ---
 
-### Requirement: 前端 Timeline 元件必須正確渲染 Task/Step 進度
+### Requirement: 前端 Timeline 元件 MUST 正確渲染 Task/Step 進度
 
-前端必須提供一個獨立、可複用的 AgentTaskTimeline 元件，根據 Task/Step 狀態即時渲染進度。
+前端 MUST 提供一個獨立、可複用的 AgentTaskTimeline 元件，根據 Task/Step 狀態即時渲染進度。
 
 #### Scenario: Timeline 顯示所有 Step 狀態
 
@@ -265,9 +266,9 @@ AND MUST NOT 拋出錯誤
 
 ---
 
-### Requirement: 狀態機實作必須是純函式
+### Requirement: 狀態機實作 MUST 是純函式
 
-狀態機核心邏輯必須沒有任何副作用，不碰資料庫、不發事件、不依賴外部狀態。
+狀態機核心邏輯 MUST 沒有任何副作用，不碰資料庫、不發事件、不依賴外部狀態。
 
 #### Scenario: 狀態機不執行 IO
 
@@ -283,3 +284,4 @@ GIVEN 一個 AgentTask 物件
 WHEN 呼叫 `transitionTask(task, "running")` 成功
 THEN 回傳的 `next` Task MUST 是一個新物件
 AND 原始 `task` 物件 MUST NOT 被修改
+

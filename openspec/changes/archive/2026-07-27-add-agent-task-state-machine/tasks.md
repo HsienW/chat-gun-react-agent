@@ -113,7 +113,7 @@
 - [x] `findById(taskId)`: SELECT + JOIN task_steps
 - [x] `updateStatus(taskId, status)`: UPDATE status + updated_at
 - [x] `update(taskId, patch)`: partial UPDATE
-- [ ] 整合測試：實際寫入 PostgreSQL 並查詢
+- [x] 整合測試：實際寫入 PostgreSQL 並查詢
 
 **驗收：** Integration test 通過（需要 DATABASE_URL）
 
@@ -126,7 +126,7 @@
 - [x] `findById(stepId)`: SELECT
 - [x] `findByTaskId(taskId)`: SELECT WHERE task_id
 - [x] `updateStatus(stepId, status, opts?)`: UPDATE status + error/output/timestamps
-- [ ] 整合測試
+- [x] 整合測試
 
 **驗收：** Integration test 通過
 
@@ -137,7 +137,7 @@
 - [x] 建立 `backend/src/runtime/persistence/event-repository.ts`
 - [x] `append(event)`: INSERT INTO task_events
 - [x] `findByTaskId(taskId)`: SELECT ORDER BY created_at
-- [ ] 整合測試
+- [x] 整合測試
 - [x] `streamByTaskId(taskId)` 留 stub（本 Change 先不做 real-time stream，後續 Change 補）
 
 **驗收：** Integration test 通過
@@ -215,7 +215,7 @@
 - [x] 測試路徑：建立 Task → 建立 Steps → 依序 transition → 驗證最終狀態
 - [x] 測試路徑：Task 取消後 Step 不得再 transition
 - [x] 測試路徑：Step retry → 超過 maxAttempts → terminal_failed
-- [ ] 使用真實 PostgreSQL（需要 DATABASE_URL）
+- [x] 使用真實 PostgreSQL（需要 DATABASE_URL）
 
 **驗收：** `cd backend && npx vitest run src/runtime/__tests__/integration.test.ts` 通過
 
@@ -224,7 +224,7 @@
 ### Task 4.2：合規檢查
 
 - [x] `cd backend && npm run lint` 通過
-- [ ] `cd backend && npm run test` 全部通過（含新增測試）
+- [x] `cd backend && npm run test` 全部通過（含新增測試）
 - [x] `cd backend && npm run build` 通過
 - [x] `cd frontend && npm run lint` 通過
 - [x] `cd frontend && npm run test` 全部通過
