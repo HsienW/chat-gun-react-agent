@@ -541,6 +541,16 @@ async function proxyLangGraph(
     for (const upstreamUrl of upstreamUrls) {
       attemptedUpstreamUrl = upstreamUrl;
       const abortController = new AbortController();
+      const disconnectReason: BffAbortReason = {
+        code: "client_disconnected",
+        stage: "langgraph_upstream_proxy",
+        requestId: ctx.requestId,
+      };
+      const onClientDisconnect = () => {
+        if (!res.writableEnded) {
+          abortWithReason(abortController, disconnectReason);
+        }
+      };
       let timeoutReason: BffAbortReason = {
         code: "bff_timeout",
         stage: "langgraph_upstream_proxy",
@@ -550,6 +560,7 @@ async function proxyLangGraph(
         () => abortWithReason(abortController, timeoutReason),
         config.upstreamTimeoutMs
       );
+      res.once("close", onClientDisconnect);
 
       try {
         upstreamResponse = await fetch(upstreamUrl, {
@@ -565,7 +576,11 @@ async function proxyLangGraph(
         lastAbortReason = getAbortReason(abortController.signal);
         lastUpstreamError = error;
         clearTimeout(timeout);
+        if (lastAbortReason?.code === "client_disconnected") {
+          break;
+        }
       } finally {
+        res.off("close", onClientDisconnect);
         if (!upstreamResponse) clearTimeout(timeout);
       }
     }
@@ -697,8 +712,9 @@ async function proxyLangGraph(
       },
     });
 
+    if (envelope.error.code === "client_disconnected") return;
+
     if (res.headersSent) {
-      if (envelope.error.code === "client_disconnected") return;
       if (isSseResponse(res)) {
         writeSseErrorFrame(res, envelope);
         return;
