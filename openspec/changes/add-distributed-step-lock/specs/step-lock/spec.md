@@ -49,12 +49,14 @@ GIVEN stepId "step-1" 被 "worker-A" 持有
 WHEN "worker-B" 呼叫 `extend("step-1", "worker-B", 60000)`
 THEN 回傳 `false`（非持有者無法延長他人的鎖）
 
-#### Scenario: Redis 不可用時的降級行為
+#### Scenario: Redis 不可用時的 NoopStepLock 降級行為
 
-GIVEN Redis 連線不可用（未設定 REDIS_URI 或連線失敗）
+GIVEN Redis 連線不可用（未設定 REDIS_URI）
+AND `createStepLock()` 工廠回傳 `NoopStepLock` 實例
 WHEN 任何 worker 呼叫 `acquire("step-1", "worker-A", 30000)`
-THEN 回傳 `true`（安全降級：放行但依賴 DB CAS）
+THEN 回傳 `true`（NoopStepLock 安全降級：放行但依賴 DB CAS）
 AND `release` 為 no-op（不擲出錯誤）
+AND `extend` 回傳 `true`
 
 ---
 
@@ -75,7 +77,8 @@ AND 鎖被釋放
 
 GIVEN stepId "step-1" 的鎖已被 "worker-B" 持有
 WHEN "worker-A" 呼叫 `transition("step-1", "pending", "running", "worker-A")`
-THEN 回傳 `{ outcome: "lock_contention", currentOwner: "worker-B" }`
+THEN acquire 回傳 false
+AND Guard 回傳 `{ outcome: "lock_contention" }`（currentOwner 為 best-effort GET 結果，可能過期）
 
 #### Scenario: DB CAS 偵測到競爭寫入
 
@@ -100,10 +103,18 @@ WHEN transition 操作無論成功、失敗、或擲出例外
 THEN 鎖在最終於 finally 區塊被釋放
 AND 不會殘留未釋放的鎖
 
-#### Scenario: Redis 不可用時的 CAS-only 降級
+#### Scenario: Redis 不可用（REDIS_URI 未設定）時的 NoopStepLock 路徑
 
-GIVEN Redis 連線不可用
+GIVEN REDIS_URI 未設定
+AND `createStepLock()` 回傳 `NoopStepLock`
 WHEN worker 呼叫 `transition("step-1", "pending", "running", "worker-A")`
-THEN 跳過 lock 階段
-AND 僅執行 DB CAS（`UPDATE ... WHERE status = 'pending'`）
+THEN lock.acquire 回傳 true（NoopStepLock 永遠放行）
+AND 執行 DB CAS（`UPDATE ... WHERE status = 'pending'`）
 AND 轉移成功時回傳 `{ outcome: "success", ... }`
+
+#### Scenario: Redis 連線中斷（runtime）時 lock_contention
+
+GIVEN RedisStepLock 已建立但 Redis 連線在 acquire 時中斷
+WHEN worker 呼叫 `transition("step-1", "pending", "running", "worker-A")`
+THEN acquire 拋出錯誤
+AND Guard 回傳 `{ outcome: "lock_contention" }`（安全失敗，不自動降級為 CAS-only）
