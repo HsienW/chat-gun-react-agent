@@ -287,6 +287,47 @@ describe("BFF LangGraph stream proxy", () => {
     );
   });
 
+  it("aborts upstream when the client disconnects before response headers", async () => {
+    let markUpstreamStarted: (() => void) | undefined;
+    let markUpstreamClosed: (() => void) | undefined;
+    const upstreamStarted = new Promise<void>((resolve) => {
+      markUpstreamStarted = resolve;
+    });
+    const upstreamClosed = new Promise<void>((resolve) => {
+      markUpstreamClosed = resolve;
+    });
+
+    await withServer(
+      (req, _res) => {
+        markUpstreamStarted?.();
+        req.on("close", () => markUpstreamClosed?.());
+      },
+      async (upstream) => {
+        await withBff(
+          createTestConfig(upstream.url, { upstreamTimeoutMs: 500 }),
+          async (bff) => {
+            const controller = new AbortController();
+            const clientRequest = fetch(`${bff.url}/api/langgraph/runs/stream`, {
+              signal: controller.signal,
+            }).catch((error: unknown) => error);
+            await upstreamStarted;
+
+            controller.abort();
+            const closedPromptly = await Promise.race([
+              upstreamClosed.then(() => true),
+              new Promise<boolean>((resolve) =>
+                setTimeout(() => resolve(false), 100)
+              ),
+            ]);
+            await clientRequest;
+
+            assert.equal(closedPromptly, true);
+          }
+        );
+      }
+    );
+  });
+
   it("aborts upstream when the downstream stream closes", async () => {
     let upstreamClosed = false;
 

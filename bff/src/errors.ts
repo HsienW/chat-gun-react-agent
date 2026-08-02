@@ -23,7 +23,7 @@ export type BffAbortReason =
     }
   | {
       code: "client_disconnected";
-      stage: "request_body" | "langgraph_stream_proxy";
+      stage: "request_body" | "langgraph_upstream_proxy" | "langgraph_stream_proxy";
       requestId: string;
     }
   | {
