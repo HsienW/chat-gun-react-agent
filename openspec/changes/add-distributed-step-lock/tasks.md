@@ -14,11 +14,11 @@
 - 支援 `REDIS_KEY_PREFIX` 環境變數作為 key namespace prefix
 
 **驗證**：
-- [ ] `npm run build` 通過
-- [ ] 單元測試：REDIS_URI 未設定時 `getRedis()` 回傳 null
-- [ ] 單元測試：REDIS_URI 設定時 `getRedis()` 回傳 Redis instance
-- [ ] 單元測試：`REDIS_KEY_PREFIX` 為空字串時 key 格式正確
-- [ ] 單元測試：`REDIS_KEY_PREFIX` 設定時 key 包含 prefix
+- [x] `npm run build` 通過
+- [x] 單元測試：REDIS_URI 未設定時 `getRedis()` 回傳 null
+- [x] 單元測試：REDIS_URI 設定時 `getRedis()` 回傳 Redis instance
+- [x] 單元測試：`REDIS_KEY_PREFIX` 為空字串時 key 格式正確
+- [x] 單元測試：`REDIS_KEY_PREFIX` 設定時 key 包含 prefix
 
 ---
 
@@ -37,15 +37,15 @@
 - `createStepLock()` 工廠函式：自動選擇 Redis 或 Noop 實作
 
 **驗證**：
-- [ ] `npm run lint && npm run test && npm run build` 通過
-- [ ] 單元測試：正常 acquire/release（mock Redis）
-- [ ] 單元測試：兩個 worker 競爭同一 step（第二個 acquire 回傳 false）
-- [ ] 單元測試：release 時 owner 不匹配 → 鎖未被釋放
-- [ ] 單元測試：extend 成功與失敗（owner mismatch）
-- [ ] 單元測試：NoopStepLock 行為正確
-- [ ] 單元測試：TTL 過期後其他 worker 可重新獲取鎖（邊界測試）
-- [ ] 單元測試：`createStepLock()` 工廠依 REDIS_URI 正確選擇實作
-- [ ] 單元測試：`RedisStepLock` TTL 非法值（NaN / 0 / 負數）拋出錯誤
+- [x] `npm run lint && npm run test && npm run build` 通過
+- [x] 單元測試：正常 acquire/release（mock Redis）
+- [x] 單元測試：兩個 worker 競爭同一 step（第二個 acquire 回傳 false）
+- [x] 單元測試：release 時 owner 不匹配 → 鎖未被釋放
+- [x] 單元測試：extend 成功與失敗（owner mismatch）
+- [x] 單元測試：NoopStepLock 行為正確
+- [x] 單元測試：TTL 過期後其他 worker 可重新獲取鎖（邊界測試）
+- [x] 單元測試：`createStepLock()` 工廠依 REDIS_URI 正確選擇實作
+- [x] 單元測試：`RedisStepLock` TTL 非法值（NaN / 0 / 負數）拋出錯誤
 
 ---
 
@@ -65,17 +65,17 @@
   - 回傳四種結果：`success` / `lock_contention` / `cas_mismatch` / `invalid_transition`
 
 **驗證**：
-- [ ] `npm run lint && npm run test && npm run build` 通過
-- [ ] 單元測試：正常轉移成功（含 output/error 寫入）
-- [ ] 單元測試：轉移中 `started_at` / `completed_at` 正確設定
-- [ ] 單元測試：鎖競爭 → lock_contention（含 currentOwner best-effort）
-- [ ] 單元測試：CAS mismatch（DB status 不一致 → 回傳 currentStatus）
-- [ ] 單元測試：非法轉移 → invalid_transition（state-machine 拒絕）
-- [ ] 單元測試：finally 保證 lock 被釋放（正常、錯誤、CAS mismatch 三場景）
-- [ ] 單元測試：step 不存在時回傳 invalid_transition
-- [ ] 單元測試：Redis 連線錯誤時 acquire 拋錯 → lock_contention（不自動降級為 CAS-only）
-- [ ] 單元測試：NoopStepLock 路徑（REDIS_URI 未設定時 Guard 正常運作）
-- [ ] 單元測試：lock release 總在 finally 執行（使用 spy 驗證呼叫次數）
+- [x] `npm run lint && npm run test && npm run build` 通過
+- [x] 單元測試：正常轉移成功（含 output/error 寫入）
+- [x] 單元測試：轉移中 `started_at` / `completed_at` 正確設定
+- [x] 單元測試：鎖競爭 → lock_contention（含 currentOwner best-effort）
+- [x] 單元測試：CAS mismatch（DB status 不一致 → 回傳 currentStatus）
+- [x] 單元測試：非法轉移 → invalid_transition（state-machine 拒絕）
+- [x] 單元測試：finally 保證 lock 被釋放（正常、錯誤、CAS mismatch 三場景）
+- [x] 單元測試：step 不存在時回傳 invalid_transition
+- [x] 單元測試：Redis 連線錯誤時 acquire 拋錯 → lock_contention（不自動降級為 CAS-only）
+- [x] 單元測試：NoopStepLock 路徑（REDIS_URI 未設定時 Guard 正常運作）
+- [x] 單元測試：lock release 總在 finally 執行（使用 spy 驗證呼叫次數）
 
 ---
 
@@ -86,5 +86,5 @@
 - `backend/src/runtime/index.ts`：新增 `export * from "./lock/index.js"`
 
 **驗證**：
-- [ ] `npm run lint && npm run test && npm run build` 全部通過
-- [ ] 整合測試（使用既有 test DB + 真實或 mock Redis）：雙重防護完整流程
+- [x] `npm run lint && npm run test && npm run build` 全部通過
+- [x] 整合測試（使用既有 test DB + 真實或 mock Redis）：雙重防護完整流程
