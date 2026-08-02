@@ -9,6 +9,8 @@ const MIGRATION_FILES = [
   "001_create_agent_tasks.sql",
   "002_create_task_steps.sql",
   "003_create_task_events.sql",
+  "004_create_idempotency_records.sql",
+  "005_create_audit_events.sql",
 ] as const;
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "migrations");
