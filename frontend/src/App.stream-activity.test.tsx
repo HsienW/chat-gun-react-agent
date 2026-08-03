@@ -334,6 +334,62 @@ describe('App stream activity state', () => {
     expect(screen.getByTestId('historical-activity')).not.toHaveTextContent('Late');
   });
 
+  it('shows a rate limit countdown and restores submit when it expires', () => {
+    vi.useFakeTimers();
+    try {
+      render(<App />);
+
+      act(() => {
+        mocks.options?.onError?.({
+          error: 'Rate limit exceeded',
+          retryAfter: 2,
+        });
+      });
+
+      expect(
+        screen.getByText('請求過於頻繁，請稍後再試。（2 秒後可重試）')
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('submit-next'));
+      expect(mocks.thread.submit).not.toHaveBeenCalled();
+
+      act(() => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(
+        screen.getByText('請求過於頻繁，請稍後再試。（1 秒後可重試）')
+      ).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(screen.queryByText(/請求過於頻繁/)).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('submit-next'));
+      expect(mocks.thread.submit).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps non-429 errors on the existing error display path', () => {
+    render(<App />);
+
+    act(() => {
+      mocks.options?.onError?.({
+        error: {
+          source: 'bff',
+          stage: 'langgraph_upstream_proxy',
+          code: 'upstream_error',
+          message: 'upstream failed',
+        },
+      });
+    });
+
+    expect(screen.queryByText(/請求過於頻繁/)).not.toBeInTheDocument();
+    expect(screen.getByText(/代碼: upstream_error/)).toBeInTheDocument();
+  });
+
   it('keeps cancelled activity archived once and ignores late events', () => {
     const { rerender } = render(<App />);
 
