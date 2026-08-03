@@ -1,4 +1,5 @@
 export * from "./events.js";
+export * from "./lock/index.js";
 export * from "./persistence/connection.js";
 export * from "./persistence/event-repository.js";
 export * from "./persistence/migration-runner.js";
