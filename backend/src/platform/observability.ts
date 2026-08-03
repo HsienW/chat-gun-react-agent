@@ -1,16 +1,70 @@
-type AuditPayload = Record<string, unknown>;
+import { PgAuditLogger } from "../runtime/audit/pg-audit-logger.js";
+import { getPool } from "../runtime/persistence/connection.js";
+import { getEnv } from "./env.js";
+
+export type AuditPayload = Record<string, unknown>;
 
 export interface AuditLogger {
   record(eventName: string, payload: AuditPayload): Promise<void>;
 }
 
-class ConsoleAuditLogger implements AuditLogger {
+export class ConsoleAuditLogger implements AuditLogger {
   async record(eventName: string, payload: AuditPayload): Promise<void> {
     console.info(`[audit] ${eventName}`, JSON.stringify(payload));
   }
 }
 
-export const auditLogger: AuditLogger = new ConsoleAuditLogger();
+export class CompositeAuditLogger implements AuditLogger {
+  constructor(private readonly loggers: readonly AuditLogger[]) {}
+
+  async record(eventName: string, payload: AuditPayload): Promise<void> {
+    for (const logger of this.loggers) {
+      try {
+        await logger.record(eventName, payload);
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            event: "audit_backend_failed",
+            action: eventName,
+            backend: logger.constructor.name,
+            errorName: error instanceof Error ? error.name : "UnknownError",
+          })
+        );
+      }
+    }
+  }
+}
+
+function warnPgUnavailable(backend: string): void {
+  console.warn(
+    JSON.stringify({
+      event: "audit_pg_unavailable",
+      backend,
+      fallback: "console",
+      reasonCode: "database_not_configured",
+    })
+  );
+}
+
+export function getAuditLogger(): AuditLogger {
+  const backend = getEnv("AUDIT_BACKEND", "console");
+  if (backend === "pg" || backend === "composite") {
+    const pool = getPool();
+    if (!pool) {
+      warnPgUnavailable(backend);
+      return new ConsoleAuditLogger();
+    }
+
+    const pgLogger = new PgAuditLogger(pool);
+    return backend === "pg"
+      ? pgLogger
+      : new CompositeAuditLogger([new ConsoleAuditLogger(), pgLogger]);
+  }
+
+  return new ConsoleAuditLogger();
+}
+
+export const auditLogger: AuditLogger = getAuditLogger();
 
 export async function recordMetric(
   name: string,

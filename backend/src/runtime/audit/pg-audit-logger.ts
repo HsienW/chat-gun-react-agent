@@ -1,0 +1,225 @@
+import type { AuditLogger } from "../../platform/observability.js";
+import type { Queryable } from "../persistence/rows.js";
+import {
+  createAuditEvent,
+  type AuditActorType,
+  type AuditDecision,
+  type AuditEvent,
+} from "./audit-events.js";
+import { redact } from "./redaction.js";
+
+export interface AuditEventFilters {
+  taskId?: string;
+}
+
+interface AuditEventRow extends Record<string, unknown> {
+  event_id: string;
+  task_id: string | null;
+  step_id: string | null;
+  tool_execution_id: string | null;
+  actor_type: string;
+  actor_id: string;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  decision: string;
+  reason_code: string | null;
+  payload: unknown;
+  before_state_ref: string | null;
+  after_state_ref: string | null;
+  created_at: string | Date;
+}
+
+type ResourceReference = {
+  resourceType: string;
+  resourceId: string;
+};
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function inferResource(
+  eventName: string,
+  payload: Record<string, unknown>
+): ResourceReference {
+  const explicitType = optionalString(payload.resourceType);
+  const explicitId = optionalString(payload.resourceId);
+  if (explicitType && explicitId) {
+    return { resourceType: explicitType, resourceId: explicitId };
+  }
+
+  const rules: ReadonlyArray<{
+    prefix: string;
+    resourceType: string;
+    payloadField: string;
+  }> = [
+    { prefix: "tool.", resourceType: "tool", payloadField: "toolName" },
+    { prefix: "step.", resourceType: "step", payloadField: "stepId" },
+    { prefix: "task.", resourceType: "task", payloadField: "taskId" },
+    { prefix: "idempotency.", resourceType: "idempotency", payloadField: "key" },
+  ];
+
+  for (const rule of rules) {
+    if (eventName.startsWith(rule.prefix)) {
+      return {
+        resourceType: rule.resourceType,
+        resourceId: optionalString(payload[rule.payloadField]) ?? eventName,
+      };
+    }
+  }
+
+  return { resourceType: "unknown", resourceId: eventName };
+}
+
+function withoutResourceMetadata(
+  payload: Record<string, unknown>
+): Record<string, unknown> {
+  const { resourceType: _resourceType, resourceId: _resourceId, ...eventPayload } =
+    payload;
+  return eventPayload;
+}
+
+function isActorType(value: string): value is AuditActorType {
+  return value === "system" || value === "user" || value === "agent";
+}
+
+function isDecision(value: string): value is AuditDecision {
+  return (
+    value === "allow" ||
+    value === "deny" ||
+    value === "pending_confirmation" ||
+    value === "neutral"
+  );
+}
+
+function toIsoString(value: string | Date): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Invalid created_at returned from audit_events");
+  }
+  return date.toISOString();
+}
+
+function mapAuditEvent(row: AuditEventRow): AuditEvent {
+  if (!isActorType(row.actor_type)) {
+    throw new Error(`Unknown audit actor type from database: ${row.actor_type}`);
+  }
+  if (!isDecision(row.decision)) {
+    throw new Error(`Unknown audit decision from database: ${row.decision}`);
+  }
+
+  return {
+    eventId: row.event_id,
+    ...(row.task_id ? { taskId: row.task_id } : {}),
+    ...(row.step_id ? { stepId: row.step_id } : {}),
+    ...(row.tool_execution_id ? { toolExecutionId: row.tool_execution_id } : {}),
+    actorType: row.actor_type,
+    actorId: row.actor_id,
+    action: row.action,
+    resourceType: row.resource_type,
+    resourceId: row.resource_id,
+    decision: row.decision,
+    ...(row.reason_code ? { reasonCode: row.reason_code } : {}),
+    ...(row.payload !== null ? { payload: row.payload } : {}),
+    ...(row.before_state_ref ? { beforeStateRef: row.before_state_ref } : {}),
+    ...(row.after_state_ref ? { afterStateRef: row.after_state_ref } : {}),
+    createdAt: toIsoString(row.created_at),
+  };
+}
+
+export class PgAuditLogger implements AuditLogger {
+  constructor(
+    private readonly db: Queryable,
+    private readonly redactEnabled = true
+  ) {}
+
+  async record(eventName: string, payload: Record<string, unknown>): Promise<void> {
+    try {
+      const resource = inferResource(eventName, payload);
+      const eventPayload = withoutResourceMetadata(payload);
+      const persistedPayload = this.redactEnabled
+        ? redact(eventPayload)
+        : eventPayload;
+      const event = createAuditEvent({
+        ...(optionalString(payload.taskId) ? { taskId: String(payload.taskId) } : {}),
+        ...(optionalString(payload.stepId) ? { stepId: String(payload.stepId) } : {}),
+        ...(optionalString(payload.toolExecutionId)
+          ? { toolExecutionId: String(payload.toolExecutionId) }
+          : {}),
+        actorType: "system",
+        actorId: "backend",
+        action: eventName,
+        ...resource,
+        decision: "neutral",
+        ...(optionalString(payload.reasonCode)
+          ? { reasonCode: String(payload.reasonCode) }
+          : {}),
+        payload: persistedPayload,
+      });
+
+      await this.db.query(
+        `INSERT INTO audit_events (
+           event_id, task_id, step_id, tool_execution_id,
+           actor_type, actor_id, action, resource_type, resource_id,
+           decision, reason_code, payload, before_state_ref, after_state_ref,
+           created_at
+         ) VALUES (
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+           $11, $12, $13, $14, $15
+         )`,
+        [
+          event.eventId,
+          event.taskId ?? null,
+          event.stepId ?? null,
+          event.toolExecutionId ?? null,
+          event.actorType,
+          event.actorId,
+          event.action,
+          event.resourceType,
+          event.resourceId,
+          event.decision,
+          event.reasonCode ?? null,
+          event.payload ?? null,
+          event.beforeStateRef ?? null,
+          event.afterStateRef ?? null,
+          event.createdAt,
+        ]
+      );
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          event: "audit_persistence_failed",
+          action: eventName,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        })
+      );
+    }
+  }
+
+  async getEvents(filters: AuditEventFilters = {}): Promise<AuditEvent[]> {
+    const values: unknown[] = [];
+    const conditions: string[] = [];
+    if (filters.taskId !== undefined) {
+      values.push(filters.taskId);
+      conditions.push(`task_id = $${values.length}`);
+    }
+
+    const whereClause = conditions.length > 0
+      ? `WHERE ${conditions.join(" AND ")}`
+      : "";
+    const queryResult = await this.db.query<AuditEventRow>(
+      `SELECT
+         event_id, task_id, step_id, tool_execution_id,
+         actor_type, actor_id, action, resource_type, resource_id,
+         decision, reason_code, payload, before_state_ref, after_state_ref,
+         created_at
+       FROM audit_events
+       ${whereClause}
+       ORDER BY created_at ASC`,
+      values
+    );
+
+    return queryResult.rows.map(mapAuditEvent);
+  }
+}

@@ -76,6 +76,34 @@ async function withBff<T>(
 }
 
 describe("BFF LangGraph stream proxy", () => {
+  it("forwards x-idempotency-key unchanged when present", async () => {
+    let forwardedIdempotencyKey: string | undefined;
+
+    await withServer(
+      (req, res) => {
+        const header = req.headers["x-idempotency-key"];
+        forwardedIdempotencyKey = Array.isArray(header) ? header[0] : header;
+        res.end("ok");
+      },
+      async (upstream) => {
+        await withBff(createTestConfig(upstream.url), async (bff) => {
+          const response = await fetch(`${bff.url}/api/langgraph/runs`, {
+            headers: {
+              "x-idempotency-key":
+                "tool_execution:task-abc:step-1:current_weather:1:v1",
+            },
+          });
+
+          assert.equal(response.status, 200);
+          assert.equal(
+            forwardedIdempotencyKey,
+            "tool_execution:task-abc:step-1:current_weather:1:v1"
+          );
+        });
+      }
+    );
+  });
+
   it("proxies upstream stream chunks in order", async () => {
     await withServer(
       (_req, res) => {

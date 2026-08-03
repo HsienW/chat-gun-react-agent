@@ -59,6 +59,16 @@ describe("runMigrations", () => {
         direction: "up",
         executed: true,
       },
+      {
+        migrationName: "004_create_idempotency_records.sql",
+        direction: "up",
+        executed: true,
+      },
+      {
+        migrationName: "005_create_audit_events.sql",
+        direction: "up",
+        executed: true,
+      },
     ]);
 
     await expect(runMigrations("up", db)).resolves.toEqual([
@@ -77,6 +87,16 @@ describe("runMigrations", () => {
         direction: "up",
         executed: false,
       },
+      {
+        migrationName: "004_create_idempotency_records.sql",
+        direction: "up",
+        executed: false,
+      },
+      {
+        migrationName: "005_create_audit_events.sql",
+        direction: "up",
+        executed: false,
+      },
     ]);
   });
 
@@ -85,6 +105,16 @@ describe("runMigrations", () => {
     await runMigrations("up", db);
 
     await expect(runMigrations("down", db)).resolves.toEqual([
+      {
+        migrationName: "005_create_audit_events.sql",
+        direction: "down",
+        executed: true,
+      },
+      {
+        migrationName: "004_create_idempotency_records.sql",
+        direction: "down",
+        executed: true,
+      },
       {
         migrationName: "003_create_task_events.sql",
         direction: "down",

@@ -44,6 +44,7 @@ const FORWARDED_REQUEST_HEADERS = new Set([
   "content-type",
   "user-agent",
   "x-api-key",
+  "x-idempotency-key",
   "x-tenant-id",
   "x-user-id",
 ]);
