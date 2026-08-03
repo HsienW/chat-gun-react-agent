@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import http, { type Server } from "node:http";
 import net from "node:net";
 import { once } from "node:events";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 
 import { createServer } from "./server.js";
+import type { ServerDependencies } from "./server.js";
 import type { BffConfig } from "./config.js";
+import type { RedisEvalClient } from "./redis-rate-limit.js";
 
 type StartedServer = {
   server: Server;
@@ -25,6 +27,11 @@ function createTestConfig(langGraphApiUrl: string, overrides: Partial<BffConfig>
     upstreamTimeoutMs: 1_000,
     rateLimitWindowMs: 60_000,
     rateLimitMaxRequests: 1_000,
+    redisRateLimitUri: undefined,
+    rateLimitUserMaxRequests: 30,
+    rateLimitUserWindowMs: 60_000,
+    rateLimitIpMaxRequests: 20,
+    rateLimitIpWindowMs: 60_000,
     imageUploadMaxFiles: 6,
     imageUploadMaxBytes: 5 * 1024 * 1024,
     imageUploadMaxPixels: 24_000_000,
@@ -65,9 +72,10 @@ async function withServer<T>(
 
 async function withBff<T>(
   config: BffConfig,
-  run: (started: StartedServer) => Promise<T>
+  run: (started: StartedServer) => Promise<T>,
+  dependencies?: ServerDependencies
 ): Promise<T> {
-  const started = await startServer(createServer(config));
+  const started = await startServer(createServer(config, dependencies));
   try {
     return await run(started);
   } finally {
@@ -383,5 +391,145 @@ describe("BFF LangGraph stream proxy", () => {
         });
       }
     );
+  });
+});
+
+describe("BFF Redis rate limiting", () => {
+  it("reports the limiting dimension headers on an allowed request", async () => {
+    const redisClient: RedisEvalClient = {
+      eval: async (_script, _numberOfKeys, key) =>
+        String(key).includes("rate_limit:user:alice")
+          ? [1, 2, 0]
+          : [1, 12, 0],
+    };
+
+    await withBff(
+      createTestConfig("http://127.0.0.1:1", {
+        redisRateLimitUri: "redis://localhost:6379",
+        rateLimitUserMaxRequests: 3,
+      }),
+      async (bff) => {
+        const response = await fetch(`${bff.url}/not-found`, {
+          headers: { "x-user-id": "alice" },
+        });
+
+        assert.equal(response.status, 404);
+        assert.equal(response.headers.get("x-ratelimit-limit"), "3");
+        assert.equal(response.headers.get("x-ratelimit-remaining"), "2");
+        assert(
+          Number(response.headers.get("x-ratelimit-reset")) >
+            Math.floor(Date.now() / 1_000)
+        );
+      },
+      { redisClient }
+    );
+  });
+
+  it("returns the standard 429 contract when the user dimension is denied", async () => {
+    const redisClient: RedisEvalClient = {
+      eval: async (_script, _numberOfKeys, key, _maxRequests, _windowMs, now) => {
+        return String(key).includes("rate_limit:user:alice")
+          ? [0, 0, Number(now) + 45_000]
+          : [1, 19, 0];
+      },
+    };
+
+    await withBff(
+      createTestConfig("http://127.0.0.1:1", {
+        redisRateLimitUri: "redis://localhost:6379",
+      }),
+      async (bff) => {
+        const response = await fetch(`${bff.url}/not-found`, {
+          headers: { "x-user-id": "alice" },
+        });
+        const body = await response.json();
+
+        assert.equal(response.status, 429);
+        assert.equal(response.headers.get("retry-after"), "45");
+        assert.equal(response.headers.get("x-ratelimit-remaining"), "0");
+        assert(Number(response.headers.get("x-ratelimit-reset")) > 0);
+        assert.deepEqual(body, { error: "Rate limit exceeded", retryAfter: 45 });
+      },
+      { redisClient }
+    );
+  });
+
+  it("uses the socket peer for the IP dimension instead of spoofed forwarding headers", async () => {
+    const checkedKeys: string[] = [];
+    const redisClient: RedisEvalClient = {
+      eval: async (_script, _numberOfKeys, key, _maxRequests, _windowMs, now) => {
+        checkedKeys.push(String(key));
+        return String(key).includes("rate_limit:ip:127.0.0.1")
+          ? [0, 0, Number(now) + 300]
+          : [1, 29, 0];
+      },
+    };
+
+    await withBff(
+      createTestConfig("http://127.0.0.1:1", {
+        redisRateLimitUri: "redis://localhost:6379",
+      }),
+      async (bff) => {
+        const response = await fetch(`${bff.url}/not-found`, {
+          headers: {
+            "x-user-id": "bob",
+            "x-forwarded-for": "203.0.113.99",
+          },
+        });
+        const body = await response.json();
+
+        assert.equal(response.status, 429);
+        assert.equal(response.headers.get("retry-after"), "1");
+        assert.deepEqual(body, { error: "Rate limit exceeded", retryAfter: 1 });
+        assert(checkedKeys.includes("rate_limit:user:bob"));
+        assert(checkedKeys.includes("rate_limit:ip:127.0.0.1"));
+        assert.equal(checkedKeys.some((key) => key.includes("203.0.113.99")), false);
+      },
+      { redisClient }
+    );
+  });
+
+  it("keeps the legacy composite-key limiter when Redis is not configured", async () => {
+    await withBff(
+      createTestConfig("http://127.0.0.1:1", {
+        rateLimitMaxRequests: 1,
+      }),
+      async (bff) => {
+        const headers = {
+          "x-user-id": "alice",
+          "x-tenant-id": "tenant-a",
+        };
+        const firstResponse = await fetch(`${bff.url}/not-found`, { headers });
+        const secondResponse = await fetch(`${bff.url}/not-found`, { headers });
+        const body = await secondResponse.json();
+
+        assert.equal(firstResponse.status, 404);
+        assert.equal(secondResponse.status, 429);
+        assert(Number(secondResponse.headers.get("retry-after")) >= 1);
+        assert.equal(typeof body.retryAfter, "number");
+      }
+    );
+  });
+
+  it("closes the Redis client when the server closes", async () => {
+    let closeCalls = 0;
+    const redisClient: RedisEvalClient = {
+      eval: async () => [1, 29, 0],
+    };
+
+    await withBff(
+      createTestConfig("http://127.0.0.1:1", {
+        redisRateLimitUri: "redis://localhost:6379",
+      }),
+      async () => undefined,
+      {
+        redisClient,
+        closeRedis: async () => {
+          closeCalls += 1;
+        },
+      }
+    );
+
+    assert.equal(closeCalls, 1);
   });
 });

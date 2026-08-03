@@ -1,4 +1,7 @@
 export const BFF_ERROR_MESSAGES = {
+  rateLimit: {
+    exceeded: "Rate limit exceeded",
+  },
   upload: {
     rejectedByBff: "圖片上傳未通過 BFF 預檢。",
     tooManyImages: (count: number, max: number) =>
