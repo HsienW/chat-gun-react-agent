@@ -11,6 +11,14 @@ import {
   isBffAbortReason,
   type BffAbortReason,
 } from "./errors.js";
+import { closeRedis, getRedis } from "./redis-client.js";
+import {
+  InMemoryRateLimiterWrapper,
+  RedisRateLimiter,
+  type RateLimitDimension,
+  type RateLimiter,
+  type RedisEvalClient,
+} from "./redis-rate-limit.js";
 import { InMemoryRateLimiter } from "./rate-limit.js";
 import { validateUploadPayload } from "./upload-security.js";
 
@@ -66,6 +74,19 @@ type StreamPipeResult = {
   clientDisconnected: boolean;
 };
 
+export type ServerDependencies = {
+  redisClient?: RedisEvalClient | null;
+  closeRedis?: () => Promise<void>;
+};
+
+type RateLimitDecision = {
+  allowed: boolean;
+  remaining: number;
+  resetAt: number | null;
+  headerResetAt: number;
+  limit: number;
+};
+
 function getHeader(req: IncomingMessage, name: string): string | undefined {
   const value = req.headers[name.toLowerCase()];
   if (Array.isArray(value)) return value[0];
@@ -75,6 +96,10 @@ function getHeader(req: IncomingMessage, name: string): string | undefined {
 function getClientIp(req: IncomingMessage): string {
   const forwardedFor = getHeader(req, "x-forwarded-for");
   if (forwardedFor) return forwardedFor.split(",")[0]?.trim() || "unknown";
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+function getRateLimitIp(req: IncomingMessage): string {
   return req.socket.remoteAddress ?? "unknown";
 }
 
@@ -362,6 +387,73 @@ function statusForBffErrorCode(code: string): number {
 function diagnosticStatusForBffErrorCode(code: string): number {
   if (code === "client_disconnected" || code === "client_cancelled") return 499;
   return statusForBffErrorCode(code);
+}
+
+async function checkRedisRateLimit(
+  limiter: RateLimiter,
+  req: IncomingMessage,
+  ctx: RequestContext,
+  config: BffConfig,
+  now: number
+): Promise<RateLimitDecision | undefined> {
+  const dimensions: RateLimitDimension[] = [
+    {
+      name: "user",
+      windowMs: config.rateLimitUserWindowMs,
+      maxRequests: config.rateLimitUserMaxRequests,
+      extractKey: () => ctx.userId,
+    },
+    {
+      name: "ip",
+      windowMs: config.rateLimitIpWindowMs,
+      maxRequests: config.rateLimitIpMaxRequests,
+      extractKey: () => getRateLimitIp(req),
+    },
+  ].filter((dimension) => dimension.maxRequests > 0 && dimension.windowMs > 0);
+
+  let selected: RateLimitDecision | undefined;
+  for (const dimension of dimensions) {
+    const result = await limiter.check(dimension, now);
+    const decision = {
+      ...result,
+      headerResetAt: result.resetAt ?? now + dimension.windowMs,
+      limit: dimension.maxRequests,
+    };
+    if (!decision.allowed) return decision;
+    if (!selected || decision.remaining < selected.remaining) {
+      selected = decision;
+    }
+  }
+  return selected;
+}
+
+function checkLegacyRateLimit(
+  limiter: InMemoryRateLimiter,
+  ctx: RequestContext,
+  config: BffConfig,
+  now: number
+): RateLimitDecision {
+  const result = limiter.check(
+    `${ctx.tenantId}:${ctx.userId}:${ctx.clientIp}`,
+    now
+  );
+  return {
+    ...result,
+    headerResetAt: result.resetAt,
+    limit: config.rateLimitMaxRequests,
+  };
+}
+
+function applyRateLimitHeaders(
+  res: ServerResponse,
+  decision: RateLimitDecision
+): void {
+  res.setHeader("x-ratelimit-limit", String(decision.limit));
+  res.setHeader("x-ratelimit-remaining", String(decision.remaining));
+  res.setHeader(
+    "x-ratelimit-reset",
+    String(Math.ceil(decision.headerResetAt / 1_000))
+  );
 }
 
 function safeStreamErrorMessage(code: string): string {
@@ -728,13 +820,27 @@ async function proxyLangGraph(
   }
 }
 
-export function createServer(config = loadConfig()): http.Server {
-  const rateLimiter = new InMemoryRateLimiter(
+export function createServer(
+  config = loadConfig(),
+  dependencies: ServerDependencies = {}
+): http.Server {
+  const legacyRateLimiter = new InMemoryRateLimiter(
     config.rateLimitWindowMs,
     config.rateLimitMaxRequests
   );
+  const redisClient = config.redisRateLimitUri
+    ? dependencies.redisClient === undefined
+      ? getRedis()
+      : dependencies.redisClient
+    : null;
+  const redisRateLimiter = redisClient
+    ? new RedisRateLimiter(
+        redisClient,
+        new InMemoryRateLimiterWrapper()
+      )
+    : undefined;
 
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     const reqUrl = new URL(req.url ?? "/", `http://${getHeader(req, "host") ?? "localhost"}`);
     const ctx: RequestContext = {
       requestId: getRequestId(req),
@@ -787,13 +893,33 @@ export function createServer(config = loadConfig()): http.Server {
       return;
     }
 
-    const rateLimit = rateLimiter.check(`${ctx.tenantId}:${ctx.userId}:${ctx.clientIp}`);
-    res.setHeader("x-ratelimit-limit", String(config.rateLimitMaxRequests));
-    res.setHeader("x-ratelimit-remaining", String(rateLimit.remaining));
-    res.setHeader("x-ratelimit-reset", String(Math.ceil(rateLimit.resetAt / 1000)));
+    const rateLimitNow = Date.now();
+    const rateLimit = redisRateLimiter
+      ? await checkRedisRateLimit(
+          redisRateLimiter,
+          req,
+          ctx,
+          config,
+          rateLimitNow
+        )
+      : checkLegacyRateLimit(legacyRateLimiter, ctx, config, rateLimitNow);
 
-    if (!rateLimit.allowed) {
-      sendJson(res, 429, { error: "Rate limit exceeded" }, ctx.requestId);
+    if (rateLimit) {
+      applyRateLimitHeaders(res, rateLimit);
+    }
+
+    if (rateLimit && !rateLimit.allowed) {
+      const retryAfter = Math.max(
+        1,
+        Math.ceil(((rateLimit.resetAt ?? rateLimitNow) - rateLimitNow) / 1_000)
+      );
+      res.setHeader("retry-after", String(retryAfter));
+      sendJson(
+        res,
+        429,
+        { error: BFF_ERROR_MESSAGES.rateLimit.exceeded, retryAfter },
+        ctx.requestId
+      );
       return;
     }
 
@@ -808,6 +934,22 @@ export function createServer(config = loadConfig()): http.Server {
 
     sendJson(res, 404, { error: "Not found" }, ctx.requestId);
   });
+
+  if (redisClient) {
+    const closeRedisClient = dependencies.closeRedis ?? closeRedis;
+    server.once("close", () => {
+      void closeRedisClient().catch((error: unknown) => {
+        console.error(
+          JSON.stringify({
+            event: "bff_rate_limit_redis_close_error",
+            errorName: error instanceof Error ? error.name : "UnknownError",
+          })
+        );
+      });
+    });
+  }
+
+  return server;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

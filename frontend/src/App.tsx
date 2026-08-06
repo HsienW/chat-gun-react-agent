@@ -19,7 +19,11 @@ import {
 import type { StreamActivityState } from '@/lib/stream-activity-state';
 import type { ProcessedImageAttachment } from '@/lib/image-upload';
 import { AgentId, DEFAULT_AGENT } from '@/types/agents';
-import { formatErrorEnvelope, parseErrorEnvelope } from '@/types/errors';
+import {
+  formatErrorEnvelope,
+  parseErrorEnvelope,
+  parseRateLimitError,
+} from '@/types/errors';
 import { getAgentById, isValidAgentId } from '@/lib/agents';
 import {
   classifyStreamError,
@@ -48,6 +52,11 @@ function formatStreamError(error: unknown): string {
       error instanceof Error ? error.message : String(error)
     }`,
   ].join('\n');
+}
+
+function formatRateLimitMessage(retryAfter: number): string {
+  const messages = FRONTEND_ERROR_MESSAGES.rateLimit;
+  return `${messages.title}，${messages.message(retryAfter)}`;
 }
 
 function getLangGraphApiUrl(): string {
@@ -121,6 +130,7 @@ export default function App() {
   );
   const [selectedAgentId, setSelectedAgentId] = useState(DEFAULT_AGENT);
   const [streamErrorMessage, setStreamErrorMessage] = useState<string | null>(null);
+  const [rateLimitRetryAfter, setRateLimitRetryAfter] = useState<number | null>(null);
   const [cancelledMessage, setCancelledMessage] = useState<Message | null>(null);
   const [weatherClarificationMessages, setWeatherClarificationMessages] =
     useState<Message[] | null>(null);
@@ -137,6 +147,21 @@ export default function App() {
   useEffect(() => {
     streamActivityStateRef.current = streamActivityState;
   }, [streamActivityState]);
+
+  const isRateLimited = rateLimitRetryAfter !== null;
+
+  useEffect(() => {
+    if (!isRateLimited) return;
+
+    const interval = window.setInterval(() => {
+      setRateLimitRetryAfter((current) => {
+        if (current === null || current <= 1) return null;
+        return current - 1;
+      });
+    }, 1_000);
+
+    return () => window.clearInterval(interval);
+  }, [isRateLimited]);
 
   const validateAgentId = useCallback((agentId: string): string => {
     if (isValidAgentId(agentId)) {
@@ -184,8 +209,17 @@ export default function App() {
       console.debug('Stream aborted by client action.');
       return;
     }
-    const message = formatStreamError(error);
-    setStreamErrorMessage(message);
+    const rateLimitError = parseRateLimitError(error);
+    const message = rateLimitError
+      ? formatRateLimitMessage(rateLimitError.retryAfter)
+      : formatStreamError(error);
+    if (rateLimitError) {
+      setRateLimitRetryAfter(rateLimitError.retryAfter);
+      setStreamErrorMessage(null);
+    } else {
+      setRateLimitRetryAfter(null);
+      setStreamErrorMessage(message);
+    }
     dispatchStreamActivity({
       type: 'streamFailed',
       errorKind: classifyStreamError(error),
@@ -288,7 +322,7 @@ export default function App() {
       agentId: string,
       attachments: ProcessedImageAttachment[]
     ) => {
-      if (weatherClarificationMessages) return;
+      if (weatherClarificationMessages || rateLimitRetryAfter !== null) return;
 
       const validAgentId = validateAgentId(agentId);
       if (!submittedInputValue.trim() && attachments.length === 0) return;
@@ -297,6 +331,7 @@ export default function App() {
       dispatchStreamActivity({ type: 'resetForAgentOrSubmit' });
       dispatchStreamActivity({ type: 'streamStarted' });
       setStreamErrorMessage(null);
+      setRateLimitRetryAfter(null);
       setCancelledMessage(null);
       setWeatherClarificationMessages(null);
 
@@ -343,14 +378,22 @@ export default function App() {
         });
       }
     },
-    [validateAgentId, handleAgentSwitch, thread, weatherClarificationMessages]
+    [
+      validateAgentId,
+      handleAgentSwitch,
+      rateLimitRetryAfter,
+      thread,
+      weatherClarificationMessages,
+    ]
   );
 
   const handleClarificationResume = useCallback(
     (resumeValue: ClarificationResumeValue) => {
+      if (rateLimitRetryAfter !== null) return;
       dispatchStreamActivity({ type: 'resetForAgentOrSubmit' });
       dispatchStreamActivity({ type: 'streamStarted' });
       setStreamErrorMessage(null);
+      setRateLimitRetryAfter(null);
       setCancelledMessage(null);
       clarificationResumePendingRef.current = true;
 
@@ -358,7 +401,7 @@ export default function App() {
         command: { resume: resumeValue },
       });
     },
-    [thread]
+    [rateLimitRetryAfter, thread]
   );
 
   const handleCancel = useCallback(() => {
@@ -374,19 +417,23 @@ export default function App() {
     setCancelledMessage(localCancelledMessage);
   }, [thread]);
 
+  const activeStreamErrorMessage =
+    rateLimitRetryAfter === null
+      ? streamErrorMessage
+      : formatRateLimitMessage(rateLimitRetryAfter);
   const messagesWithStreamError = useMemo(
     () =>
-      streamErrorMessage
+      activeStreamErrorMessage
         ? [
             ...thread.messages,
             {
               type: 'ai',
-              content: streamErrorMessage,
+              content: activeStreamErrorMessage,
               id: STREAM_ERROR_MESSAGE_ID,
             } as Message,
           ]
         : thread.messages,
-    [thread.messages, streamErrorMessage]
+    [activeStreamErrorMessage, thread.messages]
   );
   const messagesWithWeatherClarification = useMemo(
     () =>

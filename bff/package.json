@@ -11,13 +11,15 @@
     "dev": "npm run build && node dist/server.js",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "test": "npm run build && node --test dist/errors.test.js dist/server.test.js"
+    "test": "vitest run"
   },
   "dependencies": {
-    "dotenv": "^16.5.0"
+    "dotenv": "^16.5.0",
+    "ioredis": "^6.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.17",
-    "typescript": "~5.7.2"
+    "typescript": "~5.7.2",
+    "vitest": "^4.1.8"
   }
 }

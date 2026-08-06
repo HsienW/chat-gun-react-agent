@@ -27,6 +27,11 @@ function readCsv(name: string): string[] {
     .filter(Boolean);
 }
 
+function readOptionalString(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value || undefined;
+}
+
 export type BffConfig = {
   port: number;
   langGraphApiUrl: URL;
@@ -38,6 +43,11 @@ export type BffConfig = {
   upstreamTimeoutMs: number;
   rateLimitWindowMs: number;
   rateLimitMaxRequests: number;
+  redisRateLimitUri?: string;
+  rateLimitUserMaxRequests: number;
+  rateLimitUserWindowMs: number;
+  rateLimitIpMaxRequests: number;
+  rateLimitIpWindowMs: number;
   imageUploadMaxFiles: number;
   imageUploadMaxBytes: number;
   imageUploadMaxPixels: number;
@@ -65,6 +75,14 @@ export function loadConfig(): BffConfig {
     upstreamTimeoutMs: readNumber("BFF_UPSTREAM_TIMEOUT_MS", 120_000),
     rateLimitWindowMs: readNumber("BFF_RATE_LIMIT_WINDOW_MS", 60_000),
     rateLimitMaxRequests: readNumber("BFF_RATE_LIMIT_MAX_REQUESTS", 120),
+    redisRateLimitUri: readOptionalString("BFF_RATE_LIMIT_REDIS_URI"),
+    rateLimitUserMaxRequests: readNumber(
+      "BFF_RATE_LIMIT_USER_MAX_REQUESTS",
+      30
+    ),
+    rateLimitUserWindowMs: readNumber("BFF_RATE_LIMIT_USER_WINDOW_MS", 60_000),
+    rateLimitIpMaxRequests: readNumber("BFF_RATE_LIMIT_IP_MAX_REQUESTS", 20),
+    rateLimitIpWindowMs: readNumber("BFF_RATE_LIMIT_IP_WINDOW_MS", 60_000),
     imageUploadMaxFiles: readNumber("BFF_IMAGE_UPLOAD_MAX_FILES", 6),
     imageUploadMaxBytes: readNumber("BFF_IMAGE_UPLOAD_MAX_BYTES", 5 * 1024 * 1024),
     imageUploadMaxPixels: readNumber("BFF_IMAGE_UPLOAD_MAX_PIXELS", 24_000_000),

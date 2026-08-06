@@ -46,8 +46,10 @@ The initial BFF layer includes:
 - Request correlation through `x-request-id`.
 - CORS allowlist through `BFF_ALLOWED_ORIGINS`.
 - Optional API key auth through `BFF_REQUIRE_AUTH=true` and `BFF_API_KEYS`.
-- In-memory rate limiting through `BFF_RATE_LIMIT_*`.
+- Redis-backed Token Bucket rate limiting for independent `userId` and socket-peer IP dimensions through `BFF_RATE_LIMIT_REDIS_URI` and `BFF_RATE_LIMIT_{USER,IP}_*`.
+- Backward-compatible in-memory composite-key limiting when Redis is not configured, plus independent in-memory fallback when Redis fails at runtime.
+- Standardized 429 responses with `Retry-After`, `x-ratelimit-*`, and `retryAfter` response fields.
 - Upstream timeout through `BFF_UPSTREAM_TIMEOUT_MS`.
 - JSON audit logs for every request.
 
-This is intentionally a first platform boundary. Production hardening should move rate limits and usage ledgers to Redis/Postgres, add OIDC/JWT verification, and emit OpenTelemetry traces.
+This is intentionally a first platform boundary. Production hardening should add OIDC/JWT verification, durable usage ledgers, and OpenTelemetry traces.

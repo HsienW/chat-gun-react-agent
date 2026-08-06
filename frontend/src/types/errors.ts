@@ -17,6 +17,46 @@ export interface ErrorEnvelope {
   };
 }
 
+export interface RateLimitErrorResponse {
+  error: string;
+  retryAfter: number;
+}
+
+function parseJsonValue(value: unknown): unknown {
+  const candidate = value instanceof Error ? value.message : value;
+  if (typeof candidate !== 'string') return candidate;
+
+  try {
+    return JSON.parse(candidate) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseRateLimitError(
+  value: unknown
+): RateLimitErrorResponse | undefined {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  if (!('error' in parsed) || !('retryAfter' in parsed)) return undefined;
+
+  const error = parsed.error;
+  const retryAfter = parsed.retryAfter;
+  if (
+    typeof error !== 'string' ||
+    typeof retryAfter !== 'number' ||
+    !Number.isFinite(retryAfter) ||
+    retryAfter <= 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    error,
+    retryAfter: Math.ceil(retryAfter),
+  };
+}
+
 export function parseErrorEnvelope(value: unknown): ErrorEnvelope | undefined {
   const parsed =
     typeof value === 'string'

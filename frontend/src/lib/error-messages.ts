@@ -14,6 +14,11 @@ export const FRONTEND_ERROR_MESSAGES = {
     stage: 'langgraph_stream',
     unknownCode: 'unknown_error',
   },
+  rateLimit: {
+    title: '請求過於頻繁',
+    message: (retryAfter: number) =>
+      `請稍後再試。（${retryAfter} 秒後可重試）`,
+  },
   imageUpload: {
     dialogTitle: '圖片處理失敗',
     close: '關閉',
