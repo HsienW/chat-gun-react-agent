@@ -1,5 +1,6 @@
 import { BaseMessage } from "@langchain/core/messages";
 
+import { estimateTokens } from "../context/context-budget.js";
 import {
   extractImageAttachmentBlocksFromContent,
   getImageUrl,
@@ -99,6 +100,10 @@ export function buildImAgentContextPack(
 
 export function estimateContextPackTokens(contextPack: ImAgentContextPack): number {
   return Math.ceil(JSON.stringify(contextPack).length / 4);
+}
+
+export function estimateContentTokens(content: string): number {
+  return estimateTokens(content);
 }
 
 function getInputType(message?: BaseMessage): ImContextInputType {

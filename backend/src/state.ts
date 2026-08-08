@@ -43,6 +43,10 @@ export function getLatestUserMessage(messages: BaseMessage[]): string {
   return messageContentToString(latest);
 }
 
+/**
+ * @deprecated Use ContextAssembler from `./context/index.js` for new context
+ * construction. This helper remains available for backward compatibility.
+ */
 export function buildConversationContext(messages: BaseMessage[]): string {
   return messages
     .slice(-10)

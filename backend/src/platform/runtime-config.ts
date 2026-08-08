@@ -1,5 +1,6 @@
+import { DEFAULT_CONTEXT_TOKEN_BUDGET } from "../context/context-budget.js";
 import { getEnv } from "./env.js";
-import { ImAgentContextPack } from "./im-context-pack.js";
+import type { ImAgentContextPack } from "./im-context-pack.js";
 
 const SUPPORTED_LOCALES = ["zh-TW", "zh-CN", "en"] as const;
 
@@ -8,6 +9,7 @@ export type AgentLocale = (typeof SUPPORTED_LOCALES)[number];
 export type AgentRuntimeConfig = {
   locale: AgentLocale;
   timeZone: string;
+  contextBudgetTotal: number;
   contextTokensPerSource: number;
   fallbackRequiredSourceCount: number;
 };
@@ -33,6 +35,10 @@ export function getAgentRuntimeConfig(): AgentRuntimeConfig {
   return {
     locale: readLocale(),
     timeZone: getEnv("AGENT_TIME_ZONE", "Asia/Taipei"),
+    contextBudgetTotal: readPositiveInt(
+      "AGENT_CONTEXT_BUDGET_TOTAL",
+      DEFAULT_CONTEXT_TOKEN_BUDGET
+    ),
     contextTokensPerSource: readPositiveInt("AGENT_CONTEXT_TOKENS_PER_SOURCE", 2_000),
     fallbackRequiredSourceCount: readPositiveInt("AGENT_FALLBACK_REQUIRED_SOURCE_COUNT", 3),
   };
