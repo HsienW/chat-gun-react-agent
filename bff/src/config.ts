@@ -35,6 +35,7 @@ function readOptionalString(name: string): string | undefined {
 export type BffConfig = {
   port: number;
   langGraphApiUrl: URL;
+  metricsBackendUrl: URL;
   frontendDist: string;
   allowedOrigins: string[];
   requireAuth: boolean;
@@ -57,12 +58,17 @@ export type BffConfig = {
 };
 
 export function loadConfig(): BffConfig {
+  const langGraphApiUrl = new URL(
+    process.env.BFF_LANGGRAPH_API_URL ??
+      process.env.LANGGRAPH_API_URL ??
+      "http://localhost:2024"
+  );
+
   return {
     port: readNumber("BFF_PORT", 8787),
-    langGraphApiUrl: new URL(
-      process.env.BFF_LANGGRAPH_API_URL ??
-        process.env.LANGGRAPH_API_URL ??
-        "http://localhost:2024"
+    langGraphApiUrl,
+    metricsBackendUrl: new URL(
+      readOptionalString("AGENT_METRICS_BACKEND_URL") ?? langGraphApiUrl
     ),
     frontendDist:
       process.env.BFF_FRONTEND_DIST ??

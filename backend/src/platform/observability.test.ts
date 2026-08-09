@@ -4,10 +4,15 @@ import {
   CompositeAuditLogger,
   ConsoleAuditLogger,
   getAuditLogger,
+  recordMetric,
   type AuditLogger,
 } from "./observability.js";
 import { closePool } from "../runtime/persistence/connection.js";
 import { PgAuditLogger } from "../runtime/audit/pg-audit-logger.js";
+import {
+  createMetricsCollector,
+  setMetricsCollector,
+} from "./metrics/metrics-collector.js";
 
 const originalAuditBackend = process.env.AUDIT_BACKEND;
 const originalDatabaseUrl = process.env.DATABASE_URL;
@@ -69,5 +74,34 @@ describe("audit logger selection", () => {
     ).resolves.toBeUndefined();
 
     expect(calls).toEqual(["failing", "succeeding"]);
+  });
+});
+
+describe("recordMetric compatibility", () => {
+  it("keeps console output and writes a sanitized event to MetricsCollector", async () => {
+    const collector = createMetricsCollector();
+    setMetricsCollector(collector);
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+
+    await recordMetric("model.call", {
+      value: 2,
+      provider: "qwen",
+      retryable: true,
+      apiToken: "must-not-be-retained",
+      nested: { ignored: true },
+    });
+
+    expect(info).toHaveBeenCalledWith(
+      "[metric] model.call",
+      JSON.stringify({ value: 2, provider: "qwen", retryable: true })
+    );
+    expect(collector.entries()).toEqual([
+      expect.objectContaining({
+        kind: "event",
+        name: "model.call",
+        value: 2,
+        attributes: { provider: "qwen", retryable: true },
+      }),
+    ]);
   });
 });

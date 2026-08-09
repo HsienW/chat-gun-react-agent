@@ -1,6 +1,7 @@
 import { PgAuditLogger } from "../runtime/audit/pg-audit-logger.js";
 import { getPool } from "../runtime/persistence/connection.js";
 import { getEnv } from "./env.js";
+import { getMetricsCollector } from "./metrics/metrics-collector.js";
 
 export type AuditPayload = Record<string, unknown>;
 
@@ -66,11 +67,49 @@ export function getAuditLogger(): AuditLogger {
 
 export const auditLogger: AuditLogger = getAuditLogger();
 
+const SENSITIVE_METRIC_KEY = /(authorization|cookie|credential|password|secret|token)/i;
+
+function sanitizeMetricPayload(
+  payload: AuditPayload
+): Record<string, string | number | boolean> {
+  const safePayload: Record<string, string | number | boolean> = {};
+
+  for (const [key, value] of Object.entries(payload)) {
+    if (SENSITIVE_METRIC_KEY.test(key)) continue;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      safePayload[key] = value;
+    }
+  }
+
+  return safePayload;
+}
+
 export async function recordMetric(
   name: string,
   payload: AuditPayload = {}
 ): Promise<void> {
-  console.info(`[metric] ${name}`, JSON.stringify(payload));
+  const safePayload = sanitizeMetricPayload(payload);
+  console.info(`[metric] ${name}`, JSON.stringify(safePayload));
+
+  try {
+    const { value, ...attributes } = safePayload;
+    getMetricsCollector().record({
+      kind: "event",
+      name,
+      value: typeof value === "number" ? value : 1,
+      attributes,
+      ts: Date.now(),
+    });
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        event: "metric_collection_failed",
+        metricKind: "event",
+        metricName: name,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      })
+    );
+  }
 }
 
 // Weather-specific audit helper — Task 7.1, 7.2

@@ -47,3 +47,23 @@ describe("Redis rate limit configuration", () => {
     });
   });
 });
+
+describe("metrics backend configuration", () => {
+  it("defaults to the configured LangGraph API URL", () => {
+    vi.stubEnv("BFF_LANGGRAPH_API_URL", "http://langgraph.internal:2024");
+    vi.stubEnv("AGENT_METRICS_BACKEND_URL", "");
+
+    expect(loadConfig().metricsBackendUrl.toString()).toBe(
+      "http://langgraph.internal:2024/"
+    );
+  });
+
+  it("uses the dedicated metrics backend URL when configured", () => {
+    vi.stubEnv("BFF_LANGGRAPH_API_URL", "http://langgraph.internal:2024");
+    vi.stubEnv("AGENT_METRICS_BACKEND_URL", "http://metrics.internal:9090");
+
+    expect(loadConfig().metricsBackendUrl.toString()).toBe(
+      "http://metrics.internal:9090/"
+    );
+  });
+});

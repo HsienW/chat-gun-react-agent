@@ -26,6 +26,11 @@ import {
 import { auditLogger, recordMetric, recordWeatherAuditEvent } from "../platform/observability.js";
 import { getAgentRuntimeConfig } from "../platform/runtime-config.js";
 import {
+  getSpanManager,
+  type SpanManager,
+  type TraceAttributes,
+} from "../platform/tracing/span-manager.js";
+import {
   extractImageAttachmentBlocks,
   getImageUrl,
   summarizeImageAttachments,
@@ -89,6 +94,43 @@ const DEEP_RESEARCH_TOOL_NAMES = {
   webFetch: "web_fetch",
   weatherGeocodingStage: "weather_geocoding",
 } as const;
+
+function getTracingTaskId(config: unknown): string | undefined {
+  if (!config || typeof config !== "object" || !("configurable" in config)) {
+    return undefined;
+  }
+  const configurable = config.configurable;
+  if (!configurable || typeof configurable !== "object") return undefined;
+
+  for (const key of ["task_id", "thread_id", "run_id"] as const) {
+    const value = Object.entries(configurable).find(
+      ([entryKey]) => entryKey === key
+    )?.[1];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function traceNode<TArguments extends unknown[], TResult>(
+  nodeName: string,
+  node: (...args: TArguments) => Promise<TResult>,
+  manager: SpanManager = getSpanManager()
+): (...args: TArguments) => Promise<TResult> {
+  return (...args) => {
+    const taskId = getTracingTaskId(args[1]);
+    const attributes: TraceAttributes = {
+      "node.name": nodeName,
+      "step.id": nodeName,
+      ...(taskId ? { "task.id": taskId } : {}),
+    };
+    return manager.withSpan(
+      `langgraph.node.${nodeName}`,
+      { attributes },
+      () => node(...args)
+    );
+  };
+}
+
 const WEATHER_SYNTHESIS_FALLBACK_MESSAGE =
   "The weather service is temporarily unable to respond. Please try again later.";
 
@@ -588,8 +630,19 @@ async function invokeTool(
   }
 
   try {
-    const result = await selectedTool.invoke(input, config);
-    return typeof result === "string" ? result : JSON.stringify(result, null, 2);
+    return await getSpanManager().withSpan(
+      "tool.execute",
+      {
+        attributes: {
+          "tool.name": toolName,
+          "tool.call.id": crypto.randomUUID(),
+        },
+      },
+      async () => {
+        const result = await selectedTool.invoke(input, config);
+        return typeof result === "string" ? result : JSON.stringify(result, null, 2);
+      }
+    );
   } catch (error) {
     return serializeErrorEnvelope(
       createErrorEnvelope(error, {
@@ -2547,6 +2600,10 @@ export const deepResearcherQueryContractTestInternals = {
   routeAfterPlan,
 };
 
+export const deepResearcherTracingTestInternals = {
+  traceNode,
+};
+
 function buildTargetedToolErrorAnswer(
   plan: ResearchPlan,
   state: typeof DeepResearchState.State
@@ -2667,21 +2724,21 @@ function routeAfterRank(state: typeof DeepResearchState.State): string {
 }
 
 const builder = new StateGraph(DeepResearchState)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.validateUploads, validateUploads)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.buildContextPack, buildContextPack)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.analyzeImages, analyzeImages)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.planResearch, planResearch)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.targetedTools, targetedTools)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.clarifyInterrupt, clarifyInterrupt, {
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.validateUploads, traceNode(DEEP_RESEARCH_GRAPH_NODES.validateUploads, validateUploads))
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.buildContextPack, traceNode(DEEP_RESEARCH_GRAPH_NODES.buildContextPack, buildContextPack))
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.analyzeImages, traceNode(DEEP_RESEARCH_GRAPH_NODES.analyzeImages, analyzeImages))
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.planResearch, traceNode(DEEP_RESEARCH_GRAPH_NODES.planResearch, planResearch))
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.targetedTools, traceNode(DEEP_RESEARCH_GRAPH_NODES.targetedTools, targetedTools))
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.clarifyInterrupt, traceNode(DEEP_RESEARCH_GRAPH_NODES.clarifyInterrupt, clarifyInterrupt), {
     ends: [DEEP_RESEARCH_GRAPH_NODES.resumeClarify, DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer],
   })
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.resumeClarify, resumeClarify)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.searchWeb, searchWeb)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.rankSources, rankSources)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.fetchSources, fetchSources)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.extractEvidence, extractEvidence)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.verifyCitations, verifyCitations)
-  .addNode(DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer, synthesizeAnswer)
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.resumeClarify, traceNode(DEEP_RESEARCH_GRAPH_NODES.resumeClarify, resumeClarify))
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.searchWeb, traceNode(DEEP_RESEARCH_GRAPH_NODES.searchWeb, searchWeb))
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.rankSources, traceNode(DEEP_RESEARCH_GRAPH_NODES.rankSources, rankSources))
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.fetchSources, traceNode(DEEP_RESEARCH_GRAPH_NODES.fetchSources, fetchSources))
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.extractEvidence, traceNode(DEEP_RESEARCH_GRAPH_NODES.extractEvidence, extractEvidence))
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.verifyCitations, traceNode(DEEP_RESEARCH_GRAPH_NODES.verifyCitations, verifyCitations))
+  .addNode(DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer, traceNode(DEEP_RESEARCH_GRAPH_NODES.synthesizeAnswer, synthesizeAnswer))
   .addEdge(START, DEEP_RESEARCH_GRAPH_NODES.validateUploads)
   .addConditionalEdges(DEEP_RESEARCH_GRAPH_NODES.validateUploads, routeAfterUploadValidation, {
     [DEEP_RESEARCH_GRAPH_ROUTES.buildContextPack]: DEEP_RESEARCH_GRAPH_NODES.buildContextPack,

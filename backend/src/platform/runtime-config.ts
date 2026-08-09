@@ -5,6 +5,8 @@ import type { ImAgentContextPack } from "./im-context-pack.js";
 const SUPPORTED_LOCALES = ["zh-TW", "zh-CN", "en"] as const;
 
 export type AgentLocale = (typeof SUPPORTED_LOCALES)[number];
+export type LlmRepairStrategy = "none" | "retry_once" | "retry_with_hint";
+export type OtelExporterProtocol = "grpc" | "http";
 
 export type AgentRuntimeConfig = {
   locale: AgentLocale;
@@ -12,6 +14,19 @@ export type AgentRuntimeConfig = {
   contextBudgetTotal: number;
   contextTokensPerSource: number;
   fallbackRequiredSourceCount: number;
+  metricsEnabled: boolean;
+  metricsBufferSize: number;
+  metricsBackendUrl: string;
+  llmFallbackEnabled: boolean;
+  llmFallbackProviders: string[];
+  llmFallbackMaxAttempts: number;
+  llmFallbackTimeoutMs: number;
+  llmRepairStrategy: LlmRepairStrategy;
+  otelEnabled: boolean;
+  otelServiceName: string;
+  otelExporterEndpoint?: string;
+  otelExporterProtocol: OtelExporterProtocol;
+  otelSampleRate: number;
 };
 
 function readPositiveInt(name: string, fallback: number): number {
@@ -31,6 +46,65 @@ function readLocale(): AgentLocale {
     : "zh-TW";
 }
 
+function readBoolean(name: string, fallback: boolean): boolean {
+  const rawValue = getEnv(name);
+  if (!rawValue) return fallback;
+
+  const normalizedValue = rawValue.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalizedValue)) return true;
+  if (["0", "false", "no", "off"].includes(normalizedValue)) return false;
+  return fallback;
+}
+
+function readUrl(name: string, fallback: string): string {
+  const rawValue = getEnv(name, fallback);
+  try {
+    return new URL(rawValue).toString();
+  } catch {
+    return new URL(fallback).toString();
+  }
+}
+
+function readCsv(name: string): string[] {
+  return Array.from(
+    new Set(
+      getEnv(name)
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function readRepairStrategy(): LlmRepairStrategy {
+  const value = getEnv("LLM_REPAIR_STRATEGY", "retry_once").trim();
+  return value === "none" || value === "retry_once" || value === "retry_with_hint"
+    ? value
+    : "retry_once";
+}
+
+function readOptionalUrl(name: string): string | undefined {
+  const value = getEnv(name).trim();
+  if (!value) return undefined;
+  try {
+    return new URL(value).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function readOtelProtocol(): OtelExporterProtocol {
+  const value = getEnv("OTEL_EXPORTER_OTLP_PROTOCOL", "http").trim().toLowerCase();
+  return value === "grpc" || value === "http" ? value : "http";
+}
+
+function readSampleRate(): number {
+  const rawValue = getEnv("OTEL_SAMPLE_RATE").trim();
+  if (!rawValue) return 1;
+  const value = Number(rawValue);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : 1;
+}
+
 export function getAgentRuntimeConfig(): AgentRuntimeConfig {
   return {
     locale: readLocale(),
@@ -41,6 +115,20 @@ export function getAgentRuntimeConfig(): AgentRuntimeConfig {
     ),
     contextTokensPerSource: readPositiveInt("AGENT_CONTEXT_TOKENS_PER_SOURCE", 2_000),
     fallbackRequiredSourceCount: readPositiveInt("AGENT_FALLBACK_REQUIRED_SOURCE_COUNT", 3),
+    metricsEnabled: readBoolean("AGENT_METRICS_ENABLED", true),
+    metricsBufferSize: readPositiveInt("AGENT_METRICS_BUFFER_SIZE", 10_000),
+    metricsBackendUrl: readUrl("AGENT_METRICS_BACKEND_URL", "http://localhost:2024"),
+    llmFallbackEnabled: readBoolean("LLM_FALLBACK_ENABLED", false),
+    llmFallbackProviders: readCsv("LLM_FALLBACK_PROVIDERS"),
+    llmFallbackMaxAttempts: readPositiveInt("LLM_FALLBACK_MAX_ATTEMPTS", 3),
+    llmFallbackTimeoutMs: readPositiveInt("LLM_FALLBACK_TIMEOUT_MS", 30_000),
+    llmRepairStrategy: readRepairStrategy(),
+    otelEnabled: readBoolean("OTEL_ENABLED", false),
+    otelServiceName:
+      getEnv("OTEL_SERVICE_NAME").trim() || "chat-gun-react-agent",
+    otelExporterEndpoint: readOptionalUrl("OTEL_EXPORTER_OTLP_ENDPOINT"),
+    otelExporterProtocol: readOtelProtocol(),
+    otelSampleRate: readSampleRate(),
   };
 }
 

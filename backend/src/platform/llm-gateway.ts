@@ -7,6 +7,19 @@ import { z } from "zod";
 import { getEnv } from "./env.js";
 import { createErrorEnvelope, formatErrorEnvelope } from "./errors.js";
 import { configureNetwork } from "./network.js";
+import {
+  FallbackChatModelInvoker,
+  type ModelFallbackPolicy,
+} from "./llm-fallback.js";
+import { getAgentRuntimeConfig } from "./runtime-config.js";
+import { getSpanManager } from "./tracing/span-manager.js";
+import { recordMetric } from "./observability.js";
+import {
+  repairStructuredOutput,
+  StructuredOutputExhaustedError,
+  StructuredOutputRefusalError,
+} from "./structured-output-repair.js";
+import type { RepairStrategy } from "./llm-fallback.js";
 
 configureNetwork();
 
@@ -28,8 +41,17 @@ export interface ChatModelOptions {
 type ChatModelInput = unknown;
 type ChatModelOutput = BaseMessage;
 
+export type ChatModelInvokeOptions = {
+  signal?: AbortSignal;
+  taskId?: string;
+  stepId?: string;
+};
+
 export interface ChatModelInvoker {
-  invoke(input: ChatModelInput): Promise<ChatModelOutput>;
+  invoke(
+    input: ChatModelInput,
+    options?: ChatModelInvokeOptions
+  ): Promise<ChatModelOutput>;
   bindTools?: (
     tools: StructuredToolInterface[],
     kwargs?: Pick<ChatModelOptions, "toolChoice">
@@ -38,6 +60,159 @@ export interface ChatModelInvoker {
 
 export interface LlmGateway {
   createChatModel(options?: ChatModelOptions): ChatModelInvoker;
+  createChatModelWithFallback(
+    options?: ChatModelOptions,
+    fallbackPolicy?: Partial<ModelFallbackPolicy>
+  ): ChatModelInvoker;
+}
+
+interface ProviderGateway {
+  createChatModel(options?: ChatModelOptions): ChatModelInvoker;
+}
+
+class TracedChatModelInvoker implements ChatModelInvoker {
+  constructor(
+    private readonly delegate: ChatModelInvoker,
+    private readonly provider: LlmProviderName,
+    private readonly model: string
+  ) {}
+
+  bindTools(
+    tools: StructuredToolInterface[],
+    kwargs?: Pick<ChatModelOptions, "toolChoice">
+  ): ChatModelInvoker {
+    if (!this.delegate.bindTools) {
+      throw new Error(`Provider ${this.provider} does not support tool binding.`);
+    }
+    return new TracedChatModelInvoker(
+      this.delegate.bindTools(tools, kwargs),
+      this.provider,
+      this.model
+    );
+  }
+
+  invoke(
+    input: ChatModelInput,
+    options?: ChatModelInvokeOptions
+  ): Promise<ChatModelOutput> {
+    return getSpanManager().withSpan(
+      "llm.call",
+      {
+        attributes: {
+          "model.name": this.model,
+          "model.provider": this.provider,
+          ...(options?.taskId ? { "task.id": options.taskId } : {}),
+          ...(options?.stepId ? { "step.id": options.stepId } : {}),
+        },
+      },
+      () => this.delegate.invoke(input, options)
+    );
+  }
+}
+
+class ModelCallMetricInvoker implements ChatModelInvoker {
+  constructor(
+    private readonly delegate: ChatModelInvoker,
+    private readonly provider: LlmProviderName
+  ) {}
+
+  bindTools(
+    tools: StructuredToolInterface[],
+    kwargs?: Pick<ChatModelOptions, "toolChoice">
+  ): ChatModelInvoker {
+    if (!this.delegate.bindTools) {
+      throw new Error(`Provider ${this.provider} does not support tool binding.`);
+    }
+    return new ModelCallMetricInvoker(
+      this.delegate.bindTools(tools, kwargs),
+      this.provider
+    );
+  }
+
+  async invoke(
+    input: ChatModelInput,
+    options?: ChatModelInvokeOptions
+  ): Promise<ChatModelOutput> {
+    await recordMetric("model.call", {
+      callId: crypto.randomUUID(),
+      provider: this.provider,
+    });
+    return this.delegate.invoke(input, options);
+  }
+}
+
+const JSON_OBJECT_SCHEMA = z.object({}).passthrough();
+
+function appendStructuredOutputHint(input: ChatModelInput, hint?: string): ChatModelInput {
+  if (!hint) return input;
+  const instruction = [
+    "The previous response was not a valid JSON object.",
+    `Validation hint: ${hint}`,
+    "Return only one valid JSON object without markdown.",
+  ].join("\n");
+  return Array.isArray(input)
+    ? [...input, { role: "user", content: instruction }]
+    : typeof input === "string"
+      ? `${input}\n\n${instruction}`
+      : [input, { role: "user", content: instruction }];
+}
+
+class StructuredOutputRepairChatModelInvoker implements ChatModelInvoker {
+  constructor(
+    private readonly delegate: ChatModelInvoker,
+    private readonly strategy: RepairStrategy
+  ) {}
+
+  bindTools(
+    tools: StructuredToolInterface[],
+    kwargs?: Pick<ChatModelOptions, "toolChoice">
+  ): ChatModelInvoker {
+    if (!this.delegate.bindTools) {
+      throw new Error("Structured output provider does not support tool binding.");
+    }
+    return new StructuredOutputRepairChatModelInvoker(
+      this.delegate.bindTools(tools, kwargs),
+      this.strategy
+    );
+  }
+
+  async invoke(
+    input: ChatModelInput,
+    options?: ChatModelInvokeOptions
+  ): Promise<ChatModelOutput> {
+    let lastResponse: BaseMessage | undefined;
+    const result = await repairStructuredOutput({
+      invoke: async (hint) => {
+        lastResponse = await this.delegate.invoke(
+          appendStructuredOutputHint(input, hint),
+          options
+        );
+        return lastResponse;
+      },
+      schema: JSON_OBJECT_SCHEMA,
+      strategy: this.strategy,
+    });
+
+    if (result.status === "refusal") {
+      throw new StructuredOutputRefusalError();
+    }
+    if (!result.output) {
+      throw new StructuredOutputExhaustedError(result.lastError);
+    }
+
+    return new AIMessage({
+      content: JSON.stringify(result.output),
+      usage_metadata:
+        lastResponse instanceof AIMessage
+          ? lastResponse.usage_metadata
+          : undefined,
+      response_metadata: {
+        ...lastResponse?.response_metadata,
+        structured_output_status: result.status,
+        structured_output_attempts: result.attempts,
+      },
+    });
+  }
 }
 
 export type LlmProviderName = "ccr" | "openai-compatible" | "qwen";
@@ -770,7 +945,10 @@ class OpenAiCompatibleChatModel implements ChatModelInvoker {
     });
   }
 
-  async invoke(input: ChatModelInput): Promise<ChatModelOutput> {
+  async invoke(
+    input: ChatModelInput,
+    invokeOptions?: ChatModelInvokeOptions
+  ): Promise<ChatModelOutput> {
     const url = buildChatCompletionsUrl(this.options.baseUrl);
     const endpointKind: LlmEndpointKind = "openai-chat-completions";
     const capabilities = capabilitiesForProvider(this.options.provider, this.options.purpose);
@@ -819,6 +997,7 @@ class OpenAiCompatibleChatModel implements ChatModelInvoker {
           method: "POST",
           headers,
           body: JSON.stringify(body),
+          signal: invokeOptions?.signal,
         });
         const responseText = await response.text();
 
@@ -856,6 +1035,9 @@ class OpenAiCompatibleChatModel implements ChatModelInvoker {
         });
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+        if (invokeOptions?.signal?.aborted) {
+          throw lastError;
+        }
         if (attempt >= attempts) {
           throw lastError;
         }
@@ -873,7 +1055,7 @@ class OpenAiCompatibleChatModel implements ChatModelInvoker {
   }
 }
 
-class OpenAiCompatibleGateway implements LlmGateway {
+class OpenAiCompatibleGateway implements ProviderGateway {
   createChatModel(options: ChatModelOptions = {}): ChatModelInvoker {
     const baseUrl = getOpenAiCompatibleBaseUrl();
     if (!baseUrl) {
@@ -897,7 +1079,7 @@ class OpenAiCompatibleGateway implements LlmGateway {
   }
 }
 
-class QwenGateway implements LlmGateway {
+class QwenGateway implements ProviderGateway {
   createChatModel(options: ChatModelOptions = {}): ChatModelInvoker {
     const purpose = options.purpose ?? "chat";
     return new OpenAiCompatibleChatModel({
@@ -923,7 +1105,10 @@ class CcrAnthropicChatModel implements ChatModelInvoker {
     }
   ) {}
 
-  async invoke(input: ChatModelInput): Promise<ChatModelOutput> {
+  async invoke(
+    input: ChatModelInput,
+    invokeOptions?: ChatModelInvokeOptions
+  ): Promise<ChatModelOutput> {
     const url = buildAnthropicMessagesUrl(this.options.baseUrl);
     const provider: LlmProviderName = "ccr";
     const endpointKind: LlmEndpointKind = "anthropic-messages";
@@ -952,6 +1137,7 @@ class CcrAnthropicChatModel implements ChatModelInvoker {
             messages: payload.messages,
             ...(payload.system ? { system: payload.system } : {}),
           }),
+          signal: invokeOptions?.signal,
         });
         const responseText = await response.text();
 
@@ -977,6 +1163,9 @@ class CcrAnthropicChatModel implements ChatModelInvoker {
         return new AIMessage(content);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+        if (invokeOptions?.signal?.aborted) {
+          throw lastError;
+        }
         if (attempt >= attempts) {
           throw lastError;
         }
@@ -987,7 +1176,7 @@ class CcrAnthropicChatModel implements ChatModelInvoker {
   }
 }
 
-class CcrGateway implements LlmGateway {
+class CcrGateway implements ProviderGateway {
   createChatModel(options: ChatModelOptions = {}): ChatModelInvoker {
     const baseUrl = getCcrBaseUrl();
     if (!baseUrl) {
@@ -1046,8 +1235,7 @@ export function getConfiguredLlmProvider(): LlmProviderName {
   return "qwen";
 }
 
-function createGateway(): LlmGateway {
-  const provider = getConfiguredLlmProvider();
+function createGatewayForProvider(provider: LlmProviderName): ProviderGateway {
   if (provider === "qwen") {
     return new QwenGateway();
   }
@@ -1058,6 +1246,107 @@ function createGateway(): LlmGateway {
     return new OpenAiCompatibleGateway();
   }
   return new QwenGateway();
+}
+
+function isLlmProviderName(value: string): value is LlmProviderName {
+  return value === "ccr" || value === "openai-compatible" || value === "qwen";
+}
+
+export function getDefaultFallbackPolicy(): ModelFallbackPolicy {
+  const config = getAgentRuntimeConfig();
+  const fallbackProviders = config.llmFallbackProviders.map((provider) => {
+    if (!isLlmProviderName(provider)) {
+      throw new Error(`Unsupported fallback LLM provider: ${provider}`);
+    }
+    return provider;
+  });
+  return {
+    primaryProvider: getConfiguredLlmProvider(),
+    fallbackProviders,
+    maxTotalAttempts: config.llmFallbackMaxAttempts,
+    repairStrategy: config.llmRepairStrategy,
+    perProviderTimeoutMs: config.llmFallbackTimeoutMs,
+  };
+}
+
+class ConfiguredLlmGateway implements LlmGateway {
+  constructor(
+    private readonly primaryProvider: LlmProviderName,
+    private readonly primaryGateway: ProviderGateway
+  ) {}
+
+  private tracedModel(
+    provider: LlmProviderName,
+    options: ChatModelOptions,
+    invoker: ChatModelInvoker
+  ): ChatModelInvoker {
+    const purpose = options.purpose ?? "chat";
+    return new TracedChatModelInvoker(
+      invoker,
+      provider,
+      resolveProviderModel(provider, purpose, options.model)
+    );
+  }
+
+  createChatModel(options: ChatModelOptions = {}): ChatModelInvoker {
+    return new ModelCallMetricInvoker(
+      this.tracedModel(
+        this.primaryProvider,
+        options,
+        this.primaryGateway.createChatModel(options)
+      ),
+      this.primaryProvider
+    );
+  }
+
+  createChatModelWithFallback(
+    options: ChatModelOptions = {},
+    fallbackPolicy?: Partial<ModelFallbackPolicy>
+  ): ChatModelInvoker {
+    const config = getAgentRuntimeConfig();
+    const explicitlyEnabled = Boolean(fallbackPolicy?.fallbackProviders?.length);
+    if (!config.llmFallbackEnabled && !explicitlyEnabled) {
+      return this.createChatModel(options);
+    }
+
+    const defaults = getDefaultFallbackPolicy();
+    const policy: ModelFallbackPolicy = {
+      ...defaults,
+      ...fallbackPolicy,
+      fallbackProviders:
+        fallbackPolicy?.fallbackProviders ?? defaults.fallbackProviders,
+    };
+    if (policy.fallbackProviders.length === 0) {
+      return this.createChatModel(options);
+    }
+
+    const providers = [
+      policy.primaryProvider,
+      ...policy.fallbackProviders.filter(
+        (provider, index, all) =>
+          provider !== policy.primaryProvider && all.indexOf(provider) === index
+      ),
+    ];
+    return new FallbackChatModelInvoker(
+      providers.map((provider) => {
+        const tracedInvoker = this.tracedModel(
+          provider,
+          options,
+          createGatewayForProvider(provider).createChatModel(options)
+        );
+        return {
+          provider,
+          invoker: options.responseFormat
+            ? new StructuredOutputRepairChatModelInvoker(
+                tracedInvoker,
+                policy.repairStrategy
+              )
+            : tracedInvoker,
+        };
+      }),
+      policy
+    );
+  }
 }
 
 export function describeLlmGatewayConfig(): Record<string, string | boolean> {
@@ -1084,7 +1373,11 @@ export function getConfiguredLlmCapabilities(
   return capabilitiesForProvider(getConfiguredLlmProvider(), purpose);
 }
 
-export const llmGateway: LlmGateway = createGateway();
+const configuredLlmProvider = getConfiguredLlmProvider();
+export const llmGateway: LlmGateway = new ConfiguredLlmGateway(
+  configuredLlmProvider,
+  createGatewayForProvider(configuredLlmProvider)
+);
 
 export function resolveModel(requestedModel: unknown, fallback: string): string {
   if (typeof requestedModel !== "string" || !requestedModel.trim()) {
