@@ -7,5 +7,8 @@
     "math_agent": "./src/agents/math-agent.ts:mathAgentGraph",
     "mcp_agent": "./src/agents/mcp-agent.ts:mcpAgentGraph"
   },
+  "http": {
+    "app": "./src/platform/metrics/metrics-endpoint.ts:metricsApp"
+  },
   "env": ".env"
 }
