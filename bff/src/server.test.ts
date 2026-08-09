@@ -19,6 +19,7 @@ function createTestConfig(langGraphApiUrl: string, overrides: Partial<BffConfig>
   return {
     port: 0,
     langGraphApiUrl: new URL(langGraphApiUrl),
+    metricsBackendUrl: new URL(langGraphApiUrl),
     frontendDist: ".",
     allowedOrigins: [],
     requireAuth: false,
@@ -83,7 +84,142 @@ async function withBff<T>(
   }
 }
 
+describe("BFF metrics proxy", () => {
+  it("requires BFF authentication and does not forward the client credential", async () => {
+    let upstreamCalls = 0;
+    let upstreamApiKey: string | undefined;
+
+    await withServer(
+      (req, res) => {
+        upstreamCalls += 1;
+        upstreamApiKey = req.headers["x-api-key"] as string | undefined;
+        assert.equal(req.url, "/metrics");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ tasks: { total: 1 } }));
+      },
+      async (upstream) => {
+        const config = createTestConfig(upstream.url, {
+          metricsBackendUrl: new URL(upstream.url),
+          requireAuth: true,
+          apiKeys: new Set(["bff-secret"]),
+        });
+
+        await withBff(config, async (bff) => {
+          const unauthorized = await fetch(`${bff.url}/api/metrics`);
+          assert.equal(unauthorized.status, 401);
+          assert.equal(upstreamCalls, 0);
+
+          const authorized = await fetch(`${bff.url}/api/metrics`, {
+            headers: { "x-api-key": "bff-secret" },
+          });
+          assert.equal(authorized.status, 200);
+          assert.deepEqual(await authorized.json(), { tasks: { total: 1 } });
+          assert.equal(upstreamCalls, 1);
+          assert.equal(upstreamApiKey, undefined);
+        });
+      }
+    );
+  });
+
+  it("preserves the metrics backend failure status and response body", async () => {
+    await withServer(
+      (_req, res) => {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "metrics unavailable" }));
+      },
+      async (upstream) => {
+        await withBff(
+          createTestConfig(upstream.url, {
+            metricsBackendUrl: new URL(upstream.url),
+          }),
+          async (bff) => {
+            const response = await fetch(`${bff.url}/api/metrics`);
+            assert.equal(response.status, 503);
+            assert.deepEqual(await response.json(), {
+              error: "metrics unavailable",
+            });
+          }
+        );
+      }
+    );
+  });
+
+  it("returns bff_timeout when the metrics backend exceeds the timeout", async () => {
+    await withServer(
+      (_req, _res) => {
+        // Keep the request open until the BFF aborts it.
+      },
+      async (upstream) => {
+        await withBff(
+          createTestConfig(upstream.url, {
+            metricsBackendUrl: new URL(upstream.url),
+            upstreamTimeoutMs: 25,
+          }),
+          async (bff) => {
+            const response = await fetch(`${bff.url}/api/metrics`);
+            const body = await response.json();
+
+            assert.equal(response.status, 504);
+            assert.equal(body.error.code, "bff_timeout");
+            assert.equal(body.error.stage, "metrics_upstream_proxy");
+          }
+        );
+      }
+    );
+  });
+});
+
 describe("BFF LangGraph stream proxy", () => {
+  it("forwards W3C trace context headers unchanged", async () => {
+    let traceparent: string | undefined;
+    let tracestate: string | undefined;
+
+    await withServer(
+      (req, res) => {
+        traceparent = req.headers.traceparent as string | undefined;
+        tracestate = req.headers.tracestate as string | undefined;
+        res.end("ok");
+      },
+      async (upstream) => {
+        await withBff(createTestConfig(upstream.url), async (bff) => {
+          const response = await fetch(`${bff.url}/api/langgraph/runs`, {
+            headers: {
+              traceparent:
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+              tracestate: "vendor=value",
+            },
+          });
+
+          assert.equal(response.status, 200);
+          assert.equal(
+            traceparent,
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+          );
+          assert.equal(tracestate, "vendor=value");
+        });
+      }
+    );
+  });
+
+  it("does not generate trace context when the incoming request has none", async () => {
+    let traceparent: string | undefined;
+
+    await withServer(
+      (req, res) => {
+        traceparent = req.headers.traceparent as string | undefined;
+        res.end("ok");
+      },
+      async (upstream) => {
+        await withBff(createTestConfig(upstream.url), async (bff) => {
+          const response = await fetch(`${bff.url}/api/langgraph/runs`);
+          assert.equal(response.status, 200);
+          assert.equal(traceparent, undefined);
+        });
+      }
+    );
+  });
+
+
   it("forwards x-idempotency-key unchanged when present", async () => {
     let forwardedIdempotencyKey: string | undefined;
 

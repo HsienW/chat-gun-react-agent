@@ -18,12 +18,20 @@ export type BffErrorEnvelope = {
 export type BffAbortReason =
   | {
       code: "bff_timeout";
-      stage: "langgraph_upstream_proxy" | "langgraph_stream_proxy";
+      stage:
+        | "langgraph_upstream_proxy"
+        | "langgraph_stream_proxy"
+        | "metrics_upstream_proxy";
       requestId: string;
     }
   | {
       code: "client_disconnected";
       stage: "request_body" | "langgraph_upstream_proxy" | "langgraph_stream_proxy";
+      requestId: string;
+    }
+  | {
+      code: "client_disconnected";
+      stage: "metrics_upstream_proxy";
       requestId: string;
     }
   | {

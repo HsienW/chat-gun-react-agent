@@ -50,6 +50,8 @@ const FORWARDED_REQUEST_HEADERS = new Set([
   "accept-language",
   "authorization",
   "content-type",
+  "traceparent",
+  "tracestate",
   "user-agent",
   "x-api-key",
   "x-idempotency-key",
@@ -373,6 +375,133 @@ function getResponseContentType(res: ServerResponse): string {
   const value = res.getHeader("content-type");
   if (Array.isArray(value)) return value.join(",");
   return value ? String(value) : "";
+}
+
+function buildMetricsUpstreamUrl(config: BffConfig, reqUrl: URL): URL {
+  const upstreamUrl = new URL(config.metricsBackendUrl);
+  upstreamUrl.pathname = path.posix.join(upstreamUrl.pathname, "/metrics");
+  upstreamUrl.search = reqUrl.search;
+  return upstreamUrl;
+}
+
+function copyMetricsRequestHeaders(
+  req: IncomingMessage,
+  ctx: RequestContext
+): Headers {
+  const headers = new Headers();
+  const accept = getHeader(req, "accept");
+  if (accept) headers.set("accept", accept);
+  headers.set("x-request-id", ctx.requestId);
+  return headers;
+}
+
+async function proxyMetrics(
+  req: IncomingMessage,
+  res: ServerResponse,
+  reqUrl: URL,
+  ctx: RequestContext,
+  config: BffConfig
+): Promise<void> {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    sendJson(res, 405, { error: "Method not allowed" }, ctx.requestId);
+    return;
+  }
+
+  const auth = authenticate(req, config);
+  if (!auth.ok) {
+    sendJson(res, auth.status, { error: auth.message }, ctx.requestId);
+    return;
+  }
+
+  const upstreamUrl = buildMetricsUpstreamUrl(config, reqUrl);
+  const abortController = new AbortController();
+  const disconnectReason: BffAbortReason = {
+    code: "client_disconnected",
+    stage: "metrics_upstream_proxy",
+    requestId: ctx.requestId,
+  };
+  const timeoutReason: BffAbortReason = {
+    code: "bff_timeout",
+    stage: "metrics_upstream_proxy",
+    requestId: ctx.requestId,
+  };
+  const onClientDisconnect = () => {
+    if (!res.writableEnded) abortWithReason(abortController, disconnectReason);
+  };
+  const timeout = setTimeout(
+    () => abortWithReason(abortController, timeoutReason),
+    config.upstreamTimeoutMs
+  );
+  res.once("close", onClientDisconnect);
+
+  try {
+    const upstreamResponse = await fetch(upstreamUrl, {
+      method: req.method,
+      headers: copyMetricsRequestHeaders(req, ctx),
+      signal: abortController.signal,
+    });
+
+    res.statusCode = upstreamResponse.status;
+    res.statusMessage = upstreamResponse.statusText;
+    res.setHeader("x-request-id", ctx.requestId);
+    copyResponseHeaders(upstreamResponse, res);
+
+    if (req.method === "HEAD" || !upstreamResponse.body) {
+      res.end();
+      return;
+    }
+
+    await pipeWebResponseBody(upstreamResponse.body, res, {
+      abortController,
+      disconnectReason,
+    });
+  } catch (error) {
+    const abortReason = getAbortReason(abortController.signal);
+    if (abortReason?.code === "client_disconnected") return;
+
+    const normalizedError = abortReason
+      ? createBffAbortError(abortReason, error)
+      : error;
+    const envelope = createBffErrorEnvelope(normalizedError, {
+      stage: "metrics_upstream_proxy",
+      provider: "MetricsBackend",
+      message: abortReason
+        ? "Metrics upstream timed out"
+        : "Metrics upstream error",
+      abortReason,
+      details: {
+        method: req.method,
+        path: req.url,
+        requestId: ctx.requestId,
+      },
+    });
+
+    console.error(
+      JSON.stringify({
+        event: "bff_metrics_upstream_error",
+        requestId: ctx.requestId,
+        method: req.method,
+        path: req.url,
+        statusCode: statusForBffErrorCode(envelope.error.code),
+        durationMs: Date.now() - ctx.startedAt,
+        errorCode: envelope.error.code,
+      })
+    );
+
+    if (!res.headersSent) {
+      sendJson(
+        res,
+        statusForBffErrorCode(envelope.error.code),
+        envelope,
+        ctx.requestId
+      );
+    } else if (!res.destroyed && !res.writableEnded) {
+      res.destroy();
+    }
+  } finally {
+    clearTimeout(timeout);
+    res.off("close", onClientDisconnect);
+  }
 }
 
 function isSseResponse(res: ServerResponse): boolean {
@@ -925,6 +1054,11 @@ export function createServer(
 
     if (reqUrl.pathname.startsWith("/api/langgraph")) {
       await proxyLangGraph(req, res, reqUrl, ctx, config);
+      return;
+    }
+
+    if (reqUrl.pathname === "/api/metrics") {
+      await proxyMetrics(req, res, reqUrl, ctx, config);
       return;
     }
 
