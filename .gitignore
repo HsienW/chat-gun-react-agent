@@ -214,6 +214,8 @@ backend/.langgraph_api
 
 # Latest-only local artifacts for Agent handoff and review evidence
 .agent-runtime/
+backend/eval-results/
 
 # Second-stage planning reference (not in version control)
 second-stage-plan-en.md
+/second-stage-plan-en-v2.md
