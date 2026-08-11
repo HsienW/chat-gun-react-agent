@@ -4,12 +4,23 @@ import { ToolNode } from "@langchain/langgraph/prebuilt";
 
 import { getEnv } from "../platform/env.js";
 import { llmGateway } from "../platform/llm-gateway.js";
+import {
+  instrumentGraphWithOpik,
+  withOpikNode,
+} from "../platform/tracing/opik/opik-graph.js";
 import { mcpSystemMessage } from "../prompts.js";
 import { loadAgentTools } from "../tools/registry.js";
 import { normalizeAiMessageForStream } from "./message-normalization.js";
 
 const tools = await loadAgentTools("mcp_agent", { includeMcp: true });
 const toolNode = new ToolNode(tools);
+const tracedToolNode = withOpikNode(
+  "tools",
+  async (
+    state: typeof MessagesAnnotation.State,
+    config: RunnableConfig
+  ) => toolNode.invoke(state, config)
+);
 
 function shouldContinue(state: typeof MessagesAnnotation.State): "tools" | typeof END {
   const lastMessage = state.messages[state.messages.length - 1] as {
@@ -44,8 +55,8 @@ async function callModel(
 }
 
 const builder = new StateGraph(MessagesAnnotation)
-  .addNode("call_model", callModel)
-  .addNode("tools", toolNode)
+  .addNode("call_model", withOpikNode("call_model", callModel))
+  .addNode("tools", tracedToolNode)
   .addEdge(START, "call_model")
   .addConditionalEdges("call_model", shouldContinue, {
     tools: "tools",
@@ -53,4 +64,4 @@ const builder = new StateGraph(MessagesAnnotation)
   })
   .addEdge("tools", "call_model");
 
-export const mcpAgentGraph = builder.compile();
+export const mcpAgentGraph = instrumentGraphWithOpik(builder.compile(), "mcp_agent");

@@ -9,6 +9,11 @@ vi.mock("../state-machine.js", async (importOriginal) => {
 });
 
 import { transitionStep } from "../state-machine.js";
+import {
+  createNoopOpikTracer,
+  setOpikTracerForTests,
+  type RetrySpanMetadata,
+} from "../../platform/tracing/opik/opik-tracer.js";
 import type { AgentStep, TaskEvent } from "../types.js";
 import { executeWithRetry } from "./retry-executor.js";
 import { DEFAULT_RETRY_POLICY } from "./retry-policy.js";
@@ -48,9 +53,11 @@ describe("executeWithRetry", () => {
     vi.setSystemTime(new Date(createdAt));
     vi.mocked(transitionStep).mockClear();
     events.length = 0;
+    setOpikTracerForTests(undefined);
   });
 
   afterEach(() => {
+    setOpikTracerForTests(undefined);
     vi.useRealTimers();
   });
 
@@ -121,6 +128,16 @@ describe("executeWithRetry", () => {
   });
 
   it("retries one timeout and then succeeds in the required transition order", async () => {
+    const retrySpans: RetrySpanMetadata[] = [];
+    const tracer = createNoopOpikTracer();
+    tracer.withRetrySpan = async function withRetrySpanForTest<T>(
+      metadata: RetrySpanMetadata,
+      execution: () => Promise<T>
+    ): Promise<T> {
+      retrySpans.push(metadata);
+      return execution();
+    };
+    setOpikTracerForTests(tracer);
     const operation = vi
       .fn()
       .mockResolvedValueOnce({ error: { code: "TIMEOUT", message: "Timed out" } })
@@ -139,6 +156,9 @@ describe("executeWithRetry", () => {
     expect(result.finalStep).toMatchObject({ status: "succeeded", attempt: 2 });
     expect(result.budget.attempts).toBe(2);
     expect(operation).toHaveBeenCalledTimes(2);
+    expect(retrySpans).toEqual([
+      { attempt: 2, reason: "timeout", stepId: "step-1" },
+    ]);
     expect(vi.mocked(transitionStep).mock.calls.map((call) => call[1])).toEqual([
       "retryable_failed",
       "pending",

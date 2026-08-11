@@ -5,6 +5,10 @@ import {
   type SpanOptions,
   type SpanManager,
 } from "../platform/tracing/span-manager.js";
+import {
+  createNoopOpikTracer,
+  type NodeSpanMetadata,
+} from "../platform/tracing/opik/opik-tracer.js";
 import { deepResearcherTracingTestInternals } from "./deep-researcher.js";
 
 describe("deep researcher tracing", () => {
@@ -27,14 +31,29 @@ describe("deep researcher tracing", () => {
       },
     };
     const node = vi.fn(async (_state: unknown, _config: unknown) => ({ completed: true }));
+    const withNodeSpan = vi.fn();
+    const opikTracer = createNoopOpikTracer();
+    opikTracer.withNodeSpan = async function withNodeSpanForTest<T>(
+      name: string,
+      metadata: NodeSpanMetadata,
+      operation: () => Promise<T>,
+      input?: unknown
+    ): Promise<T> {
+      withNodeSpan(name, metadata, operation, input);
+      return operation();
+    };
     const traced = deepResearcherTracingTestInternals.traceNode(
       "plan_research",
       node,
-      manager
+      manager,
+      opikTracer
     );
 
     await expect(
-      traced({}, { configurable: { task_id: "task-1" } })
+      traced(
+        {},
+        { configurable: { task_id: "task-1", step_id: "step-existing" } }
+      )
     ).resolves.toEqual({ completed: true });
     expect(withSpan).toHaveBeenCalledWith(
       "langgraph.node.plan_research",
@@ -46,6 +65,12 @@ describe("deep researcher tracing", () => {
         },
       },
       expect.any(Function)
+    );
+    expect(withNodeSpan).toHaveBeenCalledWith(
+      "plan_research",
+      { stepId: "step-existing" },
+      expect.any(Function),
+      {}
     );
   });
 });

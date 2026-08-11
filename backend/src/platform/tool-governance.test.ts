@@ -4,6 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { applyToolGovernance } from "./tool-governance.js";
+import {
+  createNoopOpikTracer,
+  setOpikTracerForTests,
+  type ToolSpanMetadata,
+} from "./tracing/opik/opik-tracer.js";
 
 function createEchoTool(output: string): StructuredToolInterface {
   return tool(
@@ -22,6 +27,44 @@ describe("applyToolGovernance", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
+    setOpikTracerForTests(undefined);
+  });
+
+  it("wraps governed execution in an Opik tool span with existing identifiers", async () => {
+    vi.stubEnv("TOOL_AUDIT_ENABLED", "false");
+    const withToolSpan = vi.fn();
+    const tracer = createNoopOpikTracer();
+    tracer.withToolSpan = async function withToolSpanForTest<T>(
+      metadata: ToolSpanMetadata,
+      operation: () => Promise<T>,
+      input?: unknown
+    ): Promise<T> {
+      withToolSpan(metadata, operation, input);
+      return operation();
+    };
+    setOpikTracerForTests(tracer);
+
+    const [governedTool] = applyToolGovernance([createEchoTool("ok")]);
+    await expect(
+      governedTool.invoke(
+        { value: "valid" },
+        {
+          configurable: {
+            step_id: "step-1",
+            tool_call_id: "tool-call-1",
+          },
+        }
+      )
+    ).resolves.toBe("valid:ok");
+    expect(withToolSpan).toHaveBeenCalledWith(
+      {
+        toolName: "contract_echo",
+        stepId: "step-1",
+        toolCallId: "tool-call-1",
+      },
+      expect.any(Function),
+      { value: "valid" }
+    );
   });
 
   it("returns a safe governed error when tool input fails runtime schema validation", async () => {

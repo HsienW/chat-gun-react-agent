@@ -5,11 +5,17 @@ import {
   type SpanOptions,
   type SpanManager,
 } from "./tracing/span-manager.js";
+import {
+  createNoopOpikTracer,
+  setOpikTracerForTests,
+  type LlmSpanMetadata,
+} from "./tracing/opik/opik-tracer.js";
 
 describe("llmGateway tracing", () => {
   afterEach(async () => {
     const { setSpanManagerForTests } = await import("./tracing/span-manager.js");
     setSpanManagerForTests(undefined);
+    setOpikTracerForTests(undefined);
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
@@ -49,6 +55,17 @@ describe("llmGateway tracing", () => {
     };
     const { setSpanManagerForTests } = await import("./tracing/span-manager.js");
     setSpanManagerForTests(manager);
+    const withLlmSpan = vi.fn();
+    const opikTracer = createNoopOpikTracer();
+    opikTracer.withLlmSpan = async function withLlmSpanForTest<T>(
+      metadata: LlmSpanMetadata,
+      operation: () => Promise<T>,
+      input?: unknown
+    ): Promise<T> {
+      withLlmSpan(metadata, operation, input);
+      return operation();
+    };
+    setOpikTracerForTests(opikTracer);
     const { llmGateway } = await import("./llm-gateway.js");
 
     await llmGateway.createChatModel({ purpose: "chat" }).invoke("ping", {
@@ -67,6 +84,15 @@ describe("llmGateway tracing", () => {
         },
       },
       expect.any(Function)
+    );
+    expect(withLlmSpan).toHaveBeenCalledWith(
+      {
+        modelName: "qwen-test",
+        providerName: "qwen",
+        stepId: "step-1",
+      },
+      expect.any(Function),
+      "ping"
     );
   });
 

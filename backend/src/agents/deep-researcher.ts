@@ -30,6 +30,11 @@ import {
   type SpanManager,
   type TraceAttributes,
 } from "../platform/tracing/span-manager.js";
+import { instrumentGraphWithOpik } from "../platform/tracing/opik/opik-graph.js";
+import {
+  getOpikTracer,
+  type OpikTracer,
+} from "../platform/tracing/opik/opik-tracer.js";
 import {
   extractImageAttachmentBlocks,
   getImageUrl,
@@ -111,13 +116,31 @@ function getTracingTaskId(config: unknown): string | undefined {
   return undefined;
 }
 
+function getTracingStepId(config: unknown): string | undefined {
+  if (!config || typeof config !== "object" || !("configurable" in config)) {
+    return undefined;
+  }
+  const configurable = config.configurable;
+  if (!configurable || typeof configurable !== "object") return undefined;
+
+  for (const key of ["step_id", "stepId"] as const) {
+    const value = Object.entries(configurable).find(
+      ([entryKey]) => entryKey === key
+    )?.[1];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
 function traceNode<TArguments extends unknown[], TResult>(
   nodeName: string,
   node: (...args: TArguments) => Promise<TResult>,
-  manager: SpanManager = getSpanManager()
+  manager: SpanManager = getSpanManager(),
+  opikTracer: OpikTracer = getOpikTracer()
 ): (...args: TArguments) => Promise<TResult> {
   return (...args) => {
     const taskId = getTracingTaskId(args[1]);
+    const stepId = getTracingStepId(args[1]);
     const attributes: TraceAttributes = {
       "node.name": nodeName,
       "step.id": nodeName,
@@ -126,7 +149,13 @@ function traceNode<TArguments extends unknown[], TResult>(
     return manager.withSpan(
       `langgraph.node.${nodeName}`,
       { attributes },
-      () => node(...args)
+      () =>
+        opikTracer.withNodeSpan(
+          nodeName,
+          stepId ? { stepId } : {},
+          () => node(...args),
+          args[0]
+        )
     );
   };
 }
@@ -2776,7 +2805,10 @@ const builder = new StateGraph(DeepResearchState)
 
 const deepResearcherCheckpointer = new MemorySaver();
 
-export const deepResearcherGraph = builder.compile({
-  checkpointer: deepResearcherCheckpointer,
-});
+export const deepResearcherGraph = instrumentGraphWithOpik(
+  builder.compile({
+    checkpointer: deepResearcherCheckpointer,
+  }),
+  "weather"
+);
 
