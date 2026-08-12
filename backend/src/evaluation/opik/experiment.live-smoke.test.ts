@@ -118,6 +118,19 @@ describe.runIf(liveEvaluationEnabled)("hosted Opik evaluation", () => {
       expect(first.agentConfig.model).not.toBe(second.agentConfig.model);
       expect(first.traceIds.length).toBeGreaterThan(0);
       expect(second.traceIds.length).toBeGreaterThan(0);
+      expect(first.hostedStatus).toBe("SUCCEEDED");
+      expect(second.hostedStatus).toBe("SUCCEEDED");
+      if (
+        first.hostedStatus !== "SUCCEEDED" ||
+        second.hostedStatus !== "SUCCEEDED"
+      ) {
+        throw new Error("Hosted Opik experiments must be created");
+      }
+      expect(first.hostedExperimentId).toBeTruthy();
+      expect(second.hostedExperimentId).toBeTruthy();
+      expect(first.hostedExperimentId).not.toBe(second.hostedExperimentId);
+      expect(first.hostedExperimentUrl).toBeTruthy();
+      expect(second.hostedExperimentUrl).toBeTruthy();
       const expectedCompletedItems = Math.min(maxItems, dataset.items.length);
       for (const result of [first, second]) {
         const completedItems = result.items.filter(

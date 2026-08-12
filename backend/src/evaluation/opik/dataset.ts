@@ -142,14 +142,21 @@ function toDeterministicUuid(namespace: string, name: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+export function getHostedDatasetItemId(
+  datasetVersion: string,
+  caseId: string
+): string {
+  return toDeterministicUuid(
+    OPIK_DATASET_NAMESPACE,
+    `${datasetVersion}:${caseId}`
+  );
+}
+
 function toTransportItems(
   dataset: EvaluationDataset
 ): Array<Record<string, unknown>> {
   return dataset.items.map((item) => ({
-    id: toDeterministicUuid(
-      OPIK_DATASET_NAMESPACE,
-      `${dataset.version}:${item.id}`
-    ),
+    id: getHostedDatasetItemId(dataset.version, item.id),
     input: item.input,
     ...(item.expectedOutput ? { expectedOutput: item.expectedOutput } : {}),
     ...(item.goldenTrace ? { goldenTrace: item.goldenTrace } : {}),

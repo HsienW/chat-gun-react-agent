@@ -81,7 +81,11 @@ function dependencies(
     }),
     tracer: createNoopOpikTracer(),
     now: () => new Date("2026-08-11T00:00:00.000Z"),
-    experimentId: () => "experiment-test",
+    localExperimentId: () => "experiment-test",
+    publishHostedExperiment: async () => ({
+      hostedStatus: "SKIPPED",
+      hostedSkipReason: "disabled",
+    }),
     ...overrides,
   };
 }
@@ -362,7 +366,10 @@ describe("runExperiment", () => {
     const persisted = JSON.parse(await readFile(result.outputPath, "utf8"));
 
     expect(persisted).toMatchObject({
-      experimentId: "experiment-test",
+      localExperimentId: "experiment-test",
+      experimentId: null,
+      hostedStatus: "SKIPPED",
+      hostedSkipReason: "disabled",
       datasetVersion: "v1.0.0",
       agentConfig: { model: "agent-a", provider: "qwen" },
       timestamp: "2026-08-11T00:00:00.000Z",
@@ -372,6 +379,75 @@ describe("runExperiment", () => {
       value: 1,
       reason: "Tool call matches expected",
     });
+  });
+
+  it("persists the real hosted experiment identity returned by the publisher", async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), "opik-eval-"));
+    tempDirectories.push(outputDir);
+    const publishHostedExperiment = vi.fn(async () => ({
+      hostedStatus: "SUCCEEDED" as const,
+      hostedExperimentId: "hosted-experiment-1",
+      hostedExperimentUrl: "https://www.comet.com/opik/experiments/1",
+      hostedDatasetId: "hosted-dataset-1",
+      hostedDatasetVersionId: "hosted-version-1",
+    }));
+
+    const result = await runExperiment(
+      baseConfig(outputDir),
+      dependencies({ publishHostedExperiment })
+    );
+    const persisted = JSON.parse(await readFile(result.outputPath, "utf8"));
+
+    expect(publishHostedExperiment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        localExperimentId: "experiment-test",
+        dataset,
+        traceReferences: [],
+      })
+    );
+    expect(result).toMatchObject({
+      localExperimentId: "experiment-test",
+      experimentId: "hosted-experiment-1",
+      hostedStatus: "SUCCEEDED",
+      hostedExperimentId: "hosted-experiment-1",
+      hostedExperimentUrl: "https://www.comet.com/opik/experiments/1",
+    });
+    expect(persisted).toMatchObject({
+      localExperimentId: "experiment-test",
+      experimentId: "hosted-experiment-1",
+      hostedStatus: "SUCCEEDED",
+      hostedExperimentId: "hosted-experiment-1",
+      hostedExperimentUrl: "https://www.comet.com/opik/experiments/1",
+    });
+  });
+
+  it("writes local JSON with FAILED status when hosted publication throws", async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), "opik-eval-"));
+    tempDirectories.push(outputDir);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const result = await runExperiment(
+      baseConfig(outputDir),
+      dependencies({
+        publishHostedExperiment: async () => {
+          throw new Error("hosted unavailable token=secret-value");
+        },
+      })
+    );
+    const persisted = JSON.parse(await readFile(result.outputPath, "utf8"));
+
+    expect(result).toMatchObject({
+      experimentId: null,
+      hostedStatus: "FAILED",
+      hostedError: {
+        type: "Error",
+        message: "hosted unavailable token=[redacted]",
+      },
+    });
+    expect(JSON.stringify(persisted)).not.toContain("secret-value");
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('"event":"opik_hosted_experiment_failed"')
+    );
   });
 
   it("links metric feedback and trace IDs to each successful item", async () => {
@@ -396,13 +472,28 @@ describe("runExperiment", () => {
     tracer.logFeedback = (name, value) => {
       if (activeTraceId) feedback.push({ traceId: activeTraceId, name, value });
     };
+    const publishHostedExperiment = vi.fn(async () => ({
+      hostedStatus: "SUCCEEDED" as const,
+      hostedExperimentId: "hosted-experiment-1",
+      hostedExperimentUrl: "https://www.comet.com/opik/experiments/1",
+      hostedDatasetId: "hosted-dataset-1",
+      hostedDatasetVersionId: "hosted-version-1",
+    }));
 
     const result = await runExperiment(
       baseConfig(outputDir),
-      dependencies({ tracer })
+      dependencies({ tracer, publishHostedExperiment })
     );
 
     expect(result.traceIds).toEqual(["trace-tokyo", "trace-taipei"]);
+    expect(publishHostedExperiment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        traceReferences: [
+          { caseId: "tokyo", traceId: "trace-tokyo" },
+          { caseId: "taipei", traceId: "trace-taipei" },
+        ],
+      })
+    );
     expect(feedback).toEqual([
       { traceId: "trace-tokyo", name: "tool_call_correctness", value: 1 },
       { traceId: "trace-taipei", name: "tool_call_correctness", value: 1 },

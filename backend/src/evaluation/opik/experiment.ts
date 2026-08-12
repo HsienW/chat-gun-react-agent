@@ -14,6 +14,11 @@ import {
 } from "../../platform/tracing/opik/opik-tracer.js";
 import { sanitizeErrorMessage } from "../../platform/tracing/span-manager.js";
 import { loadOrCreateWeatherGoldenDataset } from "./dataset.js";
+import {
+  publishHostedExperiment,
+  type HostedExperimentInput,
+  type HostedExperimentPublication,
+} from "./hosted-experiment.js";
 import type {
   ActualToolCall,
   AgentRunResult,
@@ -67,8 +72,9 @@ export interface ExperimentItemResult {
   error?: { type: string; message: string };
 }
 
-export interface ExperimentResult {
-  experimentId: string;
+interface ExperimentResultBase {
+  localExperimentId: string;
+  experimentId: string | null;
   comparisonKey: string;
   datasetName: string;
   datasetVersion: string;
@@ -80,6 +86,15 @@ export interface ExperimentResult {
   timestamp: string;
   outputPath: string;
 }
+
+export type ExperimentResult = ExperimentResultBase &
+  (
+    | HostedExperimentPublication
+    | {
+        hostedStatus: "FAILED";
+        hostedError: { type: string; message: string };
+      }
+  );
 
 export interface ExperimentAgentContext {
   signal: AbortSignal;
@@ -97,7 +112,10 @@ export interface ExperimentDependencies {
   ): Promise<AgentRunResult>;
   tracer: OpikTracer;
   now(): Date;
-  experimentId(): string;
+  localExperimentId(): string;
+  publishHostedExperiment(
+    input: HostedExperimentInput
+  ): Promise<HostedExperimentPublication>;
 }
 
 class ItemTimeoutError extends Error {
@@ -280,7 +298,8 @@ function defaultDependencies(): ExperimentDependencies {
     runAgent: runDefaultAgent,
     tracer: getOpikTracer(),
     now: () => new Date(),
-    experimentId: () => randomUUID(),
+    localExperimentId: () => randomUUID(),
+    publishHostedExperiment,
   };
 }
 
@@ -461,7 +480,7 @@ export async function runExperiment(
     );
   }
 
-  const experimentId = resolvedDependencies.experimentId();
+  const localExperimentId = resolvedDependencies.localExperimentId();
   const timestamp = resolvedDependencies.now().toISOString();
   const itemLimit = config.maxItems ?? dataset.items.length;
   const timeoutMs = config.perItemTimeoutMs ?? DEFAULT_ITEM_TIMEOUT_MS;
@@ -477,10 +496,10 @@ export async function runExperiment(
       continue;
     }
 
-    const runId = `${experimentId}:${item.id}`;
+    const runId = `${localExperimentId}:${item.id}`;
     const contextBase = {
       agentConfig: config.agentConfig,
-      threadId: experimentId,
+      threadId: localExperimentId,
       runId,
       taskId: item.id,
     };
@@ -565,8 +584,51 @@ export async function runExperiment(
 
   const traceIds = items.flatMap((item) => (item.traceId ? [item.traceId] : []));
   const metrics = items.flatMap((item) => item.metrics);
+  let hostedPublication:
+    | HostedExperimentPublication
+    | {
+        hostedStatus: "FAILED";
+        hostedError: { type: string; message: string };
+      };
+  try {
+    hostedPublication = await resolvedDependencies.publishHostedExperiment({
+      localExperimentId,
+      dataset,
+      agentConfig: { ...config.agentConfig },
+      ...(config.judgeConfig ? { judgeConfig: { ...config.judgeConfig } } : {}),
+      metrics: config.metrics.map((metric) => ({
+        name: metric.name,
+        deterministic: metric.deterministic,
+      })),
+      traceReferences: items.flatMap((item) =>
+        item.traceId ? [{ caseId: item.itemId, traceId: item.traceId }] : []
+      ),
+    });
+  } catch (error) {
+    hostedPublication = {
+      hostedStatus: "FAILED",
+      hostedError: {
+        type: error instanceof Error ? error.name : "UnknownError",
+        message: sanitizeErrorMessage(
+          error instanceof Error ? error.message : String(error)
+        ),
+      },
+    };
+    console.warn(
+      JSON.stringify({
+        event: "opik_hosted_experiment_failed",
+        localExperimentId,
+        errorName: hostedPublication.hostedError.type,
+      })
+    );
+  }
   const resultWithoutPath = {
-    experimentId,
+    localExperimentId,
+    experimentId:
+      hostedPublication.hostedStatus === "SUCCEEDED"
+        ? hostedPublication.hostedExperimentId
+        : null,
+    ...hostedPublication,
     comparisonKey: comparisonKey(config),
     datasetName: dataset.name,
     datasetVersion: dataset.version,
@@ -585,7 +647,7 @@ export async function runExperiment(
   );
   const completedCount = items.filter((item) => item.status === "COMPLETED").length;
   console.info(
-    `Experiment ${experimentId}: ${completedCount}/${items.length} items completed; results: ${outputPath}`
+    `Local experiment ${localExperimentId}: ${completedCount}/${items.length} items completed; hosted status: ${hostedPublication.hostedStatus}; results: ${outputPath}`
   );
   return { ...resultWithoutPath, outputPath };
 }
