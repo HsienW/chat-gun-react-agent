@@ -1,17 +1,30 @@
-import { describe, expect, it, vi } from "vitest";
+import { ToolMessage } from "@langchain/core/messages";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createNoopSpanManager,
+  setSpanManagerForTests,
   type SpanOptions,
   type SpanManager,
 } from "../platform/tracing/span-manager.js";
 import {
   createNoopOpikTracer,
+  setOpikTracerForTests,
   type NodeSpanMetadata,
+  type ToolSpanMetadata,
 } from "../platform/tracing/opik/opik-tracer.js";
-import { deepResearcherTracingTestInternals } from "./deep-researcher.js";
+import {
+  deepResearcherTracingTestInternals,
+  deepResearcherWeatherTestInternals,
+} from "./deep-researcher.js";
 
 describe("deep researcher tracing", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    setSpanManagerForTests(undefined);
+    setOpikTracerForTests(undefined);
+  });
+
   it("wraps a graph node with node, task, and step attributes", async () => {
     const withSpan = vi.fn();
     const noopManager = createNoopSpanManager();
@@ -72,5 +85,75 @@ describe("deep researcher tracing", () => {
       expect.any(Function),
       {}
     );
+  });
+
+  it("uses one tool call ID across OTel, Opik, governance, and ToolMessage", async () => {
+    vi.stubEnv("TOOL_AUDIT_ENABLED", "false");
+    const otelToolSpans: SpanOptions[] = [];
+    const noopManager = createNoopSpanManager();
+    const manager: SpanManager = {
+      startSpan: (name, options) => noopManager.startSpan(name, options),
+      endSpan: (span) => noopManager.endSpan(span),
+      recordException: (span, error) => noopManager.recordException(span, error),
+      setAttributes: (span, attributes) => noopManager.setAttributes(span, attributes),
+      getActiveSpan: () => noopManager.getActiveSpan(),
+      async withSpan<T>(
+        name: string,
+        options: SpanOptions,
+        operation: () => Promise<T> | T
+      ): Promise<T> {
+        if (name === "tool.execute") otelToolSpans.push(options);
+        return operation();
+      },
+    };
+    const opikToolSpans: ToolSpanMetadata[] = [];
+    const opikTracer = createNoopOpikTracer();
+    opikTracer.withToolSpan = async function withToolSpanForTest<T>(
+      metadata: ToolSpanMetadata,
+      operation: () => Promise<T>
+    ): Promise<T> {
+      opikToolSpans.push(metadata);
+      return operation();
+    };
+    setSpanManagerForTests(manager);
+    setOpikTracerForTests(opikTracer);
+
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      ({
+        plan: {
+          question: "What is 123 * 456?",
+          answerMode: "calculation",
+          rationale: "Calculation requires the calculator tool.",
+          queries: [],
+          urls: [],
+          calculation: { expression: "123 * 456" },
+          requiredSourceCount: 1,
+        },
+      } as unknown) as Parameters<
+        typeof deepResearcherWeatherTestInternals.targetedTools
+      >[0],
+      { configurable: { thread_id: "thread-1", existing: "preserved" } }
+    );
+
+    const toolMessage = toolResult.messages?.[0] as ToolMessage | undefined;
+    const toolCallId = toolMessage?.tool_call_id;
+    expect(toolCallId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    expect(otelToolSpans).toEqual([
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "tool.call.id": toolCallId,
+          "tool.name": "calculator_tool",
+        }),
+      }),
+    ]);
+    expect(opikToolSpans).toEqual([
+      {
+        toolName: "calculator_tool",
+        stepId: "targeted_tools",
+        toolCallId,
+      },
+    ]);
   });
 });

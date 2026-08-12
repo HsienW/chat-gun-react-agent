@@ -655,39 +655,61 @@ function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string
 async function invokeTool(
   toolName: string,
   input: Record<string, unknown>,
+  nodeName: string,
   config?: RunnableConfig
-): Promise<string> {
+): Promise<{ content: string; toolCallId: string }> {
+  const toolCallId = crypto.randomUUID();
   const selectedTool = toolByName.get(toolName) as StructuredToolInterface | undefined;
   if (!selectedTool) {
-    return `Error: tool ${toolName} is not loaded.`;
+    return {
+      content: `Error: tool ${toolName} is not loaded.`,
+      toolCallId,
+    };
   }
 
+  const existingStepId =
+    getConfigString(config, "step_id") || getConfigString(config, "stepId");
+  const toolConfig: RunnableConfig = {
+    ...config,
+    configurable: {
+      ...config?.configurable,
+      tool_call_id: toolCallId,
+      ...(existingStepId
+        ? {}
+        : { step_id: nodeName }),
+    },
+  };
+
   try {
-    return await getSpanManager().withSpan(
+    const content = await getSpanManager().withSpan(
       "tool.execute",
       {
         attributes: {
           "tool.name": toolName,
-          "tool.call.id": crypto.randomUUID(),
+          "tool.call.id": toolCallId,
         },
       },
       async () => {
-        const result = await selectedTool.invoke(input, config);
+        const result = await selectedTool.invoke(input, toolConfig);
         return typeof result === "string" ? result : JSON.stringify(result, null, 2);
       }
     );
+    return { content, toolCallId };
   } catch (error) {
-    return serializeErrorEnvelope(
-      createErrorEnvelope(error, {
-        source: "backend",
-        stage: "tool_invoke",
-        provider: toolName,
-        details: {
-          toolName,
-          input,
-        },
-      })
-    );
+    return {
+      content: serializeErrorEnvelope(
+        createErrorEnvelope(error, {
+          source: "backend",
+          stage: "tool_invoke",
+          provider: toolName,
+          details: {
+            toolName,
+            input,
+          },
+        })
+      ),
+      toolCallId,
+    };
   }
 }
 
@@ -695,12 +717,13 @@ function createToolMessage(
   name: string,
   content: string,
   index = 0,
-  invocation?: ExecutedToolCall
+  invocation?: ExecutedToolCall,
+  toolCallId = `${name}_${Date.now()}_${index}`
 ): ToolMessage {
   return new ToolMessage({
     content,
     name,
-    tool_call_id: `${name}_${Date.now()}_${index}`,
+    tool_call_id: toolCallId,
     ...(invocation
       ? { artifact: createExecutedToolCallArtifact(invocation) }
       : {}),
@@ -1503,13 +1526,14 @@ async function targetedTools(
     weatherExecution = { status: "running", requestedLocation: request };
     const initialInvocation = buildWeatherToolInvocation(rawRequest, request);
     const toolName = initialInvocation.name;
-    const initialContent = await invokeTool(
+    const initialExecution = await invokeTool(
       toolName,
       initialInvocation.arguments,
+      DEEP_RESEARCH_GRAPH_NODES.targetedTools,
       _config
     );
     const initialOutcome = resolveWeatherToolOutcome(
-      initialContent,
+      initialExecution.content,
       request,
       toolName
     );
@@ -1518,7 +1542,8 @@ async function targetedTools(
         toolName,
         initialOutcome.messageContent,
         0,
-        initialInvocation
+        initialInvocation,
+        initialExecution.toolCallId
       )
     );
     let parsedResult = initialOutcome.result;
@@ -1555,13 +1580,14 @@ async function targetedTools(
             includeResolutionHints: false,
           }
         );
-        const retryContent = await invokeTool(
+        const retryExecution = await invokeTool(
           retryInvocation.name,
           retryInvocation.arguments,
+          DEEP_RESEARCH_GRAPH_NODES.targetedTools,
           _config
         );
         const retryOutcome = resolveWeatherToolOutcome(
-          retryContent,
+          retryExecution.content,
           repairedRequest,
           toolName
         );
@@ -1570,7 +1596,8 @@ async function targetedTools(
             retryInvocation.name,
             retryOutcome.messageContent,
             index + 1,
-            retryInvocation
+            retryInvocation,
+            retryExecution.toolCallId
           )
         );
         const retryParsed = retryOutcome.result;
@@ -1627,8 +1654,21 @@ async function targetedTools(
     const input = {
       expression: plan.calculation.expression,
     };
-    const content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.calculator, input);
-    messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.calculator, content));
+    const execution = await invokeTool(
+      DEEP_RESEARCH_TOOL_NAMES.calculator,
+      input,
+      DEEP_RESEARCH_GRAPH_NODES.targetedTools,
+      _config
+    );
+    messages.push(
+      createToolMessage(
+        DEEP_RESEARCH_TOOL_NAMES.calculator,
+        execution.content,
+        0,
+        undefined,
+        execution.toolCallId
+      )
+    );
   }
 
   return { messages, weatherExecution };
@@ -2261,9 +2301,22 @@ async function searchWeb(
       freshness: plan.freshness,
       format: "json",
     };
-    const content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.webSearch, input);
-    messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.webSearch, content, index));
-    allResults.push(...parseSearchToolOutput(content, query));
+    const execution = await invokeTool(
+      DEEP_RESEARCH_TOOL_NAMES.webSearch,
+      input,
+      DEEP_RESEARCH_GRAPH_NODES.searchWeb,
+      _config
+    );
+    messages.push(
+      createToolMessage(
+        DEEP_RESEARCH_TOOL_NAMES.webSearch,
+        execution.content,
+        index,
+        undefined,
+        execution.toolCallId
+      )
+    );
+    allResults.push(...parseSearchToolOutput(execution.content, query));
   }
 
   for (const url of plan.urls) {
@@ -2358,9 +2411,22 @@ async function fetchSources(
       url: source.url,
       maxCharacters: 16_000,
     };
-    const content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.webFetch, input);
-    messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.webFetch, content, index));
-    const parsed = parseFetchOutput(content);
+    const execution = await invokeTool(
+      DEEP_RESEARCH_TOOL_NAMES.webFetch,
+      input,
+      DEEP_RESEARCH_GRAPH_NODES.fetchSources,
+      _config
+    );
+    messages.push(
+      createToolMessage(
+        DEEP_RESEARCH_TOOL_NAMES.webFetch,
+        execution.content,
+        index,
+        undefined,
+        execution.toolCallId
+      )
+    );
+    const parsed = parseFetchOutput(execution.content);
     fetchedSources.push({
       ...source,
       content: parsed.content,
