@@ -7,6 +7,20 @@ const MAX_REDACTION_DEPTH = 8;
 const MAX_ARRAY_ENTRIES = 50;
 const MAX_OBJECT_ENTRIES = 100;
 
+const INTERNATIONAL_PHONE_PATTERN = /\+886(?:[ ()-]*\d){8,10}(?![ ()-]*\d)/g;
+const GROUPED_PHONE_PATTERN = /\b(?:\d{2,4}[ -]){2}\d{3,4}\b/g;
+const PARENTHESIZED_PHONE_PATTERN = /\(\d{2,4}\)[ -]?\d{3,4}[ -]\d{3,4}\b/g;
+const URL_PATTERN = /(?:https?:\/\/|www\.)\S+/gi;
+
+const PHONE_FIELD_KEYS = new Set([
+  "mobile",
+  "mobilenumber",
+  "phone",
+  "phonenumber",
+  "telephone",
+  "telephonenumber",
+]);
+
 const PROMPT_FIELD_KEYS = new Set([
   "instructions",
   "messages",
@@ -63,6 +77,14 @@ function isSecretFieldKey(key: string): boolean {
   );
 }
 
+function isPhoneFieldKey(key: string, normalizedKey: string): boolean {
+  return (
+    PHONE_FIELD_KEYS.has(normalizedKey) ||
+    /(?:^|[_\s-])(?:phone|telephone|mobile)(?:[_\s-]?number)?$/i.test(key) ||
+    /(?:Phone|Telephone|Mobile)(?:Number)?$/.test(key)
+  );
+}
+
 function stableSerialize(value: unknown, seen = new WeakSet<object>()): string {
   if (value === null || typeof value !== "object") {
     if (typeof value === "bigint") return JSON.stringify(value.toString());
@@ -90,11 +112,50 @@ function hashReference(kind: "prompt" | "payload", value: unknown): string {
   return `[${kind}:${digest}]`;
 }
 
+function findContainingUrl(
+  value: string,
+  offset: number
+): RegExpMatchArray | undefined {
+  return Array.from(value.matchAll(URL_PATTERN)).find((match) => {
+    const start = match.index;
+    return start <= offset && offset < start + match[0].length;
+  });
+}
+
+function shouldRedactPhoneMatch(value: string, offset: number): boolean {
+  const urlMatch = findContainingUrl(value, offset);
+  if (!urlMatch) return true;
+
+  const prefix = value.slice(urlMatch.index, offset);
+  const queryStart = prefix.indexOf("?");
+  if (queryStart === -1) return true;
+
+  const queryEntry = prefix.slice(
+    Math.max(queryStart, prefix.lastIndexOf("&")) + 1
+  );
+  const separatorIndex = queryEntry.indexOf("=");
+  if (separatorIndex === -1) return false;
+
+  const fieldKey = queryEntry.slice(0, separatorIndex);
+  return isPhoneFieldKey(fieldKey, normalizeFieldKey(fieldKey));
+}
+
+function redactPhoneMatches(value: string, pattern: RegExp): string {
+  return value.replace(pattern, (match, offset: number, source: string) =>
+    shouldRedactPhoneMatch(source, offset) ? "[phone]" : match
+  );
+}
+
 function sanitizeString(value: string): string {
-  return sanitizeErrorMessage(value)
+  const sanitized = sanitizeErrorMessage(value)
     .replace(/\b(?:sk|pk)-[a-z0-9_-]+\b/gi, "[redacted]")
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
-    .replace(/(?:\+?\d[\d().\s-]{7,}\d)/g, "[phone]");
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]");
+
+  return [
+    INTERNATIONAL_PHONE_PATTERN,
+    GROUPED_PHONE_PATTERN,
+    PARENTHESIZED_PHONE_PATTERN,
+  ].reduce(redactPhoneMatches, sanitized);
 }
 
 function sanitizeValue(
@@ -117,6 +178,10 @@ function sanitizeValue(
 
   if (normalizedKey && isSecretFieldKey(normalizedKey)) {
     return "[redacted]";
+  }
+
+  if (normalizedKey && fieldKey && isPhoneFieldKey(fieldKey, normalizedKey)) {
+    return "[phone]";
   }
 
   if (normalizedKey && PII_FIELD_KEYS.has(normalizedKey)) {

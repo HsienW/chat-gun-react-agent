@@ -74,6 +74,66 @@ describe("Opik redaction", () => {
     });
   });
 
+  it("masks phone values with explicit telephone grouping", () => {
+    expect(
+      sanitizeSpanOutput({
+        summary: "Call 0912-345-678, 02-2345-6789, or (02) 2345-6789.",
+      })
+    ).toEqual({ summary: "Call [phone], [phone], or [phone]." });
+  });
+
+  it("preserves timestamps and decimal coordinates in general text", () => {
+    const sanitized = sanitizeSpanOutput({
+      timestamp: "2026-08-12T19:00",
+      latitude: "25.05306",
+      longitude: "121.5654",
+      query: "latitude=25.05306&longitude=121.5654",
+    });
+
+    expect(sanitized).toEqual({
+      timestamp: "2026-08-12T19:00",
+      latitude: "25.05306",
+      longitude: "121.5654",
+      query: "latitude=25.05306&longitude=121.5654",
+    });
+  });
+
+  it("preserves numeric URL query values that are not phone fields", () => {
+    expect(
+      sanitizeSpanOutput({
+        url: "https://example.com/weather?request=123-456-789&latitude=25.05306",
+        reference: "1234-5678",
+      })
+    ).toEqual({
+      url: "https://example.com/weather?request=123-456-789&latitude=25.05306",
+      reference: "1234-5678",
+    });
+  });
+
+  it("redacts high-confidence phone values in URL phone fields", () => {
+    expect(
+      sanitizeSpanOutput({
+        url: "https://example.com/contact?phone=+886-912-345-678",
+      })
+    ).toEqual({ url: "https://example.com/contact?phone=[phone]" });
+  });
+
+  it("redacts phone fields without relying on value-shape detection", () => {
+    expect(
+      sanitizeSpanOutput({
+        phone: "extension unknown",
+        phoneNumber: "2026-08-12T19:00",
+        contactPhone: "not parseable",
+        headphone: "wireless",
+      })
+    ).toEqual({
+      phone: "[phone]",
+      phoneNumber: "[phone]",
+      contactPhone: "[phone]",
+      headphone: "wireless",
+    });
+  });
+
   it("preserves correlation identifiers", () => {
     const metadata = {
       threadId: "thread-123456789",
