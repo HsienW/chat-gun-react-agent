@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getHostedDatasetItemId } from "./dataset.js";
 import {
   createSdkHostedExperimentPublisher,
   publishHostedExperiment,
@@ -62,9 +61,18 @@ describe("SdkHostedExperimentPublisher", () => {
       insert,
       getUrl: async () => "https://www.comet.com/opik/experiments/1",
     }));
-    const tokyoItemId = getHostedDatasetItemId("v1.0.0", "tokyo");
-    const taipeiItemId = getHostedDatasetItemId("v1.0.0", "taipei");
-    const versionItems = [{ id: tokyoItemId }, { id: taipeiItemId }];
+    const tokyoItemId = "019ff550-1de2-771e-84ef-96776b98e501";
+    const taipeiItemId = "019ff550-1de2-771e-84ef-96776b98e502";
+    const versionItems = [
+      {
+        id: tokyoItemId,
+        metadata: { caseId: "tokyo", datasetVersion: "v1.0.0" },
+      },
+      {
+        id: taipeiItemId,
+        metadata: { caseId: "taipei", datasetVersion: "v1.0.0" },
+      },
+    ];
     const client = {
       api: {
         datasets: {
@@ -148,7 +156,12 @@ describe("SdkHostedExperimentPublisher", () => {
         getDataset: async () => ({
           id: "hosted-dataset-1",
           getVersionView: async () => ({
-            getItems: async () => [{ id: "different-item" }],
+            getItems: async () => [
+              {
+                id: "different-item",
+                metadata: { caseId: "tokyo", datasetVersion: "v2.0.0" },
+              },
+            ],
           }),
         }),
         createExperiment,
@@ -177,8 +190,12 @@ describe("SdkHostedExperimentPublisher", () => {
           id: "hosted-dataset-1",
           getVersionView: async () => ({
             getItems: async () =>
-              hostedInput().dataset.items.map((item) => ({
-                id: getHostedDatasetItemId("v1.0.0", item.id),
+              hostedInput().dataset.items.map((item, index) => ({
+                id: `019ff550-1de2-771e-84ef-96776b98e50${index}`,
+                metadata: {
+                  caseId: item.id,
+                  datasetVersion: "v1.0.0",
+                },
               })),
           }),
         }),

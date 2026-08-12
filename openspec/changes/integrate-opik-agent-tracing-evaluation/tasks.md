@@ -93,8 +93,8 @@
 
 ### Task A.6：執行完整 Agent Run 並驗證 Opik UI
 
-- [ ] 設定 `OPIK_ENABLED=true` + 有效 API key
-- [ ] 執行至少一個完整 Weather Agent run
+- [x] 設定 `OPIK_ENABLED=true` + 有效 API key
+- [x] 執行至少一個完整 Weather Agent run
 - [ ] 在 Opik UI 中確認：
   - Trace hierarchy：`agent.weather` → `node.*` → `llm.call` / `tool.execute`
   - Span metadata 包含 correlation ID（threadId、runId、taskId、stepId）
@@ -183,13 +183,13 @@
 
 ### Task B.5：執行 Evaluation Experiment
 
-- [ ] 以 dataset version `v1.0.0` 執行至少一次完整 experiment
-- [ ] 以不同 model/prompt config 執行第二次 experiment
+- [x] 以 dataset version `v1.0.0` 執行至少一次完整 experiment
+- [x] 以不同 model/prompt config 執行第二次 experiment
 - [ ] 在 Opik UI 中確認：
   - 兩次 experiment 並排比較
   - Each metric score 可追溯至特定 trace
   - Judge reasoning 可見
-- [ ] 記錄 judge config（model、prompt version、temperature）
+- [x] 記錄 judge config（model、prompt version、temperature）
 
 **對應 Spec：** `opik-evaluation` / Experiment 可重現性
 **驗證：** Opik UI 截圖 + Experiment result 檔案

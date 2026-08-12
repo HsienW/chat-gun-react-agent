@@ -1,5 +1,4 @@
 import { getAgentRuntimeConfig } from "../../platform/runtime-config.js";
-import { getHostedDatasetItemId } from "./dataset.js";
 import type { EvaluationDataset } from "./types.js";
 
 const DATASET_VERSION_PAGE_SIZE = 100;
@@ -111,6 +110,7 @@ interface OpikSdkModule {
 interface HostedDatasetReference {
   datasetId: string;
   datasetVersionId: string;
+  itemIdByCaseId: ReadonlyMap<string, string>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -175,16 +175,34 @@ async function listDatasetVersions(
   throw new Error("Hosted dataset version history exceeds the safety limit");
 }
 
-function containsEveryExpectedItem(
+function mapHostedItemIdsByCaseId(
   items: Array<Record<string, unknown>>,
-  expectedItemIds: ReadonlySet<string>
-): boolean {
-  const actualItemIds = new Set(
-    items.flatMap((item) =>
-      typeof item.id === "string" ? [item.id] : []
-    )
-  );
-  return [...expectedItemIds].every((id) => actualItemIds.has(id));
+  dataset: EvaluationDataset
+): ReadonlyMap<string, string> | undefined {
+  const expectedCaseIds = new Set(dataset.items.map((item) => item.id));
+  const itemIdByCaseId = new Map<string, string>();
+
+  for (const item of items) {
+    if (!isRecord(item.metadata)) continue;
+    const caseId = item.metadata.caseId;
+    const datasetVersion = item.metadata.datasetVersion;
+    if (
+      typeof caseId !== "string" ||
+      datasetVersion !== dataset.version ||
+      !expectedCaseIds.has(caseId)
+    ) {
+      continue;
+    }
+    const itemId = requireNonEmptyString(item.id, "hosted dataset item id");
+    if (itemIdByCaseId.has(caseId)) {
+      throw new Error(`Hosted dataset version contains duplicate case ${caseId}`);
+    }
+    itemIdByCaseId.set(caseId, itemId);
+  }
+
+  return itemIdByCaseId.size === expectedCaseIds.size
+    ? itemIdByCaseId
+    : undefined;
 }
 
 async function resolveHostedDatasetReference(
@@ -194,9 +212,6 @@ async function resolveHostedDatasetReference(
 ): Promise<HostedDatasetReference> {
   const hostedDataset = await client.getDataset(dataset.name, projectName);
   const datasetId = requireNonEmptyString(hostedDataset.id, "hosted dataset id");
-  const expectedItemIds = new Set(
-    dataset.items.map((item) => getHostedDatasetItemId(dataset.version, item.id))
-  );
   const versions = (await listDatasetVersions(client, datasetId)).sort(
     (left, right) =>
       sdkVersionOrdinal(left.versionName) - sdkVersionOrdinal(right.versionName)
@@ -204,8 +219,12 @@ async function resolveHostedDatasetReference(
 
   for (const version of versions) {
     const versionView = await hostedDataset.getVersionView(version.versionName);
-    if (containsEveryExpectedItem(await versionView.getItems(), expectedItemIds)) {
-      return { datasetId, datasetVersionId: version.id };
+    const itemIdByCaseId = mapHostedItemIdsByCaseId(
+      await versionView.getItems(),
+      dataset
+    );
+    if (itemIdByCaseId) {
+      return { datasetId, datasetVersionId: version.id, itemIdByCaseId };
     }
   }
 
@@ -225,7 +244,8 @@ function experimentConfig(input: HostedExperimentInput): Record<string, unknown>
 
 function buildExperimentItemReferences(
   input: HostedExperimentInput,
-  projectName: string
+  projectName: string,
+  itemIdByCaseId: ReadonlyMap<string, string>
 ): SdkExperimentItemReference[] {
   const caseIds = new Set(input.dataset.items.map((item) => item.id));
   const referencedCaseIds = new Set<string>();
@@ -237,8 +257,12 @@ function buildExperimentItemReferences(
       throw new TypeError(`Trace reference is duplicated for dataset case: ${caseId}`);
     }
     referencedCaseIds.add(caseId);
+    const datasetItemId = itemIdByCaseId.get(caseId);
+    if (!datasetItemId) {
+      throw new TypeError(`Hosted dataset item is missing for case: ${caseId}`);
+    }
     return {
-      datasetItemId: getHostedDatasetItemId(input.dataset.version, caseId),
+      datasetItemId,
       traceId: requireNonEmptyString(traceId, "trace id"),
       projectName,
     };
@@ -265,7 +289,11 @@ class SdkHostedExperimentPublisher implements HostedExperimentPublisher {
       projectName: this.projectName,
       experimentConfig: experimentConfig(input),
     });
-    const references = buildExperimentItemReferences(input, this.projectName);
+    const references = buildExperimentItemReferences(
+      input,
+      this.projectName,
+      hostedDataset.itemIdByCaseId
+    );
     if (references.length > 0) await experiment.insert(references);
     await this.client.flush({ silent: true });
 

@@ -129,13 +129,16 @@ export class DatasetVersionMismatchError extends Error {
 
 function toDeterministicUuid(namespace: string, name: string): string {
   const namespaceBytes = Buffer.from(namespace.replaceAll("-", ""), "hex");
-  const uuidBytes = createHash("sha256")
+  if (namespaceBytes.length !== 16) {
+    throw new TypeError("UUID namespace must contain exactly 16 bytes");
+  }
+  const uuidBytes = createHash("sha1")
     .update(namespaceBytes)
     .update(name, "utf8")
     .digest()
     .subarray(0, 16);
 
-  uuidBytes[6] = (uuidBytes[6] & 0x0f) | 0x70;
+  uuidBytes[6] = (uuidBytes[6] & 0x0f) | 0x50;
   uuidBytes[8] = (uuidBytes[8] & 0x3f) | 0x80;
 
   const hex = uuidBytes.toString("hex");

@@ -11,8 +11,8 @@ import {
   type DatasetUploadPort,
 } from "./dataset.js";
 
-const UUID_V7_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_V5_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function createUploader(hasVersion = false): DatasetUploadPort & {
   upload: ReturnType<typeof vi.fn>;
@@ -77,7 +77,7 @@ describe("createWeatherGoldenDataset", () => {
     expect(target.insert).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({
-          id: expect.stringMatching(UUID_V7_RE),
+          id: expect.stringMatching(UUID_V5_RE),
           metadata: expect.objectContaining({ datasetVersion: "v1.0.0" }),
         }),
       ])
@@ -197,14 +197,14 @@ describe("toDeterministicUuid", () => {
   const { OPIK_DATASET_NAMESPACE, toDeterministicUuid } = datasetTestInternals;
   const caseId = "WGE-CURRENT-CJK-TAIPEI";
 
-  it("produces a valid UUID v7 with the RFC 9562 variant", () => {
+  it("produces a name-based UUID v5 with the RFC 9562 variant", () => {
     const transportId = toDeterministicUuid(
       OPIK_DATASET_NAMESPACE,
       `v1.0.0:${caseId}`
     );
 
-    expect(transportId).toMatch(UUID_V7_RE);
-    expect(transportId[14]).toBe("7");
+    expect(transportId).toMatch(UUID_V5_RE);
+    expect(transportId[14]).toBe("5");
     expect(["8", "9", "a", "b"]).toContain(transportId[19]);
   });
 
@@ -258,6 +258,6 @@ describe("toDeterministicUuid", () => {
         OPIK_DATASET_NAMESPACE,
         "v1.0.0:WGE-CURRENT-CJK-TAIPEI"
       )
-    ).toMatchInlineSnapshot(`"372997ac-bd9b-7778-984e-f62115eb88dd"`);
+    ).toMatchInlineSnapshot(`"ea27c061-7d46-521b-b400-ca7d704e27e7"`);
   });
 });
