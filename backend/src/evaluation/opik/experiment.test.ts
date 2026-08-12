@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createNoopOpikTracer } from "../../platform/tracing/opik/opik-tracer.js";
@@ -89,6 +90,101 @@ afterEach(async () => {
   for (const directory of tempDirectories.splice(0)) {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+describe("readToolCalls", () => {
+  const readToolCalls = experimentTestInternals.readToolCalls;
+
+  function executedToolMessage(
+    name: string,
+    arguments_: Record<string, unknown>,
+    toolCallId: string
+  ): ToolMessage {
+    return new ToolMessage({
+      content: JSON.stringify({ status: "success" }),
+      name,
+      tool_call_id: toolCallId,
+      artifact: {
+        schemaVersion: "1.0",
+        type: "executed_tool_call",
+        name,
+        arguments: arguments_,
+      },
+    });
+  }
+
+  it("extracts current_weather from ToolMessage execution evidence", () => {
+    const calls = readToolCalls([
+      executedToolMessage(
+        "current_weather",
+        { raw: "台北", location: "台北", queryName: "Taipei" },
+        "weather-1"
+      ),
+    ]);
+
+    expect(calls).toEqual([
+      {
+        name: "current_weather",
+        arguments: { raw: "台北", location: "台北", queryName: "Taipei" },
+      },
+    ]);
+  });
+
+  it("preserves every execution when a weather request is retried", () => {
+    const calls = readToolCalls([
+      executedToolMessage(
+        "current_weather",
+        { raw: "北京市", location: "北京市" },
+        "weather-1"
+      ),
+      executedToolMessage(
+        "current_weather",
+        {
+          raw: "北京市",
+          location: "Beijing",
+          country: "China",
+          resolutionStrategy: "llm_repair",
+        },
+        "weather-2"
+      ),
+    ]);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.arguments).toMatchObject({
+      raw: "北京市",
+      location: "Beijing",
+      country: "China",
+      resolutionStrategy: "llm_repair",
+    });
+  });
+
+  it("does not infer tool calls from natural-language responses", () => {
+    expect(
+      readToolCalls([
+        new AIMessage("I called current_weather for Taipei and it is sunny."),
+      ])
+    ).toEqual([]);
+  });
+
+  it("gives the Taipei live-case tool evidence a non-zero correctness score", () => {
+    const item = dataset.items.find((candidate) => candidate.id === "taipei");
+    if (!item) throw new Error("Taipei fixture is required");
+    const toolCalls = readToolCalls([
+      executedToolMessage(
+        "current_weather",
+        { raw: "台北", location: "Taipei", queryName: "Taipei" },
+        "weather-1"
+      ),
+    ]);
+
+    const score = new ToolCallCorrectnessMetric().evaluate(item, {
+      response: "Taipei weather",
+      toolCalls,
+    });
+
+    expect(score.value).toBeGreaterThan(0);
+    expect(score.reason).not.toBe("No tool calls executed");
+  });
 });
 
 describe("runExperiment", () => {

@@ -120,9 +120,17 @@ describe.runIf(liveEvaluationEnabled)("hosted Opik evaluation", () => {
       expect(second.traceIds.length).toBeGreaterThan(0);
       const expectedCompletedItems = Math.min(maxItems, dataset.items.length);
       for (const result of [first, second]) {
-        expect(
-          result.items.filter((item) => item.status === "COMPLETED")
-        ).toHaveLength(expectedCompletedItems);
+        const completedItems = result.items.filter(
+          (item) => item.status === "COMPLETED"
+        );
+        expect(completedItems).toHaveLength(expectedCompletedItems);
+        for (const item of completedItems) {
+          const toolCallScore = item.metrics.find(
+            (metric) => metric.name === "tool_call_correctness"
+          );
+          expect(toolCallScore?.value).toBeGreaterThan(0);
+          expect(toolCallScore?.reason).not.toBe("No tool calls executed");
+        }
         expect(
           result.items
             .slice(expectedCompletedItems)

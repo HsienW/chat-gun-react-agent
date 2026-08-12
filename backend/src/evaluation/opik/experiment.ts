@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { HumanMessage } from "@langchain/core/messages";
 
 import { deepResearcherGraph } from "../../agents/deep-researcher.js";
+import { parseExecutedToolCallArtifact } from "../../agents/executed-tool-call.js";
 import { getConfiguredLlmProvider } from "../../platform/llm-gateway.js";
 import { getAgentRuntimeConfig } from "../../platform/runtime-config.js";
 import {
@@ -215,13 +216,22 @@ function messageContent(value: unknown): string {
 function readToolCalls(messages: unknown[]): ActualToolCall[] {
   const calls: ActualToolCall[] = [];
   for (const message of messages) {
-    if (!isRecord(message) || !Array.isArray(message.tool_calls)) continue;
-    for (const call of message.tool_calls) {
-      if (!isRecord(call) || typeof call.name !== "string") continue;
-      calls.push({
-        name: call.name,
-        arguments: isRecord(call.args) ? call.args : {},
-      });
+    if (!isRecord(message)) continue;
+    if (Array.isArray(message.tool_calls)) {
+      for (const call of message.tool_calls) {
+        if (!isRecord(call) || typeof call.name !== "string") continue;
+        calls.push({
+          name: call.name,
+          arguments: isRecord(call.args) ? call.args : {},
+        });
+      }
+    }
+    const executedCall = parseExecutedToolCallArtifact(
+      message.artifact,
+      message.name
+    );
+    if (executedCall) {
+      calls.push(executedCall);
     }
   }
   return calls;
@@ -581,5 +591,6 @@ export async function runExperiment(
 }
 
 export const experimentTestInternals = {
+  readToolCalls,
   validateDefaultProvider,
 };

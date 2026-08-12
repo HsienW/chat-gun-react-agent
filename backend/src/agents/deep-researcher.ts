@@ -45,6 +45,10 @@ import { getLatestUserMessage, getResearchTopic, messageContentToString } from "
 import { validateLocationInput } from "../tools/geocoding/location-normalizer.js";
 import { loadAgentTools } from "../tools/registry.js";
 import { normalizeAiMessageForStream } from "./message-normalization.js";
+import {
+  createExecutedToolCallArtifact,
+  type ExecutedToolCall,
+} from "./executed-tool-call.js";
 import type {
   WeatherToolResult,
   WeatherExecutionState,
@@ -687,11 +691,19 @@ async function invokeTool(
   }
 }
 
-function createToolMessage(name: string, content: string, index = 0): ToolMessage {
+function createToolMessage(
+  name: string,
+  content: string,
+  index = 0,
+  invocation?: ExecutedToolCall
+): ToolMessage {
   return new ToolMessage({
     content,
     name,
     tool_call_id: `${name}_${Date.now()}_${index}`,
+    ...(invocation
+      ? { artifact: createExecutedToolCallArtifact(invocation) }
+      : {}),
   });
 }
 
@@ -886,6 +898,38 @@ function getWeatherToolNameForRequest(request: WeatherRequest): WeatherToolName 
   return request.weatherCapability === "hourly" || request.weatherCapability === "daily"
     ? DEEP_RESEARCH_TOOL_NAMES.weatherForecast
     : DEEP_RESEARCH_TOOL_NAMES.currentWeather;
+}
+
+function buildWeatherToolInvocation(
+  weatherPlan: WeatherRequest,
+  locationQuery: LocationQuery,
+  options: {
+    resolutionStrategy?: "llm_repair";
+    includeResolutionHints?: boolean;
+  } = {}
+): ExecutedToolCall & { name: WeatherToolName } {
+  const includeResolutionHints = options.includeResolutionHints ?? true;
+  return {
+    name: getWeatherToolNameForRequest(weatherPlan),
+    arguments: {
+      ...locationQuery,
+      ...(includeResolutionHints && weatherPlan.queryName
+        ? { queryName: weatherPlan.queryName }
+        : {}),
+      ...(weatherPlan.weatherCapability
+        ? { weatherCapability: weatherPlan.weatherCapability }
+        : {}),
+      ...(weatherPlan.timeRange ? { timeRange: weatherPlan.timeRange } : {}),
+      ...(includeResolutionHints && weatherPlan.resolvedCandidate
+        ? { resolvedCandidate: weatherPlan.resolvedCandidate }
+        : {}),
+      ...(weatherPlan.units ? { units: weatherPlan.units } : {}),
+      ...(weatherPlan.locale ? { locale: weatherPlan.locale } : {}),
+      ...(options.resolutionStrategy
+        ? { resolutionStrategy: options.resolutionStrategy }
+        : {}),
+    },
+  };
 }
 
 type WeatherRepairCandidate = {
@@ -1457,33 +1501,26 @@ async function targetedTools(
     };
 
     weatherExecution = { status: "running", requestedLocation: request };
-    const toolName = getWeatherToolNameForRequest(rawRequest);
-    const input = request as Record<string, unknown>;
-    if (rawRequest.queryName) {
-      input.queryName = rawRequest.queryName;
-    }
-    if (rawRequest.weatherCapability) {
-      input.weatherCapability = rawRequest.weatherCapability;
-    }
-    if (rawRequest.timeRange) {
-      input.timeRange = rawRequest.timeRange;
-    }
-    if (rawRequest.resolvedCandidate) {
-      input.resolvedCandidate = rawRequest.resolvedCandidate;
-    }
-    if (rawRequest.units) {
-      input.units = rawRequest.units;
-    }
-    if (rawRequest.locale) {
-      input.locale = rawRequest.locale;
-    }
-    const initialContent = await invokeTool(toolName, input, _config);
+    const initialInvocation = buildWeatherToolInvocation(rawRequest, request);
+    const toolName = initialInvocation.name;
+    const initialContent = await invokeTool(
+      toolName,
+      initialInvocation.arguments,
+      _config
+    );
     const initialOutcome = resolveWeatherToolOutcome(
       initialContent,
       request,
       toolName
     );
-    let content = initialOutcome.messageContent;
+    messages.push(
+      createToolMessage(
+        toolName,
+        initialOutcome.messageContent,
+        0,
+        initialInvocation
+      )
+    );
     let parsedResult = initialOutcome.result;
 
     // LLM Repair: only for not_found, and only once — Task 5.11, 5.12, 5.13
@@ -1499,9 +1536,9 @@ async function targetedTools(
         question: plan.question,
         notFound: parsedResult,
       });
-      let firstClarification: { content: string; result: WeatherToolResult } | undefined;
-      let lastNotFound: { content: string; result: WeatherToolResult } | undefined;
-      let terminalRepairResult: { content: string; result: WeatherToolResult } | undefined;
+      let firstClarification: WeatherToolResult | undefined;
+      let lastNotFound: WeatherToolResult | undefined;
+      let terminalRepairResult: WeatherToolResult | undefined;
 
       for (const [index, candidate] of repairCandidates.entries()) {
         const repairedRequest: LocationQuery = {
@@ -1510,22 +1547,31 @@ async function targetedTools(
           country: candidate.country,
           region: candidate.region,
         };
-        const retryContent = await invokeTool(
-          toolName,
+        const retryInvocation = buildWeatherToolInvocation(
+          rawRequest,
+          repairedRequest,
           {
-            ...repairedRequest,
             resolutionStrategy: "llm_repair",
-            ...(rawRequest.weatherCapability ? { weatherCapability: rawRequest.weatherCapability } : {}),
-            ...(rawRequest.timeRange ? { timeRange: rawRequest.timeRange } : {}),
-            ...(rawRequest.units ? { units: rawRequest.units } : {}),
-            ...(rawRequest.locale ? { locale: rawRequest.locale } : {}),
-          } as Record<string, unknown>,
+            includeResolutionHints: false,
+          }
+        );
+        const retryContent = await invokeTool(
+          retryInvocation.name,
+          retryInvocation.arguments,
           _config
         );
         const retryOutcome = resolveWeatherToolOutcome(
           retryContent,
           repairedRequest,
           toolName
+        );
+        messages.push(
+          createToolMessage(
+            retryInvocation.name,
+            retryOutcome.messageContent,
+            index + 1,
+            retryInvocation
+          )
         );
         const retryParsed = retryOutcome.result;
 
@@ -1539,33 +1585,23 @@ async function targetedTools(
         });
 
         if (retryParsed.status === "success" || retryParsed.status === "error") {
-          terminalRepairResult = {
-            content: retryOutcome.messageContent,
-            result: retryParsed,
-          };
+          terminalRepairResult = retryParsed;
           break;
         }
 
         if (retryParsed.status === "needs_clarification" && !firstClarification) {
-          firstClarification = {
-            content: retryOutcome.messageContent,
-            result: retryParsed,
-          };
+          firstClarification = retryParsed;
           continue;
         }
 
         if (retryParsed.status === "not_found") {
-          lastNotFound = {
-            content: retryOutcome.messageContent,
-            result: retryParsed,
-          };
+          lastNotFound = retryParsed;
         }
       }
 
       const selectedRepairResult = terminalRepairResult ?? firstClarification ?? lastNotFound;
       if (selectedRepairResult) {
-        parsedResult = selectedRepairResult.result;
-        content = selectedRepairResult.content;
+        parsedResult = selectedRepairResult;
       } else {
         await recordWeatherAuditEvent("weather.location.repair.result", {
           raw: request.raw,
@@ -1585,8 +1621,6 @@ async function targetedTools(
     } else {
       weatherExecution = { status: "failed", result: parsedResult };
     }
-
-    messages.push(createToolMessage(toolName, content));
   }
 
   if (plan?.answerMode === "calculation" && plan.calculation?.expression) {

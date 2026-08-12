@@ -864,6 +864,49 @@ describe("Deep Research weather structured result integration", () => {
     }
   });
 
+  it("records the actual targeted weather arguments as ToolMessage evidence", async () => {
+    installTaipeiWeatherFetchMock();
+    const toolResult = await deepResearcherWeatherTestInternals.targetedTools(
+      ({
+        plan: {
+          question: "台北現在的天氣",
+          answerMode: "weather",
+          rationale: "weather request",
+          queries: [],
+          urls: [],
+          weather: {
+            location: "台北",
+            queryName: "Taipei",
+            weatherCapability: "current",
+            units: "metric",
+          },
+          requiredSourceCount: 3,
+        },
+        messages: [],
+      } as unknown) as Parameters<
+        typeof deepResearcherWeatherTestInternals.targetedTools
+      >[0],
+      {}
+    );
+
+    const message = toolResult.messages?.[0] as
+      | { name?: string; artifact?: unknown }
+      | undefined;
+    expect(message?.name).toBe("current_weather");
+    expect(message?.artifact).toEqual({
+      schemaVersion: "1.0",
+      type: "executed_tool_call",
+      name: "current_weather",
+      arguments: {
+        raw: "台北",
+        location: "台北",
+        queryName: "Taipei",
+        weatherCapability: "current",
+        units: "metric",
+      },
+    });
+  });
+
   it("normalizes only contradictory clarify plans with a valid weather location", () => {
     const normalize =
       deepResearcherWeatherTestInternals.normalizeWeatherPlanConsistency;
@@ -1804,6 +1847,30 @@ describe("Deep Research weather structured result integration", () => {
       expect(weatherResult.requestedLocation.country).toBe("China");
       expect(weatherResult.resolvedLocation.name).toBe("Beijing");
     }
+    const executionMessages = (toolResult.messages ?? []) as Array<{
+      artifact?: unknown;
+    }>;
+    expect(executionMessages).toHaveLength(2);
+    expect(executionMessages.map((message) => message.artifact)).toEqual([
+      expect.objectContaining({
+        type: "executed_tool_call",
+        name: "current_weather",
+        arguments: expect.objectContaining({
+          raw: "北京市",
+          location: "北京市",
+        }),
+      }),
+      expect.objectContaining({
+        type: "executed_tool_call",
+        name: "current_weather",
+        arguments: expect.objectContaining({
+          raw: "北京市",
+          location: "Beijing",
+          country: "China",
+          resolutionStrategy: "llm_repair",
+        }),
+      }),
+    ]);
     expect(String(invoke.mock.calls[1][0])).toContain("\u5317\u4eac\u5e02\u73fe\u5728\u5e7e\u5ea6");
     expect(String(invoke.mock.calls[1][0])).toContain("Provider attempted queries");
     expect(String(invoke.mock.calls[1][0])).toContain("\u5317\u4eac\u5e02");
