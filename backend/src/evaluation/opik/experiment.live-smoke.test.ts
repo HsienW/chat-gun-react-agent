@@ -13,7 +13,8 @@
 import { describe, expect, it } from "vitest";
 
 import { getAgentRuntimeConfig } from "../../platform/runtime-config.js";
-import { runExperiment } from "./experiment.js";
+import { loadOrCreateWeatherGoldenDataset } from "./dataset.js";
+import { createPinnedDatasetLoader, runExperiment } from "./experiment.js";
 import { ResponseQualityMetric } from "./metrics/response-quality.js";
 import { ToolCallCorrectnessMetric } from "./metrics/tool-call-correctness.js";
 
@@ -62,6 +63,7 @@ describe.runIf(liveEvaluationEnabled)("hosted Opik evaluation", () => {
           promptVersion: "weather-judge-v1",
         }),
       ];
+      const maxItems = Number(process.env.OPIK_EVAL_MAX_ITEMS ?? 1);
       const common = {
         datasetVersion: "v1.0.0",
         judgeConfig: {
@@ -78,36 +80,55 @@ describe.runIf(liveEvaluationEnabled)("hosted Opik evaluation", () => {
               promptVersion: "weather-judge-v1",
             }).judgeConfig.promptTemplateHash,
         },
-        maxItems: Number(process.env.OPIK_EVAL_MAX_ITEMS ?? 1),
+        maxItems,
         perItemTimeoutMs: Number(process.env.OPIK_EVAL_ITEM_TIMEOUT_MS ?? 120_000),
       };
+      const dataset = await loadOrCreateWeatherGoldenDataset(
+        common.datasetVersion
+      );
+      const loadDataset = createPinnedDatasetLoader(dataset);
 
-      const first = await runExperiment({
-        ...common,
-        agentConfig: {
-          model: modelA,
-          provider: "qwen",
-          promptVersion: "weather-agent-v1-a",
+      const first = await runExperiment(
+        {
+          ...common,
+          agentConfig: {
+            model: modelA,
+            provider: "qwen",
+            promptVersion: "weather-agent-v1-a",
+          },
+          metrics: createMetrics(),
         },
-        metrics: createMetrics(),
-      });
-      const second = await runExperiment({
-        ...common,
-        agentConfig: {
-          model: modelB,
-          provider: "qwen",
-          promptVersion: "weather-agent-v1-b",
+        { loadDataset }
+      );
+      const second = await runExperiment(
+        {
+          ...common,
+          agentConfig: {
+            model: modelB,
+            provider: "qwen",
+            promptVersion: "weather-agent-v1-b",
+          },
+          metrics: createMetrics(),
         },
-        metrics: createMetrics(),
-      });
+        { loadDataset }
+      );
 
       expect(first.datasetVersion).toBe("v1.0.0");
       expect(second.datasetVersion).toBe("v1.0.0");
       expect(first.agentConfig.model).not.toBe(second.agentConfig.model);
       expect(first.traceIds.length).toBeGreaterThan(0);
       expect(second.traceIds.length).toBeGreaterThan(0);
-      expect(first.items.every((item) => item.status === "COMPLETED")).toBe(true);
-      expect(second.items.every((item) => item.status === "COMPLETED")).toBe(true);
+      const expectedCompletedItems = Math.min(maxItems, dataset.items.length);
+      for (const result of [first, second]) {
+        expect(
+          result.items.filter((item) => item.status === "COMPLETED")
+        ).toHaveLength(expectedCompletedItems);
+        expect(
+          result.items
+            .slice(expectedCompletedItems)
+            .every((item) => item.status === "SKIPPED")
+        ).toBe(true);
+      }
     },
     LIVE_TIMEOUT_MS
   );

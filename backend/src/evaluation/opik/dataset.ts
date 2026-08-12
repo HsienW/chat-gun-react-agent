@@ -23,8 +23,19 @@ export interface DatasetUploadPort {
   upload(dataset: EvaluationDataset): Promise<void>;
 }
 
+export interface DatasetStorePort extends DatasetUploadPort {
+  getVersionItems(
+    datasetName: string,
+    version: string
+  ): Promise<Array<Record<string, unknown>>>;
+}
+
 interface CreateWeatherGoldenDatasetOptions {
   uploader?: DatasetUploadPort;
+}
+
+interface LoadOrCreateWeatherGoldenDatasetOptions {
+  store?: DatasetStorePort;
 }
 
 interface SdkDataset {
@@ -107,6 +118,15 @@ function toEvaluationItem(
   };
 }
 
+export class DatasetVersionMismatchError extends Error {
+  constructor(datasetName: string, version: string) {
+    super(
+      `Dataset ${datasetName} version ${version} does not match the immutable source`
+    );
+    this.name = "DatasetVersionMismatchError";
+  }
+}
+
 function toDeterministicUuid(namespace: string, name: string): string {
   const namespaceBytes = Buffer.from(namespace.replaceAll("-", ""), "hex");
   const uuidBytes = createHash("sha256")
@@ -120,6 +140,21 @@ function toDeterministicUuid(namespace: string, name: string): string {
 
   const hex = uuidBytes.toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function toTransportItems(
+  dataset: EvaluationDataset
+): Array<Record<string, unknown>> {
+  return dataset.items.map((item) => ({
+    id: toDeterministicUuid(
+      OPIK_DATASET_NAMESPACE,
+      `${dataset.version}:${item.id}`
+    ),
+    input: item.input,
+    ...(item.expectedOutput ? { expectedOutput: item.expectedOutput } : {}),
+    ...(item.goldenTrace ? { goldenTrace: item.goldenTrace } : {}),
+    ...(item.metadata ? { metadata: item.metadata } : {}),
+  }));
 }
 
 function buildWeatherGoldenDataset(
@@ -147,16 +182,81 @@ function itemHasVersion(item: Record<string, unknown>, version: string): boolean
   );
 }
 
-class SdkDatasetUploader implements DatasetUploadPort {
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, stableValue(entry)])
+  );
+}
+
+function transportItemCaseId(item: Record<string, unknown>): string | undefined {
+  const metadata = item.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return undefined;
+  }
+  const caseId = (metadata as Record<string, unknown>).caseId;
+  return typeof caseId === "string" ? caseId : undefined;
+}
+
+function comparableTransportContent(item: Record<string, unknown>): unknown {
+  return stableValue({
+    input: item.input,
+    ...(item.expectedOutput !== undefined
+      ? { expectedOutput: item.expectedOutput }
+      : {}),
+    ...(item.goldenTrace !== undefined ? { goldenTrace: item.goldenTrace } : {}),
+    ...(item.metadata !== undefined ? { metadata: item.metadata } : {}),
+  });
+}
+
+function hasMatchingTransportItems(
+  expectedItems: Array<Record<string, unknown>>,
+  actualItems: Array<Record<string, unknown>>
+): boolean {
+  if (expectedItems.length !== actualItems.length) return false;
+  const toCaseMap = (items: Array<Record<string, unknown>>) => {
+    const entries = items.flatMap((item) => {
+      const caseId = transportItemCaseId(item);
+      return caseId ? [[caseId, item] as const] : [];
+    });
+    return entries.length === items.length &&
+      new Set(entries.map(([id]) => id)).size === items.length
+      ? new Map(entries)
+      : undefined;
+  };
+  const expectedByCase = toCaseMap(expectedItems);
+  const actualByCase = toCaseMap(actualItems);
+  if (!expectedByCase || !actualByCase) return false;
+  return [...expectedByCase].every(([caseId, expectedItem]) => {
+    const actualItem = actualByCase.get(caseId);
+    return (
+      actualItem !== undefined &&
+      JSON.stringify(comparableTransportContent(expectedItem)) ===
+        JSON.stringify(comparableTransportContent(actualItem))
+    );
+  });
+}
+
+class SdkDatasetUploader implements DatasetStorePort {
   constructor(private readonly client: SdkDatasetClient) {}
 
   async hasVersion(datasetName: string, version: string): Promise<boolean> {
+    return (await this.getVersionItems(datasetName, version)).length > 0;
+  }
+
+  async getVersionItems(
+    datasetName: string,
+    version: string
+  ): Promise<Array<Record<string, unknown>>> {
     const dataset = await this.client.getOrCreateDataset(
       datasetName,
       WEATHER_DATASET_DESCRIPTION
     );
     const items = await dataset.getItems();
-    return items.some((item) => itemHasVersion(item, version));
+    return items.filter((item) => itemHasVersion(item, version));
   }
 
   async upload(dataset: EvaluationDataset): Promise<void> {
@@ -164,24 +264,12 @@ class SdkDatasetUploader implements DatasetUploadPort {
       dataset.name,
       WEATHER_DATASET_DESCRIPTION
     );
-    const transportItems: Array<Record<string, unknown>> = dataset.items.map(
-      (item) => ({
-        id: toDeterministicUuid(
-          OPIK_DATASET_NAMESPACE,
-          `${dataset.version}:${item.id}`
-        ),
-        input: item.input,
-        ...(item.expectedOutput ? { expectedOutput: item.expectedOutput } : {}),
-        ...(item.goldenTrace ? { goldenTrace: item.goldenTrace } : {}),
-        ...(item.metadata ? { metadata: item.metadata } : {}),
-      })
-    );
-    await target.insert(transportItems);
+    await target.insert(toTransportItems(dataset));
     await this.client.flush({ silent: true });
   }
 }
 
-async function createDefaultUploader(): Promise<DatasetUploadPort | undefined> {
+async function createDefaultUploader(): Promise<DatasetStorePort | undefined> {
   const config = getAgentRuntimeConfig();
   if (!config.opikEnabled) return undefined;
   if (!config.opikRedactEnabled) {
@@ -234,10 +322,35 @@ export async function createWeatherGoldenDataset(
   return dataset;
 }
 
+export async function loadOrCreateWeatherGoldenDataset(
+  version: string,
+  options: LoadOrCreateWeatherGoldenDatasetOptions = {}
+): Promise<EvaluationDataset> {
+  const dataset = buildWeatherGoldenDataset(version, WEATHER_GOLDEN_EVAL_CASES);
+  const store = options.store ?? (await createDefaultUploader());
+  if (!store) return dataset;
+
+  const existingItems = await store.getVersionItems(
+    dataset.name,
+    dataset.version
+  );
+  if (existingItems.length === 0) {
+    await store.upload(dataset);
+    return dataset;
+  }
+  const expectedItems = toTransportItems(dataset);
+  if (!hasMatchingTransportItems(expectedItems, existingItems)) {
+    throw new DatasetVersionMismatchError(dataset.name, dataset.version);
+  }
+  return dataset;
+}
+
 export const datasetTestInternals = {
   OPIK_DATASET_NAMESPACE,
+  WEATHER_GOLDEN_EVAL_CASES,
   buildWeatherGoldenDataset,
-  createSdkUploader: (client: SdkDatasetClient): DatasetUploadPort =>
+  createSdkUploader: (client: SdkDatasetClient): DatasetStorePort =>
     new SdkDatasetUploader(client),
+  toTransportItems,
   toDeterministicUuid,
 };

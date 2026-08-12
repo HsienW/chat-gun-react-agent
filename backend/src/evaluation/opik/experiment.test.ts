@@ -11,6 +11,7 @@ import type {
 import { ToolCallCorrectnessMetric } from "./metrics/tool-call-correctness.js";
 import { ResponseQualityMetric } from "./metrics/response-quality.js";
 import {
+  createPinnedDatasetLoader,
   experimentTestInternals,
   runExperiment,
   type ExperimentDependencies,
@@ -196,6 +197,33 @@ describe("runExperiment", () => {
       judgeConfig: { temperature: 0, promptVersion: "judge-v1" },
       timestamp: "2026-08-11T00:00:00.000Z",
     });
+  });
+
+  it("reuses one pinned dataset for experiments with different models", async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), "opik-eval-"));
+    tempDirectories.push(outputDir);
+    const loadDataset = createPinnedDatasetLoader(dataset);
+
+    const first = await runExperiment(
+      baseConfig(outputDir, "agent-a"),
+      dependencies({ loadDataset })
+    );
+    const second = await runExperiment(
+      baseConfig(outputDir, "agent-b"),
+      dependencies({ loadDataset })
+    );
+
+    expect(first.datasetVersion).toBe("v1.0.0");
+    expect(second.datasetVersion).toBe("v1.0.0");
+    expect(first.agentConfig.model).not.toBe(second.agentConfig.model);
+  });
+
+  it("rejects a requested version that differs from the pinned dataset", async () => {
+    const loadDataset = createPinnedDatasetLoader(dataset);
+
+    await expect(loadDataset("v1.0.1")).rejects.toThrow(
+      /Pinned dataset version v1\.0\.0 does not match v1\.0\.1/
+    );
   });
 
   it("records FAILED, TIMEOUT, and max-item SKIPPED statuses without stopping", async () => {

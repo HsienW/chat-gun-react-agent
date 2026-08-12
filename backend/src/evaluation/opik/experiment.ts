@@ -12,7 +12,7 @@ import {
   type OpikTracer,
 } from "../../platform/tracing/opik/opik-tracer.js";
 import { sanitizeErrorMessage } from "../../platform/tracing/span-manager.js";
-import { createWeatherGoldenDataset } from "./dataset.js";
+import { loadOrCreateWeatherGoldenDataset } from "./dataset.js";
 import type {
   ActualToolCall,
   AgentRunResult,
@@ -266,11 +266,24 @@ async function runDefaultAgent(
 
 function defaultDependencies(): ExperimentDependencies {
   return {
-    loadDataset: (version) => createWeatherGoldenDataset(version),
+    loadDataset: (version) => loadOrCreateWeatherGoldenDataset(version),
     runAgent: runDefaultAgent,
     tracer: getOpikTracer(),
     now: () => new Date(),
     experimentId: () => randomUUID(),
+  };
+}
+
+export function createPinnedDatasetLoader(
+  dataset: EvaluationDataset
+): ExperimentDependencies["loadDataset"] {
+  return async (version) => {
+    if (version !== dataset.version) {
+      throw new Error(
+        `Pinned dataset version ${dataset.version} does not match ${version}`
+      );
+    }
+    return dataset;
   };
 }
 
@@ -418,16 +431,19 @@ async function writeResult(
 
 export async function runExperiment(
   config: ExperimentConfig,
-  dependencies?: ExperimentDependencies
+  dependencies: Partial<ExperimentDependencies> = {}
 ): Promise<ExperimentResult> {
   validateConfig(config);
-  if (!dependencies) {
+  if (!dependencies.runAgent) {
     validateDefaultProvider(
       config.agentConfig.provider,
       getConfiguredLlmProvider()
     );
   }
-  const resolvedDependencies = dependencies ?? defaultDependencies();
+  const resolvedDependencies: ExperimentDependencies = {
+    ...defaultDependencies(),
+    ...dependencies,
+  };
   const dataset = await resolvedDependencies.loadDataset(config.datasetVersion);
   if (dataset.version !== config.datasetVersion) {
     throw new Error(

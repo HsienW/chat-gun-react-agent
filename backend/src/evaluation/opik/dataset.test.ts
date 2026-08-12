@@ -4,7 +4,10 @@ import type { WeatherGoldenEvalCase } from "../../tools/weather-golden-eval.js";
 import {
   createWeatherGoldenDataset,
   DatasetVersionConflictError,
+  DatasetVersionMismatchError,
   datasetTestInternals,
+  loadOrCreateWeatherGoldenDataset,
+  type DatasetStorePort,
   type DatasetUploadPort,
 } from "./dataset.js";
 
@@ -17,6 +20,21 @@ function createUploader(hasVersion = false): DatasetUploadPort & {
   return {
     hasVersion: vi.fn(async () => hasVersion),
     upload: vi.fn(async () => undefined),
+  };
+}
+
+function createStore(
+  initialVersionItems: Array<Record<string, unknown>> = []
+): DatasetStorePort & {
+  upload: ReturnType<typeof vi.fn>;
+} {
+  let versionItems = initialVersionItems;
+  return {
+    getVersionItems: vi.fn(async () => versionItems),
+    hasVersion: vi.fn(async () => versionItems.length > 0),
+    upload: vi.fn(async (dataset) => {
+      versionItems = datasetTestInternals.toTransportItems(dataset);
+    }),
   };
 }
 
@@ -122,6 +140,56 @@ describe("createWeatherGoldenDataset", () => {
       createWeatherGoldenDataset("v1.0.0", { uploader })
     ).rejects.toBeInstanceOf(DatasetVersionConflictError);
     expect(uploader.upload).not.toHaveBeenCalled();
+  });
+});
+
+describe("loadOrCreateWeatherGoldenDataset", () => {
+  it("publishes once and reuses the immutable version on the next load", async () => {
+    const store = createStore();
+
+    const first = await loadOrCreateWeatherGoldenDataset("v1.0.0", { store });
+    const second = await loadOrCreateWeatherGoldenDataset("v1.0.0", { store });
+
+    expect(first.version).toBe("v1.0.0");
+    expect(second).toEqual(first);
+    expect(store.upload).toHaveBeenCalledOnce();
+    expect(store.upload).toHaveBeenCalledWith(first);
+  });
+
+  it("reuses an existing compatible immutable version without publishing", async () => {
+    const expectedDataset = datasetTestInternals.buildWeatherGoldenDataset(
+      "v1.0.0",
+      datasetTestInternals.WEATHER_GOLDEN_EVAL_CASES
+    );
+    const hostedItems = datasetTestInternals
+      .toTransportItems(expectedDataset)
+      .map((item, index) => ({
+        ...item,
+        id: `hosted-record-${index}`,
+      }));
+    const store = createStore(hostedItems);
+
+    const first = await loadOrCreateWeatherGoldenDataset("v1.0.0", { store });
+    const second = await loadOrCreateWeatherGoldenDataset("v1.0.0", { store });
+
+    expect(first).toEqual(expectedDataset);
+    expect(second).toEqual(expectedDataset);
+    expect(store.upload).not.toHaveBeenCalled();
+  });
+
+  it("rejects an existing version whose published content has drifted", async () => {
+    const expectedDataset = datasetTestInternals.buildWeatherGoldenDataset(
+      "v1.0.0",
+      datasetTestInternals.WEATHER_GOLDEN_EVAL_CASES
+    );
+    const existingItems = datasetTestInternals.toTransportItems(expectedDataset);
+    existingItems[0] = { ...existingItems[0], input: { intent: "changed" } };
+    const store = createStore(existingItems);
+
+    await expect(
+      loadOrCreateWeatherGoldenDataset("v1.0.0", { store })
+    ).rejects.toBeInstanceOf(DatasetVersionMismatchError);
+    expect(store.upload).not.toHaveBeenCalled();
   });
 });
 
