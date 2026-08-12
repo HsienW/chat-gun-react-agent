@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { getAgentRuntimeConfig } from "../../platform/runtime-config.js";
 import { sanitizeMetadata } from "../../platform/tracing/opik/opik-redaction.js";
 import {
@@ -14,6 +16,7 @@ const WEATHER_DATASET_NAME = "weather-golden";
 const WEATHER_DATASET_DESCRIPTION =
   "Immutable weather golden evaluation dataset; semantic version is stored per item.";
 const SEMVER_PATTERN = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const OPIK_DATASET_NAMESPACE = "477b9cd7-75c2-4a86-a642-4ba6dfb16f16";
 
 export interface DatasetUploadPort {
   hasVersion(datasetName: string, version: string): Promise<boolean>;
@@ -95,12 +98,28 @@ function toEvaluationItem(
       ...(testCase.expected.code ? { code: testCase.expected.code } : {}),
     },
     metadata: {
+      caseId: testCase.id,
       datasetVersion: version,
       mode: testCase.mode,
       capabilityCategory: testCase.capabilityCategory,
       diagnosticTags: [...testCase.diagnosticTags],
     },
   };
+}
+
+function toDeterministicUuid(namespace: string, name: string): string {
+  const namespaceBytes = Buffer.from(namespace.replaceAll("-", ""), "hex");
+  const uuidBytes = createHash("sha256")
+    .update(namespaceBytes)
+    .update(name, "utf8")
+    .digest()
+    .subarray(0, 16);
+
+  uuidBytes[6] = (uuidBytes[6] & 0x0f) | 0x70;
+  uuidBytes[8] = (uuidBytes[8] & 0x3f) | 0x80;
+
+  const hex = uuidBytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function buildWeatherGoldenDataset(
@@ -147,7 +166,10 @@ class SdkDatasetUploader implements DatasetUploadPort {
     );
     const transportItems: Array<Record<string, unknown>> = dataset.items.map(
       (item) => ({
-        id: `${dataset.version}:${item.id}`,
+        id: toDeterministicUuid(
+          OPIK_DATASET_NAMESPACE,
+          `${dataset.version}:${item.id}`
+        ),
         input: item.input,
         ...(item.expectedOutput ? { expectedOutput: item.expectedOutput } : {}),
         ...(item.goldenTrace ? { goldenTrace: item.goldenTrace } : {}),
@@ -213,7 +235,9 @@ export async function createWeatherGoldenDataset(
 }
 
 export const datasetTestInternals = {
+  OPIK_DATASET_NAMESPACE,
   buildWeatherGoldenDataset,
   createSdkUploader: (client: SdkDatasetClient): DatasetUploadPort =>
     new SdkDatasetUploader(client),
+  toDeterministicUuid,
 };

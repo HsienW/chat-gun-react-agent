@@ -8,6 +8,9 @@ import {
   type DatasetUploadPort,
 } from "./dataset.js";
 
+const UUID_V7_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 function createUploader(hasVersion = false): DatasetUploadPort & {
   upload: ReturnType<typeof vi.fn>;
 } {
@@ -56,7 +59,7 @@ describe("createWeatherGoldenDataset", () => {
     expect(target.insert).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({
-          id: `v1.0.0:${dataset.items[0].id}`,
+          id: expect.stringMatching(UUID_V7_RE),
           metadata: expect.objectContaining({ datasetVersion: "v1.0.0" }),
         }),
       ])
@@ -78,6 +81,7 @@ describe("createWeatherGoldenDataset", () => {
         capability: expect.any(String),
       },
       metadata: {
+        caseId: expect.any(String),
         datasetVersion: "v1.0.0",
       },
     });
@@ -118,5 +122,74 @@ describe("createWeatherGoldenDataset", () => {
       createWeatherGoldenDataset("v1.0.0", { uploader })
     ).rejects.toBeInstanceOf(DatasetVersionConflictError);
     expect(uploader.upload).not.toHaveBeenCalled();
+  });
+});
+
+describe("toDeterministicUuid", () => {
+  const { OPIK_DATASET_NAMESPACE, toDeterministicUuid } = datasetTestInternals;
+  const caseId = "WGE-CURRENT-CJK-TAIPEI";
+
+  it("produces a valid UUID v7 with the RFC 9562 variant", () => {
+    const transportId = toDeterministicUuid(
+      OPIK_DATASET_NAMESPACE,
+      `v1.0.0:${caseId}`
+    );
+
+    expect(transportId).toMatch(UUID_V7_RE);
+    expect(transportId[14]).toBe("7");
+    expect(["8", "9", "a", "b"]).toContain(transportId[19]);
+  });
+
+  it("returns the same UUID for the same namespace and name", () => {
+    const name = `v1.0.0:${caseId}`;
+
+    expect(toDeterministicUuid(OPIK_DATASET_NAMESPACE, name)).toBe(
+      toDeterministicUuid(OPIK_DATASET_NAMESPACE, name)
+    );
+  });
+
+  it("returns different UUIDs for different dataset versions", () => {
+    expect(
+      toDeterministicUuid(OPIK_DATASET_NAMESPACE, `v1.0.0:${caseId}`)
+    ).not.toBe(
+      toDeterministicUuid(OPIK_DATASET_NAMESPACE, `v1.0.1:${caseId}`)
+    );
+  });
+
+  it("returns different UUIDs for different case identifiers", () => {
+    expect(
+      toDeterministicUuid(OPIK_DATASET_NAMESPACE, `v1.0.0:${caseId}`)
+    ).not.toBe(
+      toDeterministicUuid(
+        OPIK_DATASET_NAMESPACE,
+        "v1.0.0:WGE-CURRENT-EN-US-SEATTLE"
+      )
+    );
+  });
+
+  it("returns different UUIDs for different namespaces", () => {
+    const name = `v1.0.0:${caseId}`;
+
+    expect(toDeterministicUuid(OPIK_DATASET_NAMESPACE, name)).not.toBe(
+      toDeterministicUuid("6ba7b811-9dad-11d1-80b4-00c04fd430c8", name)
+    );
+  });
+
+  it("never exposes the colon-delimited composite key", () => {
+    const transportId = toDeterministicUuid(
+      OPIK_DATASET_NAMESPACE,
+      `v1.0.0:${caseId}`
+    );
+
+    expect(transportId).not.toContain(":");
+  });
+
+  it("keeps the hosted Opik transport identifier stable", () => {
+    expect(
+      toDeterministicUuid(
+        OPIK_DATASET_NAMESPACE,
+        "v1.0.0:WGE-CURRENT-CJK-TAIPEI"
+      )
+    ).toMatchInlineSnapshot(`"372997ac-bd9b-7778-984e-f62115eb88dd"`);
   });
 });
