@@ -1,5 +1,10 @@
 # Agent 執行架構
 
+<p>
+  <a href="./architecture.en.md">English</a> |
+  <a href="./architecture.md">繁體中文</a>
+</p>
+
 本文說明 Chat Gun React Agent 如何接收請求、選擇執行路徑、調用模型與工具，以及把結果串流回瀏覽器。若要了解各套件與擴充位置，請參閱 [TypeScript + LangGraph 程式碼架構](./typescript-langgraph-architecture.md)。
 
 ## 請求流程
