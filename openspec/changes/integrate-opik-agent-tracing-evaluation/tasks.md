@@ -95,13 +95,13 @@
 
 - [x] 設定 `OPIK_ENABLED=true` + 有效 API key
 - [x] 執行至少一個完整 Weather Agent run
-- [ ] 在 Opik UI 中確認：
+- [x] 在 Opik UI 中確認：
   - Trace hierarchy：`agent.weather` → `node.*` → `llm.call` / `tool.execute`
   - Span metadata 包含 correlation ID（threadId、runId、taskId、stepId）
   - Duration 正確
   - Token usage 可見（若有）
   - Error span 正確標記（若 agent 失敗）
-- [ ] 確認 redaction 生效：無 secret、無完整 prompt、無 PII 出現在 Opik UI
+- [x] 確認 redaction 生效：無 secret、無完整 prompt、無 PII 出現在 Opik UI
 
 **對應 Spec：** `opik-tracing` / Trace 階層、Redaction
 **驗證：**
@@ -185,7 +185,7 @@
 
 - [x] 以 dataset version `v1.0.0` 執行至少一次完整 experiment
 - [x] 以不同 model/prompt config 執行第二次 experiment
-- [ ] 在 Opik UI 中確認：
+- [x] 在 Opik UI 中確認：
   - 兩次 experiment 並排比較
   - Each metric score 可追溯至特定 trace
   - Judge reasoning 可見
