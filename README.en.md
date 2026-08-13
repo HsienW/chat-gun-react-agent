@@ -399,10 +399,10 @@ If a proxy is required, configure `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` in
 
 ## Documentation
 
-- [BFF API Gateway](./docs/bff.md)
-- [Agent Runtime Architecture](./docs/architecture.md)
-- [TypeScript + LangGraph Architecture](./docs/typescript-langgraph-architecture.md)
-- [Tool and MCP Security Configuration](./docs/tool-security-isolation.md)
+- [BFF API Gateway](./docs/bff.en.md)
+- [Agent Runtime Architecture](./docs/architecture.en.md)
+- [TypeScript + LangGraph Architecture](./docs/typescript-langgraph-architecture.en.md)
+- [Tool and MCP Security Configuration](./docs/tool-security-isolation.en.md)
 
 ## License
 
