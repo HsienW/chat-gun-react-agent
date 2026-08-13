@@ -2,21 +2,34 @@
 
 [![License](https://img.shields.io/github/license/HsienW/chat-gun-react-agent?color=22C55E)](./LICENSE)
 [![LangGraph](https://img.shields.io/badge/LangGraph-JS-06B6D4)](https://langchain-ai.github.io/langgraphjs/)
+[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Observability-8A7600?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
+[![MCP](https://img.shields.io/badge/MCP-Protocol-111827)](https://modelcontextprotocol.io/)
+[![Qwen](https://img.shields.io/badge/Qwen-Model_Provider-1E3A8A)](https://github.com/QwenLM/Qwen)
+[![Tavily](https://img.shields.io/badge/Tavily-Search_API-BE185D)](https://docs.tavily.com/documentation/api-reference/endpoint/search)
+[![Brave Search](https://img.shields.io/badge/Brave_Search-API-FB542B?logo=brave&logoColor=white)](https://brave.com/search/api/)
+[![Opik](https://img.shields.io/badge/Opik-Tracing_%26_Evaluation-6F4CFF)](https://github.com/comet-ml/opik)
 [![Upstream](https://img.shields.io/badge/Upstream-Ylang--Labs%2Flanggraph--react--agent--studio-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
 
 Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 建構的全端 Agent Chat 應用。它支援多 Agent 對話、串流回覆、Tool Calling、圖片輸入與 Human-in-the-Loop，並透過 BFF 統一處理瀏覽器與 LangGraph Runtime 之間的 API 流量。
 
-## 功能
+## 核心功能
 
-- Deep Researcher、Chat Assistant、Math Solver 與 MCP Agent。
-- 串流回答、執行活動顯示、取消與錯誤處理。
-- 天氣地點不明確時，可向使用者提問並接續原本的執行。
-- PNG、JPEG、WebP 圖片輸入與圖片理解。
-- 計算、網路搜尋、網頁擷取、目前天氣與天氣預報工具。
-- 可選用 Filesystem 與 Brave Search MCP Server。
-- Qwen、OpenAI-compatible 與 CCR-compatible 模型端點。
-- API key 認證、CORS、請求大小限制、逾時、取消傳遞與 rate limiting。
-- Metrics、OpenTelemetry，以及選用的 Opik tracing 與 evaluation。
+- **Agent-workflows**：
+  - Deep Researcher 負責多步驟研究與引用驗證。
+  - Chat Assistant 處理一般對話。
+  - Math Solver 執行算式與數值運算。
+  - MCP Agent 則透過 Tool Calling 使用 native 與 MCP tools。
+- **Streaming**：即時串流回答與執行活動，並支援 Cancellation 與 Exception handling，讓使用者能中止進行中的請求並看見明確的錯誤狀態。
+- **HITL**：天氣地點不明確時，Agent 會列出候選地點向使用者確認，再接續原本的 thread 執行。
+- **Multimodal input**：接受 PNG、JPEG 與 WebP 圖片，透過 vision model 分析內容並納入回答或研究流程。
+- **Native Tools**：內建計算、網路搜尋、網頁擷取、目前天氣與天氣預報工具，Agent 可依問題選擇合適工具。
+- **MCP integration**：可選擇載入 Filesystem 與 Brave Search MCP Server，擴充檔案存取與搜尋能力。
+- **Model providers**：支援 Qwen、OpenAI-compatible 與 CCR-compatible endpoints，統一由 LLM Gateway 處理模型能力與呼叫介面。
+- **API Gateway**：BFF 集中處理 API key authentication、CORS、request size validation、Timeout、Cancellation propagation 與 Rate limiting。
+- **Observability & Evaluation**：提供 Metrics 與 OpenTelemetry，並可啟用 Opik tracing、versioned datasets 與 experiments 來追蹤及評估 Agent 行為。
+
+> 📌
+> 預設僅適用於本機開發。公開部署前，請啟用 Authentication、設定明確的 CORS allowlist、妥善管理 Secrets 與資料庫憑證，並依部署架構配置共享 Rate limiting、TLS 與 Reverse Proxy。若需要跨重啟或多實例恢復 Agent 執行，請改用 durable checkpointer。
 
 ## Demo
 
@@ -175,7 +188,7 @@ Copy-Item bff/.env.example bff/.env
 | `BFF_UPSTREAM_TIMEOUT_MS` | Upstream request timeout |
 | `BFF_RATE_LIMIT_REDIS_URI` | Redis rate limiter；留空時使用 in-memory limiter |
 
-完整選項請參閱 [`bff/.env.example`](./bff/.env.example)。公開部署時，請啟用認證並限制 `BFF_ALLOWED_ORIGINS`。
+完整選項請參閱 [`bff/.env.example`](./bff/.env.example)。
 
 ### Frontend
 
