@@ -381,10 +381,10 @@ Test-NetConnection dashscope.aliyuncs.com -Port 443
 
 ## 文件
 
-- [BFF API 與安全設定](./docs/bff.md)
-- [Backend query workflow](./docs/architecture.md)
-- [TypeScript／LangGraph architecture](./docs/typescript-langgraph-architecture.md)
-- [Tool security isolation](./docs/tool-security-isolation.md)
+- [BFF API Gateway](./docs/bff.md)
+- [Agent 執行架構](./docs/architecture.md)
+- [TypeScript + LangGraph 架構](./docs/typescript-langgraph-architecture.md)
+- [Tool 與 MCP 安全設定](./docs/tool-security-isolation.md)
 
 ## License
 
