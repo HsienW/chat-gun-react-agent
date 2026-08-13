@@ -1,5 +1,10 @@
 # BFF API gateway
 
+<p>
+  <a href="./bff.en.md">English</a> |
+  <a href="./bff.md">繁體中文</a>
+</p>
+
 BFF 是瀏覽器對外的 HTTP 入口。Frontend 透過 BFF 存取 LangGraph API，模型與 Tool credential 不會進入瀏覽器 bundle。
 
 ## 本機路由
