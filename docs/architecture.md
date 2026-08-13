@@ -1,89 +1,147 @@
-# Backend Query Workflow Contract
+# Agent 執行架構
 
-This document records the backend contracts covered by the
-`backend-langgraph-tool-structure-refactor` change. It is intentionally limited
-to the generic query workflow and model runtime boundary.
+本文說明 Chat Gun React Agent 如何接收請求、選擇執行路徑、調用模型與工具，以及把結果串流回瀏覽器。若要了解各套件與擴充位置，請參閱 [TypeScript + LangGraph 程式碼架構](./typescript-langgraph-architecture.md)。
 
-## Query Workflow Invariant
-
-The deep research graph keeps a one-way workflow:
+## 請求流程
 
 ```text
-request accepted
-  -> context / upload preflight
-  -> planning
-  -> targeted tool execution | search / rank / fetch / extract / verify
-  -> synthesis
-  -> terminal response
+Browser
+  │
+  │ LangGraph SDK streaming
+  ▼
+Frontend（React）
+  │
+  │ /api/langgraph/*
+  ▼
+BFF（認證、CORS、限流、請求檢查、逾時與取消）
+  │
+  ▼
+LangGraph Agent Server
+  │
+  ├─ TypeScript graphs
+  ├─ LLM Gateway ── Qwen / OpenAI-compatible / CCR
+  └─ Tool Registry ── Native tools / MCP servers
 ```
 
-Terminal error, cancellation, timeout, or completed responses must not be
-converted back into running or progress states by backend runtime events. Graph
-routes remain stable string constants owned by the backend graph.
+Frontend 預設透過同一個 origin 的 `/api/langgraph` 連到 BFF。BFF 驗證外部請求後，把 LangGraph API 路徑與串流內容轉送到 backend。這層也會傳遞 `x-request-id`、W3C Trace Context、取消訊號與允許的身分欄位。完整的外部 API 行為請參閱 [BFF API Gateway](./bff.md)。
 
-## State Field Ownership
+## 可用 Agent
 
-| Field | Owner | Readers | Checkpoint requirement |
-| --- | --- | --- | --- |
-| `messages` | graph reducers | all nodes | LangGraph message serializable |
-| `contextPack` | context pack node | planning / synthesis | JSON serializable |
-| `initial_search_query_count` | graph input/config | planner | finite integer |
-| `max_research_loops` | graph input/config | search / fetch | finite integer |
-| `reasoning_model` | graph input/config | model nodes | string only |
-| `plan` | planner | routers / tools / synthesis | JSON serializable object |
-| `searchResults` | search node | rank / fallback evidence | JSON serializable array |
-| `rankedSources` | rank node | fetch / verify | JSON serializable array |
-| `fetchedSources` | fetch node | extract / synthesis | JSON serializable array |
-| `extractedSources` | extract node | verify / synthesis | JSON serializable array |
-| `verification` | verify node | synthesis | JSON serializable object |
-| `uploadError` | upload preflight | synthesis | safe error envelope string |
-| `imageObservations` | image analysis | synthesis | string array |
-| `weatherExecution` | targeted weather execution | synthesis | domain result union |
+Agent Server 依 `backend/langgraph.json` 註冊四個 graph：
 
-No field may store live handles, provider clients, streams, callbacks, timers,
-AbortControllers, or non-serializable response objects.
+| Graph ID | 執行方式 | 適用情境 |
+| --- | --- | --- |
+| `deep_researcher` | 規劃後選擇直接回答、特定工具或多步驟網路研究 | 研究、天氣、計算、來源整理與圖片理解 |
+| `chatbot` | 單一模型節點 | 一般對話 |
+| `math_agent` | 優先使用 calculator，無法抽取算式時改由模型回答 | 數學問題與數值運算 |
+| `mcp_agent` | 模型與 ToolNode 循環，直到不再產生 tool call | 使用已啟用的 native 或 MCP tools |
 
-## Provider Capability Enforcement
+## Deep Researcher 流程
 
-Provider adapters expose typed capabilities. Unsupported combinations fail
-before a provider request is sent:
+`deep_researcher` 先驗證上傳內容、建立對話 context，再由 planner 選擇最合適的路徑。
 
-- `supportsStructuredOutput` gates `responseFormat`.
-- `supportsToolCalling` gates `bindTools`.
-- `supportsVision` gates vision requests.
+```text
+START
+  │
+  ▼
+validate_uploads
+  │
+  ├─ 上傳錯誤 ───────────────────────────────┐
+  ▼                                          │
+build_context_pack                           │
+  │                                          │
+  ▼                                          │
+analyze_images                               │
+  │                                          │
+  ▼                                          │
+plan_research                                │
+  │                                          │
+  ├─ direct ─────────────────────────────────┤
+  ├─ weather / calculation                   │
+  │      ▼                                   │
+  │   targeted_tools                         │
+  │      ├─ 需要地點確認 → clarify_interrupt │
+  │      │                    │ resume        │
+  │      │                    ▼               │
+  │      │               resume_clarify ─────┤
+  │      └────────────────────────────────────┤
+  │                                          │
+  └─ research                                │
+         ▼                                   │
+      search_web                             │
+         ▼                                   │
+      rank_sources                           │
+         ▼                                   │
+      fetch_sources                          │
+         ▼                                   │
+      extract_evidence                       │
+         ▼                                   │
+      verify_citations                       │
+         │                                   │
+         └───────────────────────────────────┤
+                                             ▼
+                                      synthesize_answer
+                                             │
+                                            END
+```
 
-The CCR Anthropic-compatible adapter does not expose `bindTools`; it rejects
-structured output requests through capability enforcement.
+搜尋沒有結果或來源不足時，router 可以略過不必要的節點並直接進入驗證或合成答案。最終回應只由 `synthesize_answer` 產生，讓成功、工具錯誤、上傳錯誤與取消都收斂到同一個終點。
 
-## Structured Output Validation
+## State 與 checkpoint
 
-Planner structured output follows a three-level path:
+Deep Researcher 的 state 由 LangGraph `Annotation.Root` 定義。主要欄位如下：
 
-1. Parse a JSON object and record `parse_failed` diagnostics on failure.
-2. Coerce known fields into a typed `ResearchPlan`.
-3. Fall back to a safe clarification or research plan when required fields are
-   missing.
+| 欄位 | 用途 |
+| --- | --- |
+| `messages` | 對話訊息與工具結果 |
+| `contextPack` | 經整理與預算控制的對話 context |
+| `plan` | planner 產生的回答模式、查詢與工具參數 |
+| `searchResults` | 搜尋結果 |
+| `rankedSources` | 排序後的候選來源 |
+| `fetchedSources` | 已取得的網頁內容 |
+| `extractedSources` | 可供引用的證據 |
+| `verification` | 引用與來源驗證結果 |
+| `imageObservations` | 圖片分析結果 |
+| `weatherExecution` | 天氣工具的執行狀態與結果 |
+| `clarification` | 等待使用者確認地點時的狀態 |
 
-Failures are represented as safe diagnostics or fallback plans. Raw parser
-exceptions, stack traces, secrets, and provider response bodies are not exposed
-as public contract fields.
+State 必須保持可序列化，不能存放 provider client、stream、callback、timer 或 `AbortController` 等執行期物件。
 
-## Stable Error Codes
+Deep Researcher 使用 LangGraph `MemorySaver` 保存 process 內的對話執行狀態。天氣地點有多個候選時，graph 透過 `interrupt()` 暫停；使用者選擇候選地點、提供新地點或取消後，再以相同 thread 恢復執行。恢復操作必須回到持有該 checkpoint 的 backend process；需要跨重啟或多實例恢復時，部署者應改用相容的 durable checkpointer。
 
-Public error codes come from structured sources in priority order:
+## 模型與工具邊界
 
-1. Domain-specific error classes such as provider response parse errors.
-2. Structured error names such as `AbortError`.
-3. Structured HTTP status fields.
-4. Structured nested cause codes.
-5. `unknown_error`.
+所有模型呼叫都經過 `backend/src/platform/llm-gateway.ts`。Gateway 支援 `qwen`、`openai-compatible` 與 `ccr`，並在送出請求前檢查模型能力：
 
-Message regex matching is telemetry only and must not produce public codes such
-as `network_error`.
+- Structured output 需要 `supportsStructuredOutput`。
+- Tool calling 需要 `supportsToolCalling` 與 `bindTools`。
+- 圖片輸入需要 `supportsVision`。
 
-## Runtime Events
+Provider fallback 由呼叫端明確選用，不會因為宣告多個 Provider 就自動切換。結構化輸出會先解析與正規化；資料不完整時採用安全的 fallback plan，不把 provider 原始回應或 stack trace 暴露給使用者。
 
-Backend `AgentRuntimeEvent` is the source of truth for runtime event variants.
-The union includes `agent.unknown` so newer events can be carried without
-breaking older consumers. Event timestamps are assigned by `createRuntimeEvent`
-with `Date.now()` and are deterministic under test when the clock is mocked.
+Deep Researcher 與 MCP Agent 透過 Tool Registry 載入 native／MCP tools；這條路徑會套用 enable/disable、allowlist/denylist、輸入大小、逾時與輸出大小檢查。Math Agent 則直接調用 calculator，不經 Registry。網頁抓取與 Filesystem MCP 的網路及路徑限制請參閱 [Tool 與 MCP 安全設定](./tool-security-isolation.md)。
+
+## 串流事件
+
+Backend 與 Frontend 共用相同的 Agent runtime event 類型：
+
+- `agent.plan.start`
+- `agent.tool.start`
+- `agent.tool.success`
+- `agent.tool.error`
+- `agent.context.build`
+- `agent.answer.stream`
+- `agent.card.emit`
+- `agent.unknown`
+
+Frontend 會把事件轉成活動時間軸與答案串流。無法辨識的新事件會保留為 `agent.unknown`，避免舊版客戶端因新增事件類型而中斷。可重用的 task state machine 將 `completed`、`failed` 與 `cancelled` 定義為 terminal state，這些狀態沒有返回 `running` 的合法 transition。
+
+## 可觀測性
+
+- BFF 保留並轉送 W3C `traceparent`／`tracestate`，讓 backend 能延續上游 trace context。
+- `/api/metrics` 透過 BFF 提供 backend 的 JSON metrics snapshot。
+- OpenTelemetry 可輸出 graph node、LLM 與修復流程的 spans。
+- Opik 可記錄開發環境的 graph、LLM 與 tool traces，並支援 `backend/src/evaluation/` 的評估工作。
+- Tool audit event 只保留可診斷的 metadata；敏感輸入與輸出必須經過遮蔽。
+
+OpenTelemetry 與 Opik 都由環境變數啟用，未設定時不影響主要請求流程。
