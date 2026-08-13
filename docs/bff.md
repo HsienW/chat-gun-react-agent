@@ -1,10 +1,18 @@
-# BFF / API Gateway
+# BFF API gateway
 
-The frontend now calls the BFF instead of the LangGraph API directly.
+BFF 是瀏覽器對外的 HTTP 入口。Frontend 透過 BFF 存取 LangGraph API，模型與 Tool credential 不會進入瀏覽器 bundle。
 
-## Local Development
+## 本機路由
 
-Start three processes:
+```text
+Frontend  http://localhost:5173/app/
+  -> Vite proxy /api/*
+BFF       http://127.0.0.1:8787
+  -> /api/langgraph/*
+Backend   http://localhost:2024
+```
+
+啟動服務：
 
 ```bash
 cd backend && npm run dev
@@ -12,44 +20,132 @@ cd bff && npm run dev
 cd frontend && npm run dev
 ```
 
-Default local routing:
+Docker Compose 對外開放 `http://localhost:8123`。BFF 在同一個 origin 提供 `/app/` 靜態檔與 `/api/*`，LangGraph API、Redis 與 PostgreSQL 不需要直接暴露給瀏覽器。
 
-- Frontend: `http://localhost:5173/app/`
-- BFF: `http://127.0.0.1:8787`
-- LangGraph API: `http://localhost:2024`
-- Frontend SDK base URL: `/api/langgraph`
-- BFF health check: `/api/health`
-- BFF readiness check: `/api/ready`
+## Endpoints
 
-Vite proxies `/api/*` to the BFF during local development.
+| Endpoint | Methods | 說明 |
+| --- | --- | --- |
+| `/api/health` | `GET` | BFF process health，不檢查 Backend |
+| `/api/bff/health` | `GET` | `/api/health` alias |
+| `/api/ready` | `GET` | 檢查 BFF 是否能連上 LangGraph Backend |
+| `/api/bff/ready` | `GET` | `/api/ready` alias |
+| `/api/langgraph/*` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD` | LangGraph API proxy |
+| `/api/metrics` | `GET`, `HEAD` | Backend metrics proxy |
+| `/app/*` | `GET` | 已建置的 Frontend 與 SPA fallback |
 
-BFF configuration lives in `bff/.env.example`. Backend agent runtime configuration
-stays in `backend/.env.example`.
+所有回應都會帶有 `x-request-id`。Client 可以傳入自己的 `x-request-id`；未提供時由 BFF 產生。
 
-## Docker Compose
+## 設定
 
-Docker Compose exposes only the BFF on `http://localhost:8123`.
+從範例建立本機設定：
 
-Default container routing:
+```bash
+cp bff/.env.example bff/.env
+```
 
-- Public edge: `bff:8000`, mapped to host `8123`
-- Internal LangGraph runtime: `langgraph-api:8000`
-- Frontend static assets: served by BFF from `/app/`
-- LangGraph proxy: `/api/langgraph/*`
+| 環境變數 | 預設值 | 用途 |
+| --- | --- | --- |
+| `BFF_PORT` | `8787` | BFF listen port |
+| `BFF_LANGGRAPH_API_URL` | `http://localhost:2024` | LangGraph API URL |
+| `BFF_FRONTEND_DIST` | `../frontend/dist` | Frontend build 目錄 |
+| `BFF_ALLOWED_ORIGINS` | 空 | CORS allowlist |
+| `BFF_REQUIRE_AUTH` | `false` | 是否要求 API key／Bearer token |
+| `BFF_API_KEYS` | 空 | 允許的 API keys，以逗號分隔 |
+| `BFF_MAX_BODY_BYTES` | `52428800` | Request body 上限 |
+| `BFF_UPSTREAM_TIMEOUT_MS` | `120000` | LangGraph 與 metrics upstream timeout |
+| `BFF_RATE_LIMIT_REDIS_URI` | 空 | Redis rate limiter URL |
+| `AGENT_METRICS_BACKEND_URL` | 同 `BFF_LANGGRAPH_API_URL` | Metrics backend URL |
 
-## Governance Hooks
+圖片輸入另受 `BFF_IMAGE_UPLOAD_*` 限制。常用設定範例請參閱 [`bff/.env.example`](../bff/.env.example)。
 
-The initial BFF layer includes:
+Docker Compose 會把 `BFF_MAX_BODY_BYTES` 預設覆寫為 `1048576`（1 MiB）。需要上傳較大的圖片 payload 時，請在啟動 Compose 前明確設定合適的上限。
 
-- Request validation for supported HTTP methods.
-- Request body size limit through `BFF_MAX_BODY_BYTES`.
-- Request correlation through `x-request-id`.
-- CORS allowlist through `BFF_ALLOWED_ORIGINS`.
-- Optional API key auth through `BFF_REQUIRE_AUTH=true` and `BFF_API_KEYS`.
-- Redis-backed Token Bucket rate limiting for independent `userId` and socket-peer IP dimensions through `BFF_RATE_LIMIT_REDIS_URI` and `BFF_RATE_LIMIT_{USER,IP}_*`.
-- Backward-compatible in-memory composite-key limiting when Redis is not configured, plus independent in-memory fallback when Redis fails at runtime.
-- Standardized 429 responses with `Retry-After`, `x-ratelimit-*`, and `retryAfter` response fields.
-- Upstream timeout through `BFF_UPSTREAM_TIMEOUT_MS`.
-- JSON audit logs for every request.
+## Authentication
 
-This is intentionally a first platform boundary. Production hardening should add OIDC/JWT verification, durable usage ledgers, and OpenTelemetry traces.
+啟用認證：
+
+```env
+BFF_REQUIRE_AUTH=true
+BFF_API_KEYS=replace-with-a-long-random-key
+```
+
+Client 可使用任一格式：
+
+```http
+X-API-Key: replace-with-a-long-random-key
+```
+
+```http
+Authorization: Bearer replace-with-a-long-random-key
+```
+
+認證會套用至 `/api/langgraph/*` 與 `/api/metrics`。Health、readiness 與 Frontend 靜態檔不要求 API key。
+
+`x-user-id` 與 `x-tenant-id` 目前只用於 request context、audit 與 rate-limit key，不是經過驗證的身份憑證。公開部署時，應由可信 reverse proxy 或 identity layer 驗證使用者後覆寫這些 headers，不能直接信任網際網路 client 傳入的值。
+
+## CORS
+
+`BFF_ALLOWED_ORIGINS` 使用逗號分隔的完整 origins：
+
+```env
+BFF_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
+```
+
+`BFF_ALLOWED_ORIGINS` 為空時，BFF 會接受任何 origin；正式部署應設定明確 allowlist。分開部署 Frontend 與 BFF 時，必須加入 Frontend origin。BFF 允許 `GET`、`POST`、`PUT`、`PATCH`、`DELETE`、`HEAD` 與 `OPTIONS`。
+
+## Rate limiting
+
+設定 `BFF_RATE_LIMIT_REDIS_URI` 後，BFF 會分別計算 user 與 socket-peer IP 配額；任一維度超限就回傳 `429`。
+
+```env
+BFF_RATE_LIMIT_REDIS_URI=redis://localhost:6379
+BFF_RATE_LIMIT_USER_MAX_REQUESTS=30
+BFF_RATE_LIMIT_USER_WINDOW_MS=60000
+BFF_RATE_LIMIT_IP_MAX_REQUESTS=20
+BFF_RATE_LIMIT_IP_WINDOW_MS=60000
+```
+
+Redis 未設定時使用 process-local in-memory limiter。Redis 執行期間發生錯誤時，該維度會降級到獨立的 in-memory bucket。多實例部署若需要共享配額，應設定 Redis。
+
+Rate-limit 回應包含：
+
+- `Retry-After`
+- `x-ratelimit-limit`
+- `x-ratelimit-remaining`
+- `x-ratelimit-reset`
+- JSON 欄位 `error` 與 `retryAfter`
+
+## Request forwarding
+
+BFF 會移除 hop-by-hop headers，只轉送明確允許的 request headers。常用項目包括：
+
+- `accept`、`accept-language`、`content-type`、`user-agent`
+- `authorization`、`x-api-key`
+- `x-request-id`、`x-user-id`、`x-tenant-id`
+- `x-idempotency-key`
+- `traceparent`、`tracestate`
+
+W3C Trace Context 會原樣傳給 Backend，供 OpenTelemetry 建立跨服務 trace。
+
+## Upload validation
+
+送往 LangGraph 的 request body 會先檢查整體大小。若 payload 包含圖片，BFF 也會檢查：
+
+- 檔案數量
+- 每張圖片的 encoded bytes
+- 圖片寬高與總 pixels
+- 副檔名與 MIME type
+- 可選的 object-storage URL
+
+不符合限制時回傳 `400`；body 超過 `BFF_MAX_BODY_BYTES` 時回傳 `413`。Frontend 與 Backend 也有各自的圖片 preflight，三層限制應保持一致。
+
+## Timeout、streaming 與 cancellation
+
+`BFF_UPSTREAM_TIMEOUT_MS` 同時限制一般 LangGraph request、stream consumption 與 metrics proxy。Client 中斷連線時，BFF 會取消 upstream fetch。
+
+若錯誤發生在 SSE stream 開始前，BFF 回傳 JSON error envelope；若 stream 已開始，BFF 會盡可能寫入 SSE error frame。結構化錯誤包含 `source`、`stage`、`code`、`message` 與可選的 `details`／`cause`，並保留同一個 `requestId` 供查詢 log。
+
+## Audit logs
+
+BFF 在 request 完成時輸出 JSON audit log，內容包括 request ID、method、path、status、duration、user、tenant 與 client IP。Log 不應被當作身份驗證依據，也不應額外加入 authorization header、API key 或完整 request body。
