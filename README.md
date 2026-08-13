@@ -10,6 +10,11 @@
 [![Opik](https://img.shields.io/badge/Opik-Tracing_%26_Evaluation-6F4CFF)](https://github.com/comet-ml/opik)
 [![Upstream](https://img.shields.io/badge/Upstream-Ylang--Labs%2Flanggraph--react--agent--studio-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
 
+<p align="center">
+  <a href="./README.en.md">English</a> |
+  <a href="./README.md">繁體中文</a>
+</p>
+
 Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 建構的全端 Agent Chat 應用。它支援多 Agent 對話、串流回覆、Tool Calling、圖片輸入與 Human-in-the-Loop，並透過 BFF 統一處理瀏覽器與 LangGraph Runtime 之間的 API 流量。
 
 ## 核心功能
