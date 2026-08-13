@@ -1,5 +1,10 @@
 # Tool 與 MCP 安全設定
 
+<p>
+  <a href="./tool-security-isolation.en.md">English</a> |
+  <a href="./tool-security-isolation.md">繁體中文</a>
+</p>
+
 經由 `backend/src/tools/registry.ts` 載入的 native Tools 與 MCP Tools，都會先套用 `backend/src/platform/tool-governance.ts`。直接由 graph 匯入的 Tool 不會自動取得這層保護；新增 Agent 或 Tool 時應優先使用 Registry，或在呼叫端提供等效限制。高風險 Tool 仍需保留自己的輸入與網路／檔案系統限制。
 
 ## Tool allowlist 與 denylist
