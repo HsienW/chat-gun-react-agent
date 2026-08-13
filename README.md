@@ -6,6 +6,18 @@
 
 Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 建構的全端 Agent Chat 應用。它支援多 Agent 對話、串流回覆、Tool Calling、圖片輸入與 Human-in-the-Loop，並透過 BFF 統一處理瀏覽器與 LangGraph Runtime 之間的 API 流量。
 
+## 功能
+
+- Deep Researcher、Chat Assistant、Math Solver 與 MCP Agent。
+- 串流回答、執行活動顯示、取消與錯誤處理。
+- 天氣地點不明確時，可向使用者提問並接續原本的執行。
+- PNG、JPEG、WebP 圖片輸入與圖片理解。
+- 計算、網路搜尋、網頁擷取、目前天氣與天氣預報工具。
+- 可選用 Filesystem 與 Brave Search MCP Server。
+- Qwen、OpenAI-compatible 與 CCR-compatible 模型端點。
+- API key 認證、CORS、請求大小限制、逾時、取消傳遞與 rate limiting。
+- Metrics、OpenTelemetry，以及選用的 Opik tracing 與 evaluation。
+
 ## Demo
 
 <p align="center">
@@ -23,18 +35,6 @@ Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 建構的�
 <p align="center">
   <img src="./chat-gun-03.png" alt="Tool-assisted agent result" width="1280" />
 </p>
-
-## 功能
-
-- Deep Researcher、Chat Assistant、Math Solver 與 MCP Agent。
-- 串流回答、執行活動顯示、取消與錯誤處理。
-- 天氣地點不明確時，可向使用者提問並接續原本的執行。
-- PNG、JPEG、WebP 圖片輸入與圖片理解。
-- 計算、網路搜尋、網頁擷取、目前天氣與天氣預報工具。
-- 可選用 Filesystem 與 Brave Search MCP Server。
-- Qwen、OpenAI-compatible 與 CCR-compatible 模型端點。
-- API key 認證、CORS、請求大小限制、逾時、取消傳遞與 rate limiting。
-- Metrics、OpenTelemetry，以及選用的 Opik tracing 與 evaluation。
 
 ## 架構
 
