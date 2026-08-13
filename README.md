@@ -4,79 +4,82 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-JS-06B6D4)](https://langchain-ai.github.io/langgraphjs/)
 [![Upstream](https://img.shields.io/badge/Upstream-Ylang--Labs%2Flanggraph--react--agent--studio-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
 
-Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 為核心的全端 Agent Chat 系統，整合 Qwen／OpenAI-compatible 模型供應商、原生 Tools 與可選用的 MCP Tools。
-
-主要功能：
-
-- Deep Research、一般對話、數學與 MCP Agent。
-- 串流回覆、Tool Calling、Human-in-the-Loop 與圖片輸入。
-- 天氣、網路搜尋、網頁擷取與計算工具。
-- BFF 代理層，提供 CORS、body limit、timeout、rate limit 與 audit log。
-- 本機三服務開發流程與 Docker Compose 部署。
-
-> 預設設定供本機開發使用。若要對外公開服務，請先補上適合部署環境的認證、來源限制與基礎設施設定。
+Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 建構的全端 Agent Chat 應用。它支援多 Agent 對話、串流回覆、Tool Calling、圖片輸入與 Human-in-the-Loop，並透過 BFF 統一處理瀏覽器與 LangGraph Runtime 之間的 API 流量。
 
 ## Demo
 
 <p align="center">
-  <img src="./chat-gun-demo.gif" alt="Demo Video" width="1280" />
+  <img src="./chat-gun-demo.gif" alt="Chat Gun React Agent demo" width="1280" />
 </p>
 
 <p align="center">
-  <img src="./chat-gun-01.png" alt="Chat Home Screen" width="1280" />
+  <img src="./chat-gun-01.png" alt="Chat home screen" width="1280" />
 </p>
 
 <p align="center">
-  <img src="./chat-gun-02.png" alt="Chat Agent Results" width="1280" />
+  <img src="./chat-gun-02.png" alt="Agent response and activity" width="1280" />
 </p>
 
 <p align="center">
-  <img src="./chat-gun-03.png" alt="Chat Agent Results" width="1280" />
+  <img src="./chat-gun-03.png" alt="Tool-assisted agent result" width="1280" />
 </p>
+
+## 功能
+
+- Deep Researcher、Chat Assistant、Math Solver 與 MCP Agent。
+- 串流回答、執行活動顯示、取消與錯誤處理。
+- 天氣地點不明確時，可向使用者提問並接續原本的執行。
+- PNG、JPEG、WebP 圖片輸入與圖片理解。
+- 計算、網路搜尋、網頁擷取、目前天氣與天氣預報工具。
+- 可選用 Filesystem 與 Brave Search MCP Server。
+- Qwen、OpenAI-compatible 與 CCR-compatible 模型端點。
+- API key 認證、CORS、請求大小限制、逾時、取消傳遞與 rate limiting。
+- Metrics、OpenTelemetry，以及選用的 Opik tracing 與 evaluation。
 
 ## 架構
 
-實際程式碼目前分成三個主要 package：
-
-| 目錄 | 職責 | 本機預設 port |
-| --- | --- | --- |
-| `frontend/` | Vite React 前端聊天介面、串流狀態與工具結果呈現 | `5173` |
-| `bff/` | BFF / API Gateway，負責代理、驗證、逾時與限流 | `8787` |
-| `backend/` | LangGraph JS agent runtime、模型整合與 tools | `2024` |
-
-本機開發流量：
-
 ```text
 Browser
-  -> http://localhost:5173/app/
-  -> /api/langgraph/*
-  -> Vite proxy
-  -> BFF http://127.0.0.1:8787
-  -> LangGraph API http://localhost:2024
+  -> frontend: Vite + React 19 + TypeScript
+  -> bff: Node.js + TypeScript
+  -> backend: LangGraph JS + LangChain
+  -> Model Provider / Native Tools / MCP Tools
 ```
 
-前端預設使用同源的 `/api/langgraph`，開發伺服器會將 `/api/*` 代理到 BFF。
+| 目錄 | 用途 | 本機預設 port |
+| --- | --- | ---: |
+| `frontend/` | Chat UI、串流狀態、工具結果與圖片輸入 | `5173` |
+| `bff/` | API gateway、驗證、代理、逾時與限流 | `8787` |
+| `backend/` | LangGraph agents、模型整合、Tools 與 MCP | `2024` |
 
-## Agent
+本機開發時，Frontend 會把 `/api/*` 代理至 BFF；LangGraph 請求經由 `/api/langgraph/*` 轉送到 Backend。模型、Tool 與 MCP credential 只保留在 Server 端。
 
-| Agent ID | 用途 |
-| --- | --- |
-| `deep_researcher` | 深度研究、工具調用與圖片理解；前端預設選項 |
-| `chatbot` | 一般對話 |
-| `math_agent` | 數學與運算任務 |
-| `mcp_agent` | 使用已啟用的 MCP tools |
+```text
+http://localhost:5173/app/
+  -> http://127.0.0.1:8787/api/langgraph/*
+  -> http://localhost:2024
+```
 
-前端模型選單提供 Qwen Plus、Qwen Max 與 Qwen Turbo，預設為 `qwen-plus`。
+## Agents
 
-## 需求
+| Graph ID | 名稱 | 用途 |
+| --- | --- | --- |
+| `deep_researcher` | Deep Researcher | 深度研究、來源整理、工具調用、天氣查詢與圖片理解 |
+| `chatbot` | Chat Assistant | 一般對話 |
+| `math_agent` | Math Solver | 數學問題與運算 |
+| `mcp_agent` | MCP Agent | 使用已啟用的 native／MCP tools |
 
-- Node.js 22 或更新版本。
-- npm。
-- Qwen API Key。也可改用 OpenAI-compatible 或 CCR endpoint。
-- 選用：Tavily API Key，供 `deep_researcher` 搜尋網路。
-- 選用：Docker 與 Docker Compose。
+Frontend 提供 `qwen-plus`、`qwen-max` 與 `qwen-turbo`，預設選用 `qwen-plus`。Backend 可針對不同 Agent 指定模型。
 
-## Clone 與安裝
+## 系統需求
+
+- Node.js 22
+- npm
+- Qwen API key，或可用的 OpenAI-compatible／CCR-compatible endpoint
+- Tavily API key（使用網路搜尋時需要）
+- Docker 與 Docker Compose（選用）
+
+## 安裝
 
 ```bash
 git clone https://github.com/HsienW/chat-gun-react-agent.git
@@ -107,7 +110,7 @@ Set-Location ..
 
 ### Backend
 
-從範例建立 `backend/.env`：
+從範例建立本機設定：
 
 ```bash
 cp backend/.env.example backend/.env
@@ -119,22 +122,20 @@ PowerShell：
 Copy-Item backend/.env.example backend/.env
 ```
 
-最快的啟動方式是使用 Qwen。至少設定：
+使用 Qwen 時，至少填入：
 
 ```env
 LLM_PROVIDER=qwen
 QWEN_API_KEY=your_qwen_api_key
 ```
 
-`deep_researcher` 的網路搜尋使用 Tavily；若沒有 API Key，請將範例中的值清空：
+Deep Researcher 的網路搜尋使用 Tavily：
 
 ```env
-TAVILY_API_KEY=
+TAVILY_API_KEY=your_tavily_api_key
 ```
 
-也請清除未使用的 `your_*` 與 `*_uri` 佔位值，避免把它們誤認為有效設定。不要提交包含憑證的 `.env`。
-
-Backend 也支援其他 provider：
+也可以連接其他模型端點：
 
 ```env
 # OpenAI-compatible
@@ -143,14 +144,14 @@ OPENAI_COMPATIBLE_BASE_URL=https://your-endpoint.example/v1
 OPENAI_COMPATIBLE_API_KEY=your_api_key
 OPENAI_COMPATIBLE_MODEL=your_model
 
-# CCR-compatible Anthropic Messages endpoint
+# CCR-compatible
 LLM_PROVIDER=ccr
 CCR_BASE_URL=http://127.0.0.1:3456/v1
-CCR_API_KEY=
+CCR_API_KEY=your_api_key
 CCR_MODEL=your_model
 ```
 
-前端模型選單預設使用 Qwen model ID。改用其他 provider 時，請同步確認 endpoint 接受選單中的 model 名稱。MCP、圖片限制、Tool Governance、proxy 與天氣 timeout 等選用設定請參考 [`backend/.env.example`](./backend/.env.example)。
+其他模型、圖片、天氣、Tool 與 MCP 設定請參閱 [`backend/.env.example`](./backend/.env.example)。不要將 API key 或其他 credential 提交到版本控制。
 
 ### BFF
 
@@ -164,84 +165,162 @@ PowerShell：
 Copy-Item bff/.env.example bff/.env
 ```
 
-範例設定已對應本機開發環境：BFF 使用 `8787`，LangGraph API 使用 `http://localhost:2024`，允許 `localhost:5173` 與 `127.0.0.1:5173`。完整設定請參考 [`bff/.env.example`](./bff/.env.example)。
-
-常用設定：
-
 | 環境變數 | 用途 |
 | --- | --- |
-| `BFF_LANGGRAPH_API_URL` | LangGraph API 位址 |
-| `BFF_ALLOWED_ORIGINS` | 瀏覽器來源 allowlist |
-| `BFF_MAX_BODY_BYTES` | request body 上限 |
-| `BFF_UPSTREAM_TIMEOUT_MS` | 上游請求 timeout |
-| `BFF_RATE_LIMIT_REDIS_URI` | 選用 Redis Token Bucket；留空時使用 in-memory limiter |
+| `BFF_LANGGRAPH_API_URL` | LangGraph API URL |
+| `BFF_ALLOWED_ORIGINS` | 允許存取 BFF 的瀏覽器 origins |
+| `BFF_REQUIRE_AUTH` | 是否要求 API key 或 Bearer token |
+| `BFF_API_KEYS` | 允許使用的 API keys |
+| `BFF_MAX_BODY_BYTES` | Request body 上限 |
+| `BFF_UPSTREAM_TIMEOUT_MS` | Upstream request timeout |
+| `BFF_RATE_LIMIT_REDIS_URI` | Redis rate limiter；留空時使用 in-memory limiter |
+
+完整選項請參閱 [`bff/.env.example`](./bff/.env.example)。公開部署時，請啟用認證並限制 `BFF_ALLOWED_ORIGINS`。
 
 ### Frontend
 
-本機開發不需要建立 `frontend/.env`。若前端要直接連到其他 BFF，可從 [`frontend/.env.example`](./frontend/.env.example) 建立 `.env`，並設定完整 URL：
+本機開發不需要建立 `frontend/.env`。Frontend 預設使用同源 `/api/langgraph`；分開部署時可指定 BFF URL：
 
 ```env
-VITE_LANGGRAPH_API_URL=https://your-bff.example.com/api/langgraph
+VITE_LANGGRAPH_API_URL=https://api.example.com/api/langgraph
 ```
+
+圖片輸入限制請參閱 [`frontend/.env.example`](./frontend/.env.example)。`VITE_*` 會出現在瀏覽器 bundle，不能用來保存 secret。
 
 ## 本機開發
 
-請開三個 terminal。
-
-Terminal 1：啟動 LangGraph backend
+分別啟動 Backend、BFF 與 Frontend。
 
 ```bash
+# Terminal 1
 cd backend
 npm run dev
 ```
 
-Backend 預設 URL：
-
-```text
-http://localhost:2024
-```
-
-Terminal 2：啟動 BFF
-
 ```bash
+# Terminal 2
 cd bff
 npm run dev
 ```
 
-BFF 預設 URL：
-
-```text
-http://127.0.0.1:8787
+```bash
+# Terminal 3
+cd frontend
+npm run dev
 ```
 
-確認 BFF 能連到 LangGraph：
+開啟 <http://localhost:5173/app/>。
+
+可使用 BFF 的健康檢查確認服務狀態：
 
 ```bash
+curl http://127.0.0.1:8787/api/health
 curl http://127.0.0.1:8787/api/ready
 ```
 
 PowerShell：
 
 ```powershell
+Invoke-RestMethod http://127.0.0.1:8787/api/health
 Invoke-RestMethod http://127.0.0.1:8787/api/ready
 ```
 
-回應中的 `status` 應為 `ready`。若為 `not_ready`，請先確認 backend 已在 `2024` port 啟動。
+`/api/ready` 會檢查 BFF 是否能連上 LangGraph Backend。
 
-Terminal 3：啟動前端
+## Tools
+
+| Tool | 用途 | 必要設定 |
+| --- | --- | --- |
+| `calculator_tool` | 算術運算 | 無 |
+| `web_search` | Tavily 網路搜尋 | `TAVILY_API_KEY` |
+| `web_fetch` | HTTP／HTTPS 網頁擷取 | 無 |
+| `current_weather` | Open-Meteo 目前天氣 | 無 |
+| `weather_forecast` | Open-Meteo 天氣預報 | 無 |
+
+可以使用 `TOOL_ALLOWLIST`、`TOOL_DENYLIST`、`TOOL_TIMEOUT_MS` 與個別 Tool 設定限制可用範圍。`web_fetch` 預設只允許 port `80`、`443`，並拒絕不安全的 private network address。
+
+## MCP
+
+MCP tools 預設不會在啟動時載入。啟用 Filesystem MCP：
+
+```env
+MCP_LOAD_ON_START=true
+MCP_FILESYSTEM_ENABLED=true
+MCP_FILESYSTEM_PATH=/absolute/path/to/workspace
+MCP_FILESYSTEM_ALLOWED_ROOTS=/absolute/path/to/workspace
+```
+
+讓 Deep Researcher 使用 MCP tools：
+
+```env
+DEEP_RESEARCHER_MCP_ENABLED=true
+```
+
+啟用 Brave Search MCP：
+
+```env
+MCP_BRAVE_SEARCH_ENABLED=true
+BRAVE_API_KEY=your_brave_api_key
+```
+
+`MCP_FILESYSTEM_PATH` 必須位於 `MCP_FILESYSTEM_ALLOWED_ROOTS` 內。多個 root 在 Windows 使用 `;` 分隔，在 Linux／macOS 使用 `:`。
+
+## Observability
+
+BFF 提供 metrics endpoint：
 
 ```bash
-cd frontend
-npm run dev
+curl http://127.0.0.1:8787/api/metrics
 ```
 
-開啟：
+OpenTelemetry 預設關閉。連接 OTLP collector：
 
-```text
-http://localhost:5173/app/
+```env
+OTEL_ENABLED=true
+OTEL_SERVICE_NAME=chat-gun-react-agent
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http
+OTEL_SAMPLE_RATE=1
 ```
 
-## 驗證
+Opik 可用於開發期間的 Agent tracing 與 Weather evaluation。它預設關閉；啟用 hosted tracing 時應使用非正式環境資料，並保持 redaction 開啟。
+
+```env
+OPIK_ENABLED=true
+OPIK_API_KEY=your_opik_api_key
+OPIK_WORKSPACE=your_workspace
+OPIK_REDACT_ENABLED=true
+```
+
+執行 evaluation：
+
+```bash
+cd backend
+npm run eval:opik
+```
+
+## Docker Compose
+
+Docker Compose 會啟動 PostgreSQL、Redis、LangGraph API 與 BFF，並由 BFF 提供建置後的 Frontend。
+
+在專案根目錄建立 `.env`：
+
+```env
+QWEN_API_KEY=your_qwen_api_key
+TAVILY_API_KEY=your_tavily_api_key
+```
+
+啟動服務：
+
+```bash
+docker compose up --build
+```
+
+開啟 <http://localhost:8123/app/>。
+
+Compose 預設使用 Qwen。改用其他 provider 或啟用額外 Backend 功能時，請把對應環境變數加入 `docker-compose.yml` 的 `langgraph-api.environment`。
+
+## 測試
 
 Backend：
 
@@ -269,118 +348,43 @@ npm run test
 npm run build
 ```
 
-## Docker Compose
-
-Compose 會啟動 PostgreSQL、Redis、LangGraph API 與 BFF，並由 BFF 提供已建置的前端。先在專案根目錄建立 `.env`：
-
-```env
-QWEN_API_KEY=your_qwen_api_key
-TAVILY_API_KEY=
-```
-
-接著啟動：
-
-```bash
-docker compose up --build
-```
-
-開啟：
-
-```text
-http://localhost:8123/app/
-```
-
-目前的 Compose 設定以 Qwen 為預設 provider。若要使用 OpenAI-compatible 或 CCR，需將對應環境變數加入 `docker-compose.yml` 的 `langgraph-api.environment`。
-
-Compose 的 `BFF_MAX_BODY_BYTES` 預設為 `1048576`（1 MiB）。需要上傳較大的圖片時，可在根目錄 `.env` 設定較大的值。
-
-未設定 LangSmith 或 MCP 的選用變數時，Compose 可能顯示它們會使用空字串的 warning；這不會阻止預設 Qwen 流程啟動。
-
-## Tools
-
-原生 tools 由 `backend/src/tools/registry.ts` 載入。
-
-| Tool | 用途 | 額外設定 |
-| --- | --- | --- |
-| `calculator_tool` | 數學運算 | 無 |
-| `web_search` | Tavily 網路搜尋 | `TAVILY_API_KEY` |
-| `web_fetch` | 擷取 HTTP／HTTPS 網頁 | 無 |
-| `current_weather` | Open-Meteo 即時天氣 | 無 API Key |
-| `weather_forecast` | Open-Meteo 天氣預報 | 無 API Key |
-
-可透過 `TOOL_ALLOWLIST`、`TOOL_DENYLIST`、`TOOL_TIMEOUT_MS` 與輸入／輸出大小設定限制 tools。`web_fetch` 有 URL 與 port 檢查，但若要公開部署，仍應在網路層加上 egress policy。
-
-## MCP
-
-MCP tools 預設不會在啟動時載入。需要 filesystem MCP 時，可在 `backend/.env` 設定：
-
-```env
-MCP_LOAD_ON_START=true
-MCP_FILESYSTEM_ENABLED=true
-MCP_FILESYSTEM_PATH=/absolute/path/to/workspace
-MCP_FILESYSTEM_ALLOWED_ROOTS=/absolute/path/to/workspace
-```
-
-若要讓 `deep_researcher` 也使用 MCP tools，再加入：
-
-```env
-DEEP_RESEARCHER_MCP_ENABLED=true
-```
-
-Brave Search MCP 需要：
-
-```env
-MCP_BRAVE_SEARCH_ENABLED=true
-BRAVE_API_KEY=your_brave_api_key
-```
-
-Filesystem MCP 應使用 `MCP_FILESYSTEM_ALLOWED_ROOTS` 限制可存取目錄；多個路徑使用作業系統的 path delimiter 分隔。
-
 ## 疑難排解
 
-### 前端出現 `Invalid URL`
+### Frontend 出現 `Invalid URL`
 
-LangGraph SDK 需要 absolute API URL。目前前端預設會用：
-
-```text
-window.location.origin + /api/langgraph
-```
-
-如果自行設定 `VITE_LANGGRAPH_API_URL`，必須是完整 URL，例如：
+`VITE_LANGGRAPH_API_URL` 必須是完整 URL。若 Frontend 與 BFF 使用同一個 origin，移除這個設定即可。
 
 ```env
 VITE_LANGGRAPH_API_URL=http://localhost:5173/api/langgraph
 ```
 
-### 前端 `/api/langgraph/threads` 回 502
+### `/api/langgraph/*` 回傳 502
 
-先檢查 BFF readiness：
+先確認 BFF 與 Backend 狀態：
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8787/api/ready
-```
-
-再檢查 backend：
-
-```powershell
 Invoke-RestMethod http://localhost:2024/ok
 ```
 
+再檢查 `BFF_LANGGRAPH_API_URL` 是否指向正在執行的 LangGraph API。
+
 ### `Research synthesis failed ... fetch failed`
 
-這通常表示 backend 無法連到模型供應商或外部 tool provider。先確認 API Key、endpoint 與網路連線。
-
-如果使用 Qwen / Alibaba Cloud Bailian，先檢查：
+確認模型或 Tool provider 的 API key、base URL 與網路連線。使用 Qwen／Alibaba Cloud Bailian 時，可以先測試：
 
 ```powershell
 Test-NetConnection dashscope.aliyuncs.com -Port 443
 ```
 
-如果使用自訂 OpenAI-compatible endpoint，請檢查 `OPENAI_COMPATIBLE_BASE_URL`。網路需要 proxy 時，在 `backend/.env` 設定 `HTTPS_PROXY`／`HTTP_PROXY`，然後重啟 backend。
+需要 proxy 時，在 `backend/.env` 設定 `HTTPS_PROXY`、`HTTP_PROXY` 與 `NO_PROXY`，然後重新啟動 Backend。
 
-## 更多文件
+## 文件
 
-BFF 的 API 與安全設定請參考 [docs/bff.md](./docs/bff.md)。
+- [BFF API 與安全設定](./docs/bff.md)
+- [Backend query workflow](./docs/architecture.md)
+- [TypeScript／LangGraph architecture](./docs/typescript-langgraph-architecture.md)
+- [Tool security isolation](./docs/tool-security-isolation.md)
 
 ## License
 
