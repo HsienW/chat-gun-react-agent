@@ -30,6 +30,11 @@ import {
   type SpanManager,
   type TraceAttributes,
 } from "../platform/tracing/span-manager.js";
+import { instrumentGraphWithOpik } from "../platform/tracing/opik/opik-graph.js";
+import {
+  getOpikTracer,
+  type OpikTracer,
+} from "../platform/tracing/opik/opik-tracer.js";
 import {
   extractImageAttachmentBlocks,
   getImageUrl,
@@ -40,6 +45,10 @@ import { getLatestUserMessage, getResearchTopic, messageContentToString } from "
 import { validateLocationInput } from "../tools/geocoding/location-normalizer.js";
 import { loadAgentTools } from "../tools/registry.js";
 import { normalizeAiMessageForStream } from "./message-normalization.js";
+import {
+  createExecutedToolCallArtifact,
+  type ExecutedToolCall,
+} from "./executed-tool-call.js";
 import type {
   WeatherToolResult,
   WeatherExecutionState,
@@ -111,13 +120,31 @@ function getTracingTaskId(config: unknown): string | undefined {
   return undefined;
 }
 
+function getTracingStepId(config: unknown): string | undefined {
+  if (!config || typeof config !== "object" || !("configurable" in config)) {
+    return undefined;
+  }
+  const configurable = config.configurable;
+  if (!configurable || typeof configurable !== "object") return undefined;
+
+  for (const key of ["step_id", "stepId"] as const) {
+    const value = Object.entries(configurable).find(
+      ([entryKey]) => entryKey === key
+    )?.[1];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
 function traceNode<TArguments extends unknown[], TResult>(
   nodeName: string,
   node: (...args: TArguments) => Promise<TResult>,
-  manager: SpanManager = getSpanManager()
+  manager: SpanManager = getSpanManager(),
+  opikTracer: OpikTracer = getOpikTracer()
 ): (...args: TArguments) => Promise<TResult> {
   return (...args) => {
     const taskId = getTracingTaskId(args[1]);
+    const stepId = getTracingStepId(args[1]);
     const attributes: TraceAttributes = {
       "node.name": nodeName,
       "step.id": nodeName,
@@ -126,7 +153,13 @@ function traceNode<TArguments extends unknown[], TResult>(
     return manager.withSpan(
       `langgraph.node.${nodeName}`,
       { attributes },
-      () => node(...args)
+      () =>
+        opikTracer.withNodeSpan(
+          nodeName,
+          stepId ? { stepId } : {},
+          () => node(...args),
+          args[0]
+        )
     );
   };
 }
@@ -622,47 +655,78 @@ function coercePlan(rawPlan: Partial<ResearchPlan> | undefined, question: string
 async function invokeTool(
   toolName: string,
   input: Record<string, unknown>,
+  nodeName: string,
   config?: RunnableConfig
-): Promise<string> {
+): Promise<{ content: string; toolCallId: string }> {
+  const toolCallId = crypto.randomUUID();
   const selectedTool = toolByName.get(toolName) as StructuredToolInterface | undefined;
   if (!selectedTool) {
-    return `Error: tool ${toolName} is not loaded.`;
+    return {
+      content: `Error: tool ${toolName} is not loaded.`,
+      toolCallId,
+    };
   }
 
+  const existingStepId =
+    getConfigString(config, "step_id") || getConfigString(config, "stepId");
+  const toolConfig: RunnableConfig = {
+    ...config,
+    configurable: {
+      ...config?.configurable,
+      tool_call_id: toolCallId,
+      ...(existingStepId
+        ? {}
+        : { step_id: nodeName }),
+    },
+  };
+
   try {
-    return await getSpanManager().withSpan(
+    const content = await getSpanManager().withSpan(
       "tool.execute",
       {
         attributes: {
           "tool.name": toolName,
-          "tool.call.id": crypto.randomUUID(),
+          "tool.call.id": toolCallId,
         },
       },
       async () => {
-        const result = await selectedTool.invoke(input, config);
+        const result = await selectedTool.invoke(input, toolConfig);
         return typeof result === "string" ? result : JSON.stringify(result, null, 2);
       }
     );
+    return { content, toolCallId };
   } catch (error) {
-    return serializeErrorEnvelope(
-      createErrorEnvelope(error, {
-        source: "backend",
-        stage: "tool_invoke",
-        provider: toolName,
-        details: {
-          toolName,
-          input,
-        },
-      })
-    );
+    return {
+      content: serializeErrorEnvelope(
+        createErrorEnvelope(error, {
+          source: "backend",
+          stage: "tool_invoke",
+          provider: toolName,
+          details: {
+            toolName,
+            input,
+          },
+        })
+      ),
+      toolCallId,
+    };
   }
 }
 
-function createToolMessage(name: string, content: string, index = 0): ToolMessage {
+function createToolMessage(
+  name: string,
+  content: string,
+  index = 0,
+  invocation?: ExecutedToolCall,
+  toolCallId = `${name}_${Date.now()}_${index}`
+): ToolMessage {
   return new ToolMessage({
     content,
     name,
-    tool_call_id: `${name}_${Date.now()}_${index}`,
+    tool_call_id: toolCallId,
+    ...(invocation
+      ? { artifact: createExecutedToolCallArtifact(invocation) }
+      : {}),
   });
 }
 
@@ -857,6 +921,38 @@ function getWeatherToolNameForRequest(request: WeatherRequest): WeatherToolName 
   return request.weatherCapability === "hourly" || request.weatherCapability === "daily"
     ? DEEP_RESEARCH_TOOL_NAMES.weatherForecast
     : DEEP_RESEARCH_TOOL_NAMES.currentWeather;
+}
+
+function buildWeatherToolInvocation(
+  weatherPlan: WeatherRequest,
+  locationQuery: LocationQuery,
+  options: {
+    resolutionStrategy?: "llm_repair";
+    includeResolutionHints?: boolean;
+  } = {}
+): ExecutedToolCall & { name: WeatherToolName } {
+  const includeResolutionHints = options.includeResolutionHints ?? true;
+  return {
+    name: getWeatherToolNameForRequest(weatherPlan),
+    arguments: {
+      ...locationQuery,
+      ...(includeResolutionHints && weatherPlan.queryName
+        ? { queryName: weatherPlan.queryName }
+        : {}),
+      ...(weatherPlan.weatherCapability
+        ? { weatherCapability: weatherPlan.weatherCapability }
+        : {}),
+      ...(weatherPlan.timeRange ? { timeRange: weatherPlan.timeRange } : {}),
+      ...(includeResolutionHints && weatherPlan.resolvedCandidate
+        ? { resolvedCandidate: weatherPlan.resolvedCandidate }
+        : {}),
+      ...(weatherPlan.units ? { units: weatherPlan.units } : {}),
+      ...(weatherPlan.locale ? { locale: weatherPlan.locale } : {}),
+      ...(options.resolutionStrategy
+        ? { resolutionStrategy: options.resolutionStrategy }
+        : {}),
+    },
+  };
 }
 
 type WeatherRepairCandidate = {
@@ -1428,33 +1524,28 @@ async function targetedTools(
     };
 
     weatherExecution = { status: "running", requestedLocation: request };
-    const toolName = getWeatherToolNameForRequest(rawRequest);
-    const input = request as Record<string, unknown>;
-    if (rawRequest.queryName) {
-      input.queryName = rawRequest.queryName;
-    }
-    if (rawRequest.weatherCapability) {
-      input.weatherCapability = rawRequest.weatherCapability;
-    }
-    if (rawRequest.timeRange) {
-      input.timeRange = rawRequest.timeRange;
-    }
-    if (rawRequest.resolvedCandidate) {
-      input.resolvedCandidate = rawRequest.resolvedCandidate;
-    }
-    if (rawRequest.units) {
-      input.units = rawRequest.units;
-    }
-    if (rawRequest.locale) {
-      input.locale = rawRequest.locale;
-    }
-    const initialContent = await invokeTool(toolName, input, _config);
+    const initialInvocation = buildWeatherToolInvocation(rawRequest, request);
+    const toolName = initialInvocation.name;
+    const initialExecution = await invokeTool(
+      toolName,
+      initialInvocation.arguments,
+      DEEP_RESEARCH_GRAPH_NODES.targetedTools,
+      _config
+    );
     const initialOutcome = resolveWeatherToolOutcome(
-      initialContent,
+      initialExecution.content,
       request,
       toolName
     );
-    let content = initialOutcome.messageContent;
+    messages.push(
+      createToolMessage(
+        toolName,
+        initialOutcome.messageContent,
+        0,
+        initialInvocation,
+        initialExecution.toolCallId
+      )
+    );
     let parsedResult = initialOutcome.result;
 
     // LLM Repair: only for not_found, and only once — Task 5.11, 5.12, 5.13
@@ -1470,9 +1561,9 @@ async function targetedTools(
         question: plan.question,
         notFound: parsedResult,
       });
-      let firstClarification: { content: string; result: WeatherToolResult } | undefined;
-      let lastNotFound: { content: string; result: WeatherToolResult } | undefined;
-      let terminalRepairResult: { content: string; result: WeatherToolResult } | undefined;
+      let firstClarification: WeatherToolResult | undefined;
+      let lastNotFound: WeatherToolResult | undefined;
+      let terminalRepairResult: WeatherToolResult | undefined;
 
       for (const [index, candidate] of repairCandidates.entries()) {
         const repairedRequest: LocationQuery = {
@@ -1481,22 +1572,33 @@ async function targetedTools(
           country: candidate.country,
           region: candidate.region,
         };
-        const retryContent = await invokeTool(
-          toolName,
+        const retryInvocation = buildWeatherToolInvocation(
+          rawRequest,
+          repairedRequest,
           {
-            ...repairedRequest,
             resolutionStrategy: "llm_repair",
-            ...(rawRequest.weatherCapability ? { weatherCapability: rawRequest.weatherCapability } : {}),
-            ...(rawRequest.timeRange ? { timeRange: rawRequest.timeRange } : {}),
-            ...(rawRequest.units ? { units: rawRequest.units } : {}),
-            ...(rawRequest.locale ? { locale: rawRequest.locale } : {}),
-          } as Record<string, unknown>,
+            includeResolutionHints: false,
+          }
+        );
+        const retryExecution = await invokeTool(
+          retryInvocation.name,
+          retryInvocation.arguments,
+          DEEP_RESEARCH_GRAPH_NODES.targetedTools,
           _config
         );
         const retryOutcome = resolveWeatherToolOutcome(
-          retryContent,
+          retryExecution.content,
           repairedRequest,
           toolName
+        );
+        messages.push(
+          createToolMessage(
+            retryInvocation.name,
+            retryOutcome.messageContent,
+            index + 1,
+            retryInvocation,
+            retryExecution.toolCallId
+          )
         );
         const retryParsed = retryOutcome.result;
 
@@ -1510,33 +1612,23 @@ async function targetedTools(
         });
 
         if (retryParsed.status === "success" || retryParsed.status === "error") {
-          terminalRepairResult = {
-            content: retryOutcome.messageContent,
-            result: retryParsed,
-          };
+          terminalRepairResult = retryParsed;
           break;
         }
 
         if (retryParsed.status === "needs_clarification" && !firstClarification) {
-          firstClarification = {
-            content: retryOutcome.messageContent,
-            result: retryParsed,
-          };
+          firstClarification = retryParsed;
           continue;
         }
 
         if (retryParsed.status === "not_found") {
-          lastNotFound = {
-            content: retryOutcome.messageContent,
-            result: retryParsed,
-          };
+          lastNotFound = retryParsed;
         }
       }
 
       const selectedRepairResult = terminalRepairResult ?? firstClarification ?? lastNotFound;
       if (selectedRepairResult) {
-        parsedResult = selectedRepairResult.result;
-        content = selectedRepairResult.content;
+        parsedResult = selectedRepairResult;
       } else {
         await recordWeatherAuditEvent("weather.location.repair.result", {
           raw: request.raw,
@@ -1556,16 +1648,27 @@ async function targetedTools(
     } else {
       weatherExecution = { status: "failed", result: parsedResult };
     }
-
-    messages.push(createToolMessage(toolName, content));
   }
 
   if (plan?.answerMode === "calculation" && plan.calculation?.expression) {
     const input = {
       expression: plan.calculation.expression,
     };
-    const content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.calculator, input);
-    messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.calculator, content));
+    const execution = await invokeTool(
+      DEEP_RESEARCH_TOOL_NAMES.calculator,
+      input,
+      DEEP_RESEARCH_GRAPH_NODES.targetedTools,
+      _config
+    );
+    messages.push(
+      createToolMessage(
+        DEEP_RESEARCH_TOOL_NAMES.calculator,
+        execution.content,
+        0,
+        undefined,
+        execution.toolCallId
+      )
+    );
   }
 
   return { messages, weatherExecution };
@@ -2198,9 +2301,22 @@ async function searchWeb(
       freshness: plan.freshness,
       format: "json",
     };
-    const content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.webSearch, input);
-    messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.webSearch, content, index));
-    allResults.push(...parseSearchToolOutput(content, query));
+    const execution = await invokeTool(
+      DEEP_RESEARCH_TOOL_NAMES.webSearch,
+      input,
+      DEEP_RESEARCH_GRAPH_NODES.searchWeb,
+      _config
+    );
+    messages.push(
+      createToolMessage(
+        DEEP_RESEARCH_TOOL_NAMES.webSearch,
+        execution.content,
+        index,
+        undefined,
+        execution.toolCallId
+      )
+    );
+    allResults.push(...parseSearchToolOutput(execution.content, query));
   }
 
   for (const url of plan.urls) {
@@ -2295,9 +2411,22 @@ async function fetchSources(
       url: source.url,
       maxCharacters: 16_000,
     };
-    const content = await invokeTool(DEEP_RESEARCH_TOOL_NAMES.webFetch, input);
-    messages.push(createToolMessage(DEEP_RESEARCH_TOOL_NAMES.webFetch, content, index));
-    const parsed = parseFetchOutput(content);
+    const execution = await invokeTool(
+      DEEP_RESEARCH_TOOL_NAMES.webFetch,
+      input,
+      DEEP_RESEARCH_GRAPH_NODES.fetchSources,
+      _config
+    );
+    messages.push(
+      createToolMessage(
+        DEEP_RESEARCH_TOOL_NAMES.webFetch,
+        execution.content,
+        index,
+        undefined,
+        execution.toolCallId
+      )
+    );
+    const parsed = parseFetchOutput(execution.content);
     fetchedSources.push({
       ...source,
       content: parsed.content,
@@ -2776,7 +2905,10 @@ const builder = new StateGraph(DeepResearchState)
 
 const deepResearcherCheckpointer = new MemorySaver();
 
-export const deepResearcherGraph = builder.compile({
-  checkpointer: deepResearcherCheckpointer,
-});
+export const deepResearcherGraph = instrumentGraphWithOpik(
+  builder.compile({
+    checkpointer: deepResearcherCheckpointer,
+  }),
+  "weather"
+);
 

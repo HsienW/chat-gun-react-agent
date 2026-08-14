@@ -9,7 +9,8 @@
     "build": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "start": "langgraphjs dev",
-    "test": "vitest run"
+    "test": "vitest run",
+    "eval:opik": "vitest run src/evaluation/opik/experiment.live-smoke.test.ts"
   },
   "dependencies": {
     "@langchain/core": "^0.3.55",
@@ -33,5 +34,8 @@
     "@types/pg": "^8.20.0",
     "typescript": "~5.7.2",
     "vitest": "^4.1.8"
+  },
+  "optionalDependencies": {
+    "opik": "^1.11.14"
   }
 }

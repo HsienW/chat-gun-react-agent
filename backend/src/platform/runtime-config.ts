@@ -27,7 +27,24 @@ export type AgentRuntimeConfig = {
   otelExporterEndpoint?: string;
   otelExporterProtocol: OtelExporterProtocol;
   otelSampleRate: number;
+  /** Enables the development-only Opik tracing and evaluation integration. */
+  opikEnabled: boolean;
+  /** Opik Cloud API key. Undefined keeps the integration in no-op mode. */
+  opikApiKey?: string;
+  /** Opik workspace name. Undefined uses the SDK account default. */
+  opikWorkspace?: string;
+  /** Opik API base URL. */
+  opikHost: string;
+  /** Project name attached to Opik traces and datasets. */
+  opikProjectName: string;
+  /** Must remain true; false fails closed and disables Opik export. */
+  opikRedactEnabled: boolean;
+  /** Local directory for offline Opik evaluation result JSON files. */
+  opikEvalOutputDir: string;
 };
+
+const DEFAULT_OPIK_HOST = "https://www.comet.com/opik/api";
+const DEFAULT_OPIK_PROJECT_NAME = "chat-gun-react-agent";
 
 function readPositiveInt(name: string, fallback: number): number {
   const rawValue = getEnv(name);
@@ -93,6 +110,11 @@ function readOptionalUrl(name: string): string | undefined {
   }
 }
 
+function readOptionalString(name: string): string | undefined {
+  const value = getEnv(name).trim();
+  return value || undefined;
+}
+
 function readOtelProtocol(): OtelExporterProtocol {
   const value = getEnv("OTEL_EXPORTER_OTLP_PROTOCOL", "http").trim().toLowerCase();
   return value === "grpc" || value === "http" ? value : "http";
@@ -129,6 +151,15 @@ export function getAgentRuntimeConfig(): AgentRuntimeConfig {
     otelExporterEndpoint: readOptionalUrl("OTEL_EXPORTER_OTLP_ENDPOINT"),
     otelExporterProtocol: readOtelProtocol(),
     otelSampleRate: readSampleRate(),
+    opikEnabled: readBoolean("OPIK_ENABLED", false),
+    opikApiKey: readOptionalString("OPIK_API_KEY"),
+    opikWorkspace: readOptionalString("OPIK_WORKSPACE"),
+    opikHost: readUrl("OPIK_HOST", DEFAULT_OPIK_HOST),
+    opikProjectName:
+      readOptionalString("OPIK_PROJECT_NAME") ?? DEFAULT_OPIK_PROJECT_NAME,
+    opikRedactEnabled: readBoolean("OPIK_REDACT_ENABLED", true),
+    opikEvalOutputDir:
+      readOptionalString("OPIK_EVAL_OUTPUT_DIR") ?? "./eval-results",
   };
 }
 

@@ -47,7 +47,7 @@ function warnSpanOperation(operation: string, error: unknown): void {
   );
 }
 
-function sanitizeErrorMessage(message: string): string {
+export function sanitizeErrorMessage(message: string): string {
   return message
     .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
     .replace(

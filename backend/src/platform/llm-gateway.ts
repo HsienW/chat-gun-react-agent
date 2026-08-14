@@ -13,6 +13,7 @@ import {
 } from "./llm-fallback.js";
 import { getAgentRuntimeConfig } from "./runtime-config.js";
 import { getSpanManager } from "./tracing/span-manager.js";
+import { getOpikTracer } from "./tracing/opik/opik-tracer.js";
 import { recordMetric } from "./observability.js";
 import {
   repairStructuredOutput,
@@ -105,7 +106,16 @@ class TracedChatModelInvoker implements ChatModelInvoker {
           ...(options?.stepId ? { "step.id": options.stepId } : {}),
         },
       },
-      () => this.delegate.invoke(input, options)
+      () =>
+        getOpikTracer().withLlmSpan(
+          {
+            modelName: this.model,
+            providerName: this.provider,
+            ...(options?.stepId ? { stepId: options.stepId } : {}),
+          },
+          () => this.delegate.invoke(input, options),
+          input
+        )
     );
   }
 }

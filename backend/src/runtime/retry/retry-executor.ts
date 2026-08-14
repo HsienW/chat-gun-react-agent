@@ -18,6 +18,10 @@ import type {
 } from "./retry-budget.js";
 import { DEFAULT_RETRY_POLICY } from "./retry-policy.js";
 import type { RetryPolicy } from "./retry-policy.js";
+import {
+  getOpikTracer,
+  type RetrySpanMetadata,
+} from "../../platform/tracing/opik/opik-tracer.js";
 
 export interface RetryConfig<TStep extends string = string> {
   policy?: RetryPolicy;
@@ -94,6 +98,7 @@ export async function executeWithRetry<TStep extends string = string>(
     ...config.step,
     maxAttempts: policy.maxAttempts,
   };
+  let retrySpanMetadata: RetrySpanMetadata | undefined;
 
   while (true) {
     const preExecutionCheck = checkBudget(budget, config.signal);
@@ -106,7 +111,10 @@ export async function executeWithRetry<TStep extends string = string>(
       );
     }
 
-    const operationResult = await operation();
+    const operationResult = retrySpanMetadata
+      ? await getOpikTracer().withRetrySpan(retrySpanMetadata, operation)
+      : await operation();
+    retrySpanMetadata = undefined;
     budget = recordAttempt(budget);
 
     if (operationResult.error === undefined) {
@@ -199,5 +207,10 @@ export async function executeWithRetry<TStep extends string = string>(
       return { finalStep: currentStep, budget, succeeded: false };
     }
     currentStep = runningTransition.next;
+    retrySpanMetadata = {
+      attempt: budget.attempts + 1,
+      reason: classifiedError.category,
+      stepId: config.step.stepId,
+    };
   }
 }

@@ -2,6 +2,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { RunnableConfig } from "@langchain/core/runnables";
 
 import { auditLogger, recordMetric } from "./observability.js";
+import { getOpikTracer } from "./tracing/opik/opik-tracer.js";
 
 export interface ToolPolicy {
   enabled: boolean;
@@ -93,6 +94,29 @@ function getAbortSignal(config: unknown): AbortSignal | undefined {
     | undefined;
   const signal = configurable?.abortSignal ?? runnableConfig.signal;
   return signal instanceof AbortSignal ? signal : undefined;
+}
+
+function getConfigString(
+  config: unknown,
+  keys: readonly string[]
+): string | undefined {
+  if (!config || typeof config !== "object") return undefined;
+  const runnableConfig = config as Record<string, unknown>;
+  const configurable =
+    runnableConfig.configurable &&
+    typeof runnableConfig.configurable === "object" &&
+    !Array.isArray(runnableConfig.configurable)
+      ? (runnableConfig.configurable as Record<string, unknown>)
+      : undefined;
+
+  for (const record of [runnableConfig, configurable]) {
+    if (!record) continue;
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+  }
+  return undefined;
 }
 
 function withGovernanceSignal(
@@ -236,15 +260,26 @@ function wrapToolWithGovernance(
 
     try {
       const externalSignal = getAbortSignal(config);
-      const result = await withTimeout(
-        (signal) =>
-          sourceTool.invoke(
-            input as never,
-            withGovernanceSignal(config, signal) as never
+      const stepId = getConfigString(config, ["step_id", "stepId"]);
+      const toolCallId = getConfigString(config, ["tool_call_id", "toolCallId"]);
+      const result = await getOpikTracer().withToolSpan(
+        {
+          toolName: sourceTool.name,
+          ...(stepId ? { stepId } : {}),
+          ...(toolCallId ? { toolCallId } : {}),
+        },
+        () =>
+          withTimeout(
+            (signal) =>
+              sourceTool.invoke(
+                input as never,
+                withGovernanceSignal(config, signal) as never
+              ),
+            policy.timeoutMs,
+            sourceTool.name,
+            externalSignal
           ),
-        policy.timeoutMs,
-        sourceTool.name,
-        externalSignal
+        input
       );
       const governedResult = truncateOutput(
         sourceTool.name,

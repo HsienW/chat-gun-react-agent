@@ -165,3 +165,57 @@ describe("getAgentRuntimeConfig tracing", () => {
     });
   });
 });
+
+describe("getAgentRuntimeConfig Opik", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("uses disabled and redaction-safe Opik defaults", () => {
+    vi.stubEnv("OPIK_ENABLED", "");
+    vi.stubEnv("OPIK_API_KEY", "");
+    vi.stubEnv("OPIK_WORKSPACE", "");
+    vi.stubEnv("OPIK_HOST", "");
+    vi.stubEnv("OPIK_PROJECT_NAME", "");
+    vi.stubEnv("OPIK_REDACT_ENABLED", "");
+    vi.stubEnv("OPIK_EVAL_OUTPUT_DIR", "");
+
+    expect(getAgentRuntimeConfig()).toMatchObject({
+      opikEnabled: false,
+      opikApiKey: undefined,
+      opikWorkspace: undefined,
+      opikHost: "https://www.comet.com/opik/api",
+      opikProjectName: "chat-gun-react-agent",
+      opikRedactEnabled: true,
+      opikEvalOutputDir: "./eval-results",
+    });
+  });
+
+  it("reads valid Opik configuration", () => {
+    vi.stubEnv("OPIK_ENABLED", "true");
+    vi.stubEnv("OPIK_API_KEY", "test-api-key");
+    vi.stubEnv("OPIK_WORKSPACE", "test-workspace");
+    vi.stubEnv("OPIK_HOST", "https://opik.internal/api");
+    vi.stubEnv("OPIK_PROJECT_NAME", "backend-evaluation");
+    vi.stubEnv("OPIK_REDACT_ENABLED", "false");
+    vi.stubEnv("OPIK_EVAL_OUTPUT_DIR", "./custom-eval-results");
+
+    expect(getAgentRuntimeConfig()).toMatchObject({
+      opikEnabled: true,
+      opikApiKey: "test-api-key",
+      opikWorkspace: "test-workspace",
+      opikHost: "https://opik.internal/api",
+      opikProjectName: "backend-evaluation",
+      opikRedactEnabled: false,
+      opikEvalOutputDir: "./custom-eval-results",
+    });
+  });
+
+  it("falls back to the hosted Opik endpoint for an invalid host", () => {
+    vi.stubEnv("OPIK_HOST", "not-a-url");
+
+    expect(getAgentRuntimeConfig().opikHost).toBe(
+      "https://www.comet.com/opik/api"
+    );
+  });
+});
