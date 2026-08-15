@@ -6,7 +6,7 @@
 [![MCP](https://img.shields.io/badge/MCP-Protocol-111827)](https://modelcontextprotocol.io/)
 [![Qwen](https://img.shields.io/badge/Qwen-Model_Provider-1E3A8A)](https://github.com/QwenLM/Qwen)
 [![Tavily](https://img.shields.io/badge/Tavily-Search_API-BE185D)](https://docs.tavily.com/documentation/api-reference/endpoint/search)
-[![Brave Search](https://img.shields.io/badge/Brave_Search-API-FB542B?logo=brave&logoColor=white)](https://brave.com/search/api/)
+[![Brave Search](https://img.shields.io/badge/Brave_Search-MCP-FB542B?logo=brave&logoColor=white)](https://brave.com/search/api/)
 [![Opik](https://img.shields.io/badge/Opik-Tracing_%26_Evaluation-6F4CFF)](https://github.com/comet-ml/opik)
 [![Upstream](https://img.shields.io/badge/Upstream-Ylang--Labs%2Flanggraph--react--agent--studio-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
 
@@ -27,8 +27,8 @@ Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 建構的�
 - **Streaming**：即時串流回答與執行活動，並支援 Cancellation 與 Exception handling，讓使用者能中止進行中的請求並看見明確的錯誤狀態。
 - **HITL**：天氣地點不明確時，Agent 會列出候選地點向使用者確認，再接續原本的 thread 執行。
 - **Multimodal input**：接受 PNG、JPEG 與 WebP 圖片，透過 vision model 分析內容並納入回答或研究流程。
-- **Native Tools**：內建計算、網路搜尋、網頁擷取、目前天氣與天氣預報工具，Agent 可依問題選擇合適工具。
-- **MCP integration**：可選擇載入 Filesystem 與 Brave Search MCP Server，擴充檔案存取與搜尋能力。
+- **Native Tools**：內建計算、由 Tavily Search API 提供的網路搜尋、網頁擷取、目前天氣與天氣預報工具，Agent 可依問題選擇合適工具。
+- **MCP integration**：可選擇載入 Filesystem 與 Brave Search MCP Server；Brave Search 以選配 MCP Tool 的形式擴充搜尋能力。
 - **Model providers**：支援 Qwen、OpenAI-compatible 與 CCR-compatible endpoints，統一由 LLM Gateway 處理模型能力與呼叫介面。
 - **API Gateway**：BFF 集中處理 API key authentication、CORS、request size validation、Timeout、Cancellation propagation 與 Rate limiting。
 - **Observability & Evaluation**：提供 Metrics 與 OpenTelemetry，並可啟用 Opik tracing、versioned datasets 與 experiments 來追蹤及評估 Agent 行為。
@@ -94,7 +94,8 @@ Frontend 提供 `qwen-plus`、`qwen-max` 與 `qwen-turbo`，預設選用 `qwen-p
 - Node.js 22
 - npm
 - Qwen API key，或可用的 OpenAI-compatible／CCR-compatible endpoint
-- Tavily API key（使用網路搜尋時需要）
+- Tavily Search API key（使用內建 `web_search` 時需要）
+- Brave Search API key（啟用 Brave Search MCP Server 時需要，選用）
 - Docker 與 Docker Compose（選用）
 
 ## 安裝
@@ -147,7 +148,7 @@ LLM_PROVIDER=qwen
 QWEN_API_KEY=your_qwen_api_key
 ```
 
-Deep Researcher 的網路搜尋使用 Tavily：
+Deep Researcher 的內建 `web_search` 使用 Tavily Search API：
 
 ```env
 TAVILY_API_KEY=your_tavily_api_key
@@ -250,7 +251,7 @@ Invoke-RestMethod http://127.0.0.1:8787/api/ready
 | Tool | 用途 | 必要設定 |
 | --- | --- | --- |
 | `calculator_tool` | 算術運算 | 無 |
-| `web_search` | Tavily 網路搜尋 | `TAVILY_API_KEY` |
+| `web_search` | Tavily Search API | `TAVILY_API_KEY` |
 | `web_fetch` | HTTP／HTTPS 網頁擷取 | 無 |
 | `current_weather` | Open-Meteo 目前天氣 | 無 |
 | `weather_forecast` | Open-Meteo 天氣預報 | 無 |
@@ -274,7 +275,7 @@ MCP_FILESYSTEM_ALLOWED_ROOTS=/absolute/path/to/workspace
 DEEP_RESEARCHER_MCP_ENABLED=true
 ```
 
-啟用 Brave Search MCP：
+啟用選配的 Brave Search MCP Server：
 
 ```env
 MCP_BRAVE_SEARCH_ENABLED=true

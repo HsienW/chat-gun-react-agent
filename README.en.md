@@ -6,7 +6,7 @@
 [![MCP](https://img.shields.io/badge/MCP-Protocol-111827)](https://modelcontextprotocol.io/)
 [![Qwen](https://img.shields.io/badge/Qwen-Model_Provider-1E3A8A)](https://github.com/QwenLM/Qwen)
 [![Tavily](https://img.shields.io/badge/Tavily-Search_API-BE185D)](https://docs.tavily.com/documentation/api-reference/endpoint/search)
-[![Brave Search](https://img.shields.io/badge/Brave_Search-API-FB542B?logo=brave&logoColor=white)](https://brave.com/search/api/)
+[![Brave Search](https://img.shields.io/badge/Brave_Search-MCP-FB542B?logo=brave&logoColor=white)](https://brave.com/search/api/)
 [![Opik](https://img.shields.io/badge/Opik-Tracing_%26_Evaluation-6F4CFF)](https://github.com/comet-ml/opik)
 [![Upstream](https://img.shields.io/badge/Upstream-Ylang--Labs%2Flanggraph--react--agent--studio-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
 
@@ -27,8 +27,8 @@ Chat Gun React Agent is a full-stack agent chat application built with React, Ty
 - **Streaming**: Streams answers and execution activity in real time, with cancellation and exception handling so users can stop active requests and see clear error states.
 - **HITL**: When a weather location is ambiguous, the agent presents candidate locations for confirmation and then resumes the original thread.
 - **Multimodal input**: Accepts PNG, JPEG, and WebP images and uses a vision model to incorporate their content into answers and research workflows.
-- **Native Tools**: Includes calculation, web search, web fetching, current weather, and weather forecast tools that agents can select as needed.
-- **MCP integration**: Optionally loads Filesystem and Brave Search MCP Servers to extend file access and search capabilities.
+- **Native Tools**: Includes calculation, web search powered by the Tavily Search API, web fetching, current weather, and weather forecast tools that agents can select as needed.
+- **MCP integration**: Optionally loads Filesystem and Brave Search MCP Servers; Brave Search extends search capabilities as an optional MCP Tool.
 - **Model providers**: Supports Qwen, OpenAI-compatible, and CCR-compatible endpoints through a shared LLM Gateway interface.
 - **API Gateway**: The BFF centralizes API key authentication, CORS, request size validation, timeouts, cancellation propagation, and rate limiting.
 - **Observability & Evaluation**: Provides metrics and OpenTelemetry, with optional Opik tracing, versioned datasets, and experiments for tracking and evaluating agent behavior.
@@ -94,7 +94,8 @@ The frontend offers `qwen-plus`, `qwen-max`, and `qwen-turbo`, with `qwen-plus` 
 - Node.js 22
 - npm
 - A Qwen API key or an available OpenAI-compatible or CCR-compatible endpoint
-- A Tavily API key for web search
+- A Tavily Search API key for the built-in `web_search` tool
+- A Brave Search API key when enabling the optional Brave Search MCP Server
 - Docker and Docker Compose (optional)
 
 ## Installation
@@ -147,7 +148,7 @@ LLM_PROVIDER=qwen
 QWEN_API_KEY=your_qwen_api_key
 ```
 
-Deep Researcher uses Tavily for web search:
+Deep Researcher's built-in `web_search` tool uses the Tavily Search API:
 
 ```env
 TAVILY_API_KEY=your_tavily_api_key
@@ -250,7 +251,7 @@ Invoke-RestMethod http://127.0.0.1:8787/api/ready
 | Tool | Purpose | Required configuration |
 | --- | --- | --- |
 | `calculator_tool` | Arithmetic calculations | None |
-| `web_search` | Tavily web search | `TAVILY_API_KEY` |
+| `web_search` | Tavily Search API | `TAVILY_API_KEY` |
 | `web_fetch` | HTTP/HTTPS page fetching | None |
 | `current_weather` | Current weather from Open-Meteo | None |
 | `weather_forecast` | Weather forecasts from Open-Meteo | None |
@@ -274,7 +275,7 @@ Allow Deep Researcher to use MCP tools:
 DEEP_RESEARCHER_MCP_ENABLED=true
 ```
 
-Enable Brave Search MCP:
+Enable the optional Brave Search MCP Server:
 
 ```env
 MCP_BRAVE_SEARCH_ENABLED=true
