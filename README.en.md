@@ -2,11 +2,11 @@
 
 [![License](https://img.shields.io/github/license/HsienW/chat-gun-react-agent?color=22C55E)](./LICENSE)
 [![LangGraph](https://img.shields.io/badge/LangGraph-JS-06B6D4)](https://langchain-ai.github.io/langgraphjs/)
-[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Observability-8A7600?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
+[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Observability-8A7600)](https://opentelemetry.io/)
 [![MCP](https://img.shields.io/badge/MCP-Protocol-111827)](https://modelcontextprotocol.io/)
 [![Qwen](https://img.shields.io/badge/Qwen-Model_Provider-1E3A8A)](https://github.com/QwenLM/Qwen)
 [![Tavily](https://img.shields.io/badge/Tavily-Search_API-BE185D)](https://docs.tavily.com/documentation/api-reference/endpoint/search)
-[![Brave Search](https://img.shields.io/badge/Brave_Search-MCP-FB542B?logo=brave&logoColor=white)](https://brave.com/search/api/)
+[![Brave Search](https://img.shields.io/badge/Brave_Search-MCP-FB542B)](https://brave.com/search/api/)
 [![Opik](https://img.shields.io/badge/Opik-Tracing_%26_Evaluation-6F4CFF)](https://github.com/comet-ml/opik)
 [![Upstream](https://img.shields.io/badge/Upstream-Ylang--Labs%2Flanggraph--react--agent--studio-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
 
