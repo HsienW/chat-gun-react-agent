@@ -3,6 +3,32 @@ import { describe, expect, it } from "vitest";
 import { runMigrations } from "./migration-runner.js";
 import type { Queryable } from "./rows.js";
 
+const migrationNames = [
+  "001_create_agent_tasks.sql",
+  "002_create_task_steps.sql",
+  "003_create_task_events.sql",
+  "004_create_idempotency_records.sql",
+  "005_create_audit_events.sql",
+  "006_create_business_effects.sql",
+  "007_create_tool_executions.sql",
+  "008_create_tool_execution_attempts.sql",
+  "009_create_compensation_executions.sql",
+  "010_create_result_references.sql",
+] as const;
+
+function expectedResults(
+  direction: "up" | "down",
+  executed: boolean
+) {
+  const orderedNames =
+    direction === "up" ? migrationNames : [...migrationNames].reverse();
+  return orderedNames.map((migrationName) => ({
+    migrationName,
+    direction,
+    executed,
+  }));
+}
+
 class FakeMigrationDb implements Queryable {
   readonly executedSql: string[] = [];
   private readonly appliedMigrations = new Set<string>();
@@ -43,93 +69,31 @@ describe("runMigrations", () => {
   it("runs fixed up migrations once and tracks them", async () => {
     const db = new FakeMigrationDb();
 
-    await expect(runMigrations("up", db)).resolves.toEqual([
-      {
-        migrationName: "001_create_agent_tasks.sql",
-        direction: "up",
-        executed: true,
-      },
-      {
-        migrationName: "002_create_task_steps.sql",
-        direction: "up",
-        executed: true,
-      },
-      {
-        migrationName: "003_create_task_events.sql",
-        direction: "up",
-        executed: true,
-      },
-      {
-        migrationName: "004_create_idempotency_records.sql",
-        direction: "up",
-        executed: true,
-      },
-      {
-        migrationName: "005_create_audit_events.sql",
-        direction: "up",
-        executed: true,
-      },
-    ]);
+    await expect(runMigrations("up", db)).resolves.toEqual(
+      expectedResults("up", true)
+    );
+    await expect(runMigrations("up", db)).resolves.toEqual(
+      expectedResults("up", false)
+    );
 
-    await expect(runMigrations("up", db)).resolves.toEqual([
-      {
-        migrationName: "001_create_agent_tasks.sql",
-        direction: "up",
-        executed: false,
-      },
-      {
-        migrationName: "002_create_task_steps.sql",
-        direction: "up",
-        executed: false,
-      },
-      {
-        migrationName: "003_create_task_events.sql",
-        direction: "up",
-        executed: false,
-      },
-      {
-        migrationName: "004_create_idempotency_records.sql",
-        direction: "up",
-        executed: false,
-      },
-      {
-        migrationName: "005_create_audit_events.sql",
-        direction: "up",
-        executed: false,
-      },
-    ]);
+    const executedSql = db.executedSql.join("\n");
+    expect(executedSql).toContain(
+      "UNIQUE (tenant_id, scope_id, business_effect_key)"
+    );
+    expect(executedSql).toContain("UNIQUE (replay_key)");
+    expect(executedSql).toContain(
+      "UNIQUE (tool_execution_id, execution_attempt)"
+    );
+    expect(executedSql).toContain("manual_intervention_required");
+    expect(executedSql).toContain("payload_ref TEXT NOT NULL");
   });
 
   it("runs down migrations in reverse order when applied", async () => {
     const db = new FakeMigrationDb();
     await runMigrations("up", db);
 
-    await expect(runMigrations("down", db)).resolves.toEqual([
-      {
-        migrationName: "005_create_audit_events.sql",
-        direction: "down",
-        executed: true,
-      },
-      {
-        migrationName: "004_create_idempotency_records.sql",
-        direction: "down",
-        executed: true,
-      },
-      {
-        migrationName: "003_create_task_events.sql",
-        direction: "down",
-        executed: true,
-      },
-      {
-        migrationName: "002_create_task_steps.sql",
-        direction: "down",
-        executed: true,
-      },
-      {
-        migrationName: "001_create_agent_tasks.sql",
-        direction: "down",
-        executed: true,
-      },
-    ]);
+    await expect(runMigrations("down", db)).resolves.toEqual(
+      expectedResults("down", true)
+    );
   });
 });
