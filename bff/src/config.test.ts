@@ -67,3 +67,24 @@ describe("metrics backend configuration", () => {
     );
   });
 });
+
+describe("idempotency TTL configuration", () => {
+  it("covers the upstream timeout and applies configured bounds", () => {
+    vi.stubEnv("BFF_UPSTREAM_TIMEOUT_MS", "120000");
+    vi.stubEnv("BFF_IDEMPOTENCY_TTL_MS", "1000");
+    expect(loadConfig().idempotencyTtlMs).toBe(120_000);
+
+    vi.stubEnv("BFF_IDEMPOTENCY_TTL_MS", String(90 * 24 * 60 * 60 * 1_000));
+    expect(loadConfig().idempotencyTtlMs).toBe(30 * 24 * 60 * 60 * 1_000);
+  });
+
+  it("uses a safe default longer than the default upstream timeout", () => {
+    vi.stubEnv("BFF_UPSTREAM_TIMEOUT_MS", "");
+    vi.stubEnv("BFF_IDEMPOTENCY_TTL_MS", "");
+
+    const config = loadConfig();
+    expect(config.idempotencyTtlMs).toBeGreaterThanOrEqual(
+      config.upstreamTimeoutMs
+    );
+  });
+});
