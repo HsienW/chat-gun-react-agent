@@ -8,7 +8,7 @@
 [![Tavily](https://img.shields.io/badge/Tavily-Search_API-BE185D)](https://docs.tavily.com/documentation/api-reference/endpoint/search)
 [![Brave Search](https://img.shields.io/badge/Brave_Search-MCP-FB542B)](https://brave.com/search/api/)
 [![Opik](https://img.shields.io/badge/Opik-Tracing_%26_Evaluation-6F4CFF)](https://github.com/comet-ml/opik)
-[![Upstream](https://img.shields.io/badge/Upstream-Ylang--Labs%2Flanggraph--react--agent--studio-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
+[![Origins](https://img.shields.io/badge/Project_Origins-Ylang_Labs-F97316)](https://github.com/Ylang-Labs/langgraph-react-agent-studio)
 
 <p align="center">
   <a href="./README.en.md">English</a> |
