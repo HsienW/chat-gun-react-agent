@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 
 import "dotenv/config";
 
+import type { ApiKeyPrincipalProfile } from "./identity.js";
+
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const defaultFrontendDist = path.resolve(dirname, "../../frontend/dist");
 const MIN_IDEMPOTENCY_TTL_MS = 60_000;
@@ -48,6 +50,82 @@ function readOptionalString(name: string): string | undefined {
   return value || undefined;
 }
 
+const PRINCIPAL_TYPES = [
+  "user",
+  "merchant_staff",
+  "platform_staff",
+  "service",
+] as const;
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry): entry is string =>
+        typeof entry === "string" && entry.trim().length > 0
+    )
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPrincipalType(
+  value: unknown
+): value is ApiKeyPrincipalProfile["principalType"] {
+  return (
+    typeof value === "string" &&
+    PRINCIPAL_TYPES.some((principalType) => principalType === value)
+  );
+}
+
+function readApiKeyPrincipals(): Map<string, ApiKeyPrincipalProfile> {
+  const raw = readOptionalString("BFF_API_KEY_PRINCIPALS_JSON");
+  if (raw === undefined) return new Map();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("BFF_API_KEY_PRINCIPALS_JSON must be valid JSON");
+  }
+  if (!isRecord(parsed)) {
+    throw new Error("BFF_API_KEY_PRINCIPALS_JSON must be an object");
+  }
+
+  const profiles = new Map<string, ApiKeyPrincipalProfile>();
+  for (const [apiKey, value] of Object.entries(parsed)) {
+    if (
+      apiKey.trim().length === 0 ||
+      !isRecord(value)
+    ) {
+      throw new Error("BFF_API_KEY_PRINCIPALS_JSON contains an invalid profile");
+    }
+    const candidate = value;
+    const principalType = candidate.principalType;
+    if (
+      typeof candidate.principalId !== "string" ||
+      candidate.principalId.trim().length === 0 ||
+      !isPrincipalType(principalType) ||
+      typeof candidate.tenantId !== "string" ||
+      candidate.tenantId.trim().length === 0 ||
+      !isStringArray(candidate.roles) ||
+      !isStringArray(candidate.scopes)
+    ) {
+      throw new Error("BFF_API_KEY_PRINCIPALS_JSON contains an invalid profile");
+    }
+    profiles.set(apiKey, {
+      principalId: candidate.principalId.trim(),
+      principalType,
+      tenantId: candidate.tenantId.trim(),
+      roles: candidate.roles.map((role) => role.trim()),
+      scopes: candidate.scopes.map((scope) => scope.trim()),
+    });
+  }
+  return profiles;
+}
+
 export type BffConfig = {
   port: number;
   langGraphApiUrl: URL;
@@ -56,6 +134,8 @@ export type BffConfig = {
   allowedOrigins: string[];
   requireAuth: boolean;
   apiKeys: Set<string>;
+  apiKeyPrincipals: Map<string, ApiKeyPrincipalProfile>;
+  legacyHeaderMode: boolean;
   maxBodyBytes: number;
   upstreamTimeoutMs: number;
   idempotencyTtlMs: number;
@@ -94,6 +174,7 @@ export function loadConfig(): BffConfig {
     minimumIdempotencyTtlMs
   );
 
+  const apiKeyPrincipals = readApiKeyPrincipals();
   return {
     port: readNumber("BFF_PORT", 8787),
     langGraphApiUrl,
@@ -106,7 +187,12 @@ export function loadConfig(): BffConfig {
       defaultFrontendDist,
     allowedOrigins: readCsv("BFF_ALLOWED_ORIGINS"),
     requireAuth: readBoolean("BFF_REQUIRE_AUTH", false),
-    apiKeys: new Set(readCsv("BFF_API_KEYS")),
+    apiKeys: new Set([
+      ...readCsv("BFF_API_KEYS"),
+      ...apiKeyPrincipals.keys(),
+    ]),
+    apiKeyPrincipals,
+    legacyHeaderMode: readBoolean("BFF_LEGACY_HEADER_MODE", true),
     maxBodyBytes: readNumber("BFF_MAX_BODY_BYTES", 50 * 1024 * 1024),
     upstreamTimeoutMs,
     idempotencyTtlMs: readBoundedNumber(

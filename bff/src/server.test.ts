@@ -24,6 +24,8 @@ function createTestConfig(langGraphApiUrl: string, overrides: Partial<BffConfig>
     allowedOrigins: [],
     requireAuth: false,
     apiKeys: new Set(),
+    apiKeyPrincipals: new Map(),
+    legacyHeaderMode: true,
     maxBodyBytes: 1024 * 1024,
     upstreamTimeoutMs: 1_000,
     idempotencyTtlMs: 300_000,
@@ -123,6 +125,18 @@ describe("BFF metrics proxy", () => {
           metricsBackendUrl: new URL(upstream.url),
           requireAuth: true,
           apiKeys: new Set(["bff-secret"]),
+          apiKeyPrincipals: new Map([
+            [
+              "bff-secret",
+              {
+                principalId: "metrics-service",
+                principalType: "service",
+                tenantId: "tenant-metrics",
+                roles: ["metrics-reader"],
+                scopes: ["metrics:read"],
+              },
+            ],
+          ]),
         });
 
         await withBff(config, async (bff) => {
@@ -262,6 +276,18 @@ describe("BFF LangGraph stream proxy", () => {
         await withBff(createTestConfig(upstream.url, {
           requireAuth: true,
           apiKeys: new Set(["bff-key"]),
+          apiKeyPrincipals: new Map([
+            [
+              "bff-key",
+              {
+                principalId: "principal-1",
+                principalType: "service",
+                tenantId: "tenant-1",
+                roles: ["runner"],
+                scopes: ["runs:write"],
+              },
+            ],
+          ]),
         }), async (bff) => {
           const response = await fetch(`${bff.url}/api/langgraph/runs`, {
             headers: {
@@ -281,6 +307,100 @@ describe("BFF LangGraph stream proxy", () => {
         });
       }
     );
+  });
+
+  it("emits canonical trusted headers from the resolver and ignores raw identity", async () => {
+    let upstreamHeaders: http.IncomingHttpHeaders = {};
+    await withServer(
+      (req, res) => {
+        upstreamHeaders = req.headers;
+        res.end("ok");
+      },
+      async (upstream) => {
+        const config = createTestConfig(upstream.url, {
+          requireAuth: true,
+          apiKeys: new Set(["bff-key"]),
+          apiKeyPrincipals: new Map([
+            [
+              "bff-key",
+              {
+                principalId: "trusted-principal",
+                principalType: "service",
+                tenantId: "trusted-tenant",
+                roles: ["operator", "auditor"],
+                scopes: ["runs:read", "runs:write"],
+              },
+            ],
+          ]),
+          legacyHeaderMode: true,
+        });
+
+        await withBff(config, async (bff) => {
+          const response = await fetch(`${bff.url}/api/langgraph/runs`, {
+            headers: {
+              "x-api-key": "bff-key",
+              "x-user-id": "attacker",
+              "x-tenant-id": "attacker-tenant",
+            },
+          });
+          assert.equal(response.status, 200);
+        });
+      }
+    );
+
+    assert.equal(upstreamHeaders["x-user-id"], undefined);
+    assert.equal(upstreamHeaders["x-tenant-id"], undefined);
+    assert.equal(upstreamHeaders["x-bff-principal-id"], "trusted-principal");
+    assert.equal(upstreamHeaders["x-bff-principal-type"], "service");
+    assert.equal(upstreamHeaders["x-bff-tenant-id"], "trusted-tenant");
+    assert.equal(upstreamHeaders["x-bff-roles"], "operator,auditor");
+    assert.equal(upstreamHeaders["x-bff-scopes"], "runs:read,runs:write");
+    assert.equal(upstreamHeaders["x-bff-auth-source"], "service_token");
+    assert.match(
+      String(upstreamHeaders["x-bff-authenticated-at"]),
+      /^\d{4}-\d{2}-\d{2}T/
+    );
+    assert.equal(upstreamHeaders["x-bff-user-id"], "trusted-principal");
+  });
+
+  it("disables only the legacy user header when legacyHeaderMode is false", async () => {
+    let upstreamHeaders: http.IncomingHttpHeaders = {};
+    await withServer(
+      (req, res) => {
+        upstreamHeaders = req.headers;
+        res.end("ok");
+      },
+      async (upstream) => {
+        const config = createTestConfig(upstream.url, {
+          requireAuth: true,
+          apiKeys: new Set(["bff-key"]),
+          apiKeyPrincipals: new Map([
+            [
+              "bff-key",
+              {
+                principalId: "trusted-principal",
+                principalType: "service",
+                tenantId: "trusted-tenant",
+                roles: [],
+                scopes: [],
+              },
+            ],
+          ]),
+          legacyHeaderMode: false,
+        });
+
+        await withBff(config, async (bff) => {
+          const response = await fetch(`${bff.url}/api/langgraph/runs`, {
+            headers: { "x-api-key": "bff-key" },
+          });
+          assert.equal(response.status, 200);
+        });
+      }
+    );
+
+    assert.equal(upstreamHeaders["x-bff-user-id"], undefined);
+    assert.equal(upstreamHeaders["x-bff-principal-id"], "trusted-principal");
+    assert.equal(upstreamHeaders["x-bff-tenant-id"], "trusted-tenant");
   });
 
   it("includes canonical and alias idempotency headers in CORS preflight", async () => {
@@ -654,7 +774,7 @@ describe("BFF Redis rate limiting", () => {
   it("reports the limiting dimension headers on an allowed request", async () => {
     const redisClient: RedisEvalClient = {
       eval: async (_script, _numberOfKeys, key) =>
-        String(key).includes("rate_limit:user:alice")
+        String(key).includes("rate_limit:user:anonymous")
           ? [1, 2, 0]
           : [1, 12, 0],
     };
@@ -684,7 +804,7 @@ describe("BFF Redis rate limiting", () => {
   it("returns the standard 429 contract when the user dimension is denied", async () => {
     const redisClient: RedisEvalClient = {
       eval: async (_script, _numberOfKeys, key, _maxRequests, _windowMs, now) => {
-        return String(key).includes("rate_limit:user:alice")
+        return String(key).includes("rate_limit:user:anonymous")
           ? [0, 0, Number(now) + 45_000]
           : [1, 19, 0];
       },
@@ -737,9 +857,10 @@ describe("BFF Redis rate limiting", () => {
         assert.equal(response.status, 429);
         assert.equal(response.headers.get("retry-after"), "1");
         assert.deepEqual(body, { error: "Rate limit exceeded", retryAfter: 1 });
-        assert(checkedKeys.includes("rate_limit:user:bob"));
+        assert(checkedKeys.includes("rate_limit:user:anonymous"));
         assert(checkedKeys.includes("rate_limit:ip:127.0.0.1"));
         assert.equal(checkedKeys.some((key) => key.includes("203.0.113.99")), false);
+        assert.equal(checkedKeys.some((key) => key.includes("bob")), false);
       },
       { redisClient }
     );

@@ -5,6 +5,12 @@ import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 
 import { loadConfig, type BffConfig } from "./config.js";
+import {
+  selectPrincipalResolver,
+  type PrincipalContext,
+  type PrincipalResolution,
+  type PrincipalResolver,
+} from "./identity.js";
 import { BFF_ERROR_MESSAGES } from "./error-messages.js";
 import {
   createBffAbortError,
@@ -55,8 +61,6 @@ const FORWARDED_REQUEST_HEADERS = new Set([
   "tracestate",
   "user-agent",
   "x-api-key",
-  "x-tenant-id",
-  "x-user-id",
 ]);
 
 type RequestContext = {
@@ -66,10 +70,6 @@ type RequestContext = {
   userId: string;
   tenantId: string;
 };
-
-type AuthResult =
-  | { ok: true; principal: string }
-  | { ok: false; status: number; message: string };
 
 type TrustedRequestScope = {
   tenantId: string;
@@ -96,6 +96,7 @@ type StreamPipeResult = {
 export type ServerDependencies = {
   redisClient?: RedisEvalClient | null;
   closeRedis?: () => Promise<void>;
+  principalResolver?: PrincipalResolver;
 };
 
 type RateLimitDecision = {
@@ -224,27 +225,6 @@ function sendJson(
   res.end(payload);
 }
 
-function extractBearerToken(authorization: string | undefined): string | undefined {
-  if (!authorization) return undefined;
-  const [scheme, token] = authorization.split(/\s+/, 2);
-  if (scheme?.toLowerCase() !== "bearer") return undefined;
-  return token;
-}
-
-function authenticate(req: IncomingMessage, config: BffConfig): AuthResult {
-  if (!config.requireAuth) {
-    return { ok: true, principal: "anonymous" };
-  }
-
-  const token =
-    getHeader(req, "x-api-key") ?? extractBearerToken(getHeader(req, "authorization"));
-  if (!token || !config.apiKeys.has(token)) {
-    return { ok: false, status: 401, message: "Missing or invalid API key" };
-  }
-
-  return { ok: true, principal: getHeader(req, "x-user-id") ?? "api-key-user" };
-}
-
 async function readRequestBody(
   req: IncomingMessage,
   maxBytes: number,
@@ -295,9 +275,11 @@ async function readRequestBody(
 function copyRequestHeaders(
   req: IncomingMessage,
   ctx: RequestContext,
-  trustedScope: TrustedRequestScope,
+  principal: PrincipalContext,
+  routeNamespace: string,
   idempotencyHeader: Extract<ValidatedIdempotencyHeader, { ok: true }>,
-  idempotencyTtlMs: number
+  idempotencyTtlMs: number,
+  legacyHeaderMode: boolean
 ): Headers {
   const headers = new Headers();
 
@@ -311,9 +293,22 @@ function copyRequestHeaders(
   }
 
   headers.set("x-request-id", ctx.requestId);
-  headers.set("x-bff-user-id", trustedScope.principalId);
-  headers.set("x-bff-tenant-id", trustedScope.tenantId);
+  headers.set("x-bff-principal-id", principal.principalId);
+  headers.set("x-bff-principal-type", principal.principalType);
+  headers.set("x-bff-tenant-id", principal.tenantId);
+  headers.set("x-bff-roles", principal.roles.join(","));
+  headers.set("x-bff-scopes", principal.scopes.join(","));
+  headers.set("x-bff-auth-source", principal.authSource);
+  headers.set("x-bff-authenticated-at", principal.authenticatedAt);
+  if (legacyHeaderMode) {
+    headers.set("x-bff-user-id", principal.principalId);
+  }
   if (idempotencyHeader.present) {
+    const trustedScope: TrustedRequestScope = {
+      tenantId: principal.tenantId,
+      principalId: principal.principalId,
+      routeNamespace,
+    };
     headers.set(
       "x-idempotency-key",
       createTrustedRequestDedupKey(
@@ -490,16 +485,21 @@ async function proxyMetrics(
   res: ServerResponse,
   reqUrl: URL,
   ctx: RequestContext,
-  config: BffConfig
+  config: BffConfig,
+  principalResolution: PrincipalResolution
 ): Promise<void> {
   if (req.method !== "GET" && req.method !== "HEAD") {
     sendJson(res, 405, { error: "Method not allowed" }, ctx.requestId);
     return;
   }
 
-  const auth = authenticate(req, config);
-  if (!auth.ok) {
-    sendJson(res, auth.status, { error: auth.message }, ctx.requestId);
+  if (!principalResolution.ok) {
+    sendJson(
+      res,
+      principalResolution.status,
+      { error: principalResolution.message },
+      ctx.requestId
+    );
     return;
   }
 
@@ -800,16 +800,21 @@ async function proxyLangGraph(
   res: ServerResponse,
   reqUrl: URL,
   ctx: RequestContext,
-  config: BffConfig
+  config: BffConfig,
+  principalResolution: PrincipalResolution
 ): Promise<void> {
   if (!ALLOWED_PROXY_METHODS.has(req.method ?? "")) {
     sendJson(res, 405, { error: "Method not allowed" }, ctx.requestId);
     return;
   }
 
-  const auth = authenticate(req, config);
-  if (!auth.ok) {
-    sendJson(res, auth.status, { error: auth.message }, ctx.requestId);
+  if (!principalResolution.ok) {
+    sendJson(
+      res,
+      principalResolution.status,
+      { error: principalResolution.message },
+      ctx.requestId
+    );
     return;
   }
 
@@ -828,12 +833,6 @@ async function proxyLangGraph(
     );
     return;
   }
-  const trustedScope: TrustedRequestScope = {
-    tenantId: config.requireAuth ? ctx.tenantId : "public",
-    principalId: auth.principal,
-    routeNamespace: reqUrl.pathname,
-  };
-
   const upstreamUrls = buildUpstreamUrls(reqUrl, config);
   let attemptedUpstreamUrl = upstreamUrls[0];
   let lastUpstreamError: unknown;
@@ -901,9 +900,11 @@ async function proxyLangGraph(
           headers: copyRequestHeaders(
             req,
             ctx,
-            trustedScope,
+            principalResolution.principal,
+            reqUrl.pathname,
             idempotencyHeader,
-            config.idempotencyTtlMs
+            config.idempotencyTtlMs,
+            config.legacyHeaderMode
           ),
           body,
           signal: abortController.signal,
@@ -1085,6 +1086,8 @@ export function createServer(
         new InMemoryRateLimiterWrapper()
       )
     : undefined;
+  const principalResolver =
+    dependencies.principalResolver ?? selectPrincipalResolver(config);
 
   const server = http.createServer(async (req, res) => {
     const reqUrl = new URL(req.url ?? "/", `http://${getHeader(req, "host") ?? "localhost"}`);
@@ -1092,9 +1095,14 @@ export function createServer(
       requestId: getRequestId(req),
       startedAt: Date.now(),
       clientIp: getClientIp(req),
-      userId: getHeader(req, "x-user-id") ?? "anonymous",
-      tenantId: getHeader(req, "x-tenant-id") ?? "default",
+      userId: "anonymous",
+      tenantId: "public",
     };
+    const principalResolution = principalResolver.resolve(req, config);
+    if (principalResolution.ok) {
+      ctx.userId = principalResolution.principal.principalId;
+      ctx.tenantId = principalResolution.principal.tenantId;
+    }
 
     res.on("finish", () => logAudit(ctx, req, res.statusCode));
     applyCors(req, res, config);
@@ -1170,12 +1178,26 @@ export function createServer(
     }
 
     if (reqUrl.pathname.startsWith("/api/langgraph")) {
-      await proxyLangGraph(req, res, reqUrl, ctx, config);
+      await proxyLangGraph(
+        req,
+        res,
+        reqUrl,
+        ctx,
+        config,
+        principalResolution
+      );
       return;
     }
 
     if (reqUrl.pathname === "/api/metrics") {
-      await proxyMetrics(req, res, reqUrl, ctx, config);
+      await proxyMetrics(
+        req,
+        res,
+        reqUrl,
+        ctx,
+        config,
+        principalResolution
+      );
       return;
     }
 
