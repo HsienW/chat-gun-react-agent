@@ -103,7 +103,7 @@
 
 ### Task 4.1：新增 permission_grants 與 permission_decisions 表
 
-- [ ] 新增 migration `011_create_permission_grants.sql`（grant_id、resource_type、resource_id、resource_tenant_id、resource_owner_scope_id、grantee_scope_id、actions、granted_by_principal_id、granted_by_scope_id、can_delegate、created_at、expires_at）
+- [ ] 新增 migration `011_create_permission_grants.sql`（grant_id、resource_type、resource_id、resource_tenant_id、resource_owner_scope_id、grantee_scope_id、actions、granted_by_principal_id、granted_by_scope_id、can_delegate、created_at、expires_at、revoked_at）
 - [ ] 新增 migration `012_create_permission_decisions.sql`（decision_id、principal_id、principal_type、tenant_id、scope_id、action、resource_type、resource_id、effect、reason_code、matched_policy、matched_grant_id、policy_version、task_id、step_id、tool_execution_id、context_summary、created_at）
 - [ ] 建立必要的唯一/複合 index（grant 去重、依 tool_execution_id 查詢 decision）
 - [ ] 採 additive（CREATE TABLE IF NOT EXISTS），不刪改 001–010
