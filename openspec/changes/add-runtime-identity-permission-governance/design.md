@@ -90,6 +90,7 @@ interface PermissionGrant {
   grantId: string;
   resource: ResourceRef;
   granteeScopeId: string;
+  granteeTenantId: string;
   actions: string[];
   grantedByPrincipalId: string;
   grantedByScopeId: string;
@@ -101,8 +102,8 @@ interface PermissionGrant {
 
 委派規則：
 
-- 預設 non-transitive：grantee 不得 re-share／re-delegate，除非該 grant 的 `canDelegate === true` 且新 grant 由同一 `resource` 與受控 `actions` 導出。
-- 跨 tenant 委派預設 deny：`grant.granteeScopeId` 的 tenant 與 `resource.tenantId` 不同時 MUST deny。
+- 預設 non-transitive：grantee 不得 re-share／re-delegate，除非該 grant 的 `canDelegate === true` 且新 grant 由同一 `resource` 與受控 `actions` 導出。delegation validation 以顯式 `RuntimeScope`（`newGranteeScope.tenantId`）提供新 grantee 的 tenant，grant 建立時持久化為 `grantee_tenant_id`。
+- 跨 tenant 委派預設 deny：以顯式 grantee tenant（`grant.granteeTenantId`／`newGranteeScope.tenantId`）與 `resource.tenantId` 比對，不同則 MUST deny；MUST NOT 從 opaque `scopeId` 推導 tenant。
 - grant 建立／撤銷寫入 `permission_grants` 並 audit；`expiresAt` 到期後 grant 失效。
 
 ### AuthorizationRequest → AuthorizationDecision
@@ -176,6 +177,7 @@ resource_id             TEXT NOT NULL
 resource_tenant_id      TEXT NOT NULL
 resource_owner_scope_id TEXT
 grantee_scope_id        TEXT NOT NULL
+grantee_tenant_id       TEXT NOT NULL
 actions                 TEXT[] NOT NULL            -- 或 JSONB，依 driver 支援
 granted_by_principal_id TEXT NOT NULL
 granted_by_scope_id     TEXT NOT NULL

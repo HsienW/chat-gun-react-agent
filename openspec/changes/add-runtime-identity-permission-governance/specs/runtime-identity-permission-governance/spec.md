@@ -103,14 +103,21 @@ AND 再委派範圍 MUST 不大於原 grant 的 actions
 
 ### Requirement: 跨 tenant 委派與存取 MUST 預設 deny
 
-跨 tenant 的 grant 建立、resource 存取與 scope 切換 MUST 預設 deny，除非政策明確允許。
+跨 tenant 的 grant 建立、resource 存取與 scope 切換 MUST 預設 deny，除非政策明確允許。grantee tenant MUST 由 `RuntimeScope` 顯式提供並持久化為 `grantee_tenant_id`；MUST NOT 從 opaque `scopeId` 推導 tenant。
 
 #### Scenario: 跨 tenant 委派被拒
 
-GIVEN grant 的 `granteeScopeId` 屬於 tenant `T1`
-AND `resource.tenantId` 為 tenant `T2`（T2 ≠ T1）
-WHEN 建立 grant
+GIVEN 新 grantee 的 `granteeTenantId` 為 `T1`
+AND `resource.tenantId` 為 `T2`（T2 ≠ T1）
+WHEN 建立 grant 或執行 delegation validation
 THEN MUST deny（`CROSS_TENANT_DENIED`）
+
+#### Scenario: grantee tenant 顯式提供而非由 scopeId 推導
+
+GIVEN 建立 grant 需判斷跨 tenant
+WHEN 取得 grantee tenant
+THEN MUST 由顯式 `RuntimeScope.tenantId` 提供並持久化為 `grantee_tenant_id`
+AND MUST NOT 以 opaque `scopeId` 反推 tenant（不得形成未核准硬映射）
 
 #### Scenario: 跨 tenant resource 存取在 Tool 執行前被拒
 

@@ -87,6 +87,7 @@ interface PermissionGrant {
   grantId: string;
   resource: ResourceRef;
   granteeScopeId: string;
+  granteeTenantId: string;
   actions: string[];
   grantedByPrincipalId: string;
   grantedByScopeId: string;
@@ -97,7 +98,7 @@ interface PermissionGrant {
 ```
 
 - 委派存取預設 non-transitive；未 `canDelegate` 不得 re-share／re-delegate。
-- 跨 tenant 委派預設 deny；grant 建立／撤銷 persisted 且 audited。
+- 跨 tenant 委派預設 deny（以顯式 `granteeTenantId` 比對 `resource.tenantId`）；grantee tenant 由 `RuntimeScope` 提供並持久化，MUST NOT 從 opaque `scopeId` 推導；grant 建立／撤銷 persisted 且 audited。
 
 ### 5. Resource-Level Authorization（Part E）
 
