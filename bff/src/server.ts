@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
@@ -54,7 +55,6 @@ const FORWARDED_REQUEST_HEADERS = new Set([
   "tracestate",
   "user-agent",
   "x-api-key",
-  "x-idempotency-key",
   "x-tenant-id",
   "x-user-id",
 ]);
@@ -70,6 +70,23 @@ type RequestContext = {
 type AuthResult =
   | { ok: true; principal: string }
   | { ok: false; status: number; message: string };
+
+type TrustedRequestScope = {
+  tenantId: string;
+  principalId: string;
+  routeNamespace: string;
+};
+
+type ValidatedIdempotencyHeader =
+  | { ok: true; present: false }
+  | { ok: true; present: true; clientKey: string }
+  | {
+      ok: false;
+      errorCode:
+        | "duplicate_idempotency_header"
+        | "idempotency_alias_conflict"
+        | "invalid_idempotency_key";
+    };
 
 type StreamPipeResult = {
   completed: boolean;
@@ -93,6 +110,63 @@ function getHeader(req: IncomingMessage, name: string): string | undefined {
   const value = req.headers[name.toLowerCase()];
   if (Array.isArray(value)) return value[0];
   return value;
+}
+
+function getRawHeaderValues(req: IncomingMessage, name: string): string[] {
+  const normalizedName = name.toLowerCase();
+  const values: string[] = [];
+  for (let index = 0; index < req.rawHeaders.length; index += 2) {
+    if (req.rawHeaders[index]?.toLowerCase() === normalizedName) {
+      values.push(req.rawHeaders[index + 1] ?? "");
+    }
+  }
+  return values;
+}
+
+function validateIdempotencyHeader(
+  req: IncomingMessage
+): ValidatedIdempotencyHeader {
+  const canonicalValues = getRawHeaderValues(req, "x-idempotency-key");
+  const aliasValues = getRawHeaderValues(req, "idempotency-key");
+  if (canonicalValues.length > 1 || aliasValues.length > 1) {
+    return { ok: false, errorCode: "duplicate_idempotency_header" };
+  }
+
+  const canonicalValue = canonicalValues[0];
+  const aliasValue = aliasValues[0];
+  if (
+    canonicalValue !== undefined &&
+    aliasValue !== undefined &&
+    canonicalValue !== aliasValue
+  ) {
+    return { ok: false, errorCode: "idempotency_alias_conflict" };
+  }
+  const clientKey = canonicalValue ?? aliasValue;
+  if (clientKey === undefined) return { ok: true, present: false };
+  if (
+    clientKey.length < 1 ||
+    clientKey.length > 256 ||
+    !/^[A-Za-z0-9_\-:.]+$/.test(clientKey)
+  ) {
+    return { ok: false, errorCode: "invalid_idempotency_key" };
+  }
+  return { ok: true, present: true, clientKey };
+}
+
+function createTrustedRequestDedupKey(
+  scope: TrustedRequestScope,
+  clientKey: string
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        scope.tenantId,
+        scope.principalId,
+        scope.routeNamespace,
+        clientKey,
+      ])
+    )
+    .digest("hex");
 }
 
 function getClientIp(req: IncomingMessage): string {
@@ -128,7 +202,7 @@ function applyCors(req: IncomingMessage, res: ServerResponse, config: BffConfig)
   res.setHeader("access-control-allow-credentials", "true");
   res.setHeader(
     "access-control-allow-headers",
-    "authorization, content-type, x-api-key, x-request-id, x-tenant-id, x-user-id"
+    "authorization, content-type, idempotency-key, x-api-key, x-idempotency-key, x-request-id, x-tenant-id, x-user-id"
   );
   res.setHeader(
     "access-control-allow-methods",
@@ -159,7 +233,7 @@ function extractBearerToken(authorization: string | undefined): string | undefin
 
 function authenticate(req: IncomingMessage, config: BffConfig): AuthResult {
   if (!config.requireAuth) {
-    return { ok: true, principal: getHeader(req, "x-user-id") ?? "anonymous" };
+    return { ok: true, principal: "anonymous" };
   }
 
   const token =
@@ -218,7 +292,13 @@ async function readRequestBody(
   return chunks.length > 0 ? Buffer.concat(chunks) : undefined;
 }
 
-function copyRequestHeaders(req: IncomingMessage, ctx: RequestContext): Headers {
+function copyRequestHeaders(
+  req: IncomingMessage,
+  ctx: RequestContext,
+  trustedScope: TrustedRequestScope,
+  idempotencyHeader: Extract<ValidatedIdempotencyHeader, { ok: true }>,
+  idempotencyTtlMs: number
+): Headers {
   const headers = new Headers();
 
   for (const [name, value] of Object.entries(req.headers)) {
@@ -231,8 +311,18 @@ function copyRequestHeaders(req: IncomingMessage, ctx: RequestContext): Headers 
   }
 
   headers.set("x-request-id", ctx.requestId);
-  headers.set("x-bff-user-id", ctx.userId);
-  headers.set("x-bff-tenant-id", ctx.tenantId);
+  headers.set("x-bff-user-id", trustedScope.principalId);
+  headers.set("x-bff-tenant-id", trustedScope.tenantId);
+  if (idempotencyHeader.present) {
+    headers.set(
+      "x-idempotency-key",
+      createTrustedRequestDedupKey(
+        trustedScope,
+        idempotencyHeader.clientKey
+      )
+    );
+    headers.set("x-bff-idempotency-ttl-ms", String(idempotencyTtlMs));
+  }
   headers.set("x-forwarded-for", ctx.clientIp);
   headers.set("x-forwarded-host", getHeader(req, "host") ?? "unknown");
   headers.set("x-forwarded-proto", "http");
@@ -723,6 +813,27 @@ async function proxyLangGraph(
     return;
   }
 
+  const idempotencyHeader = validateIdempotencyHeader(req);
+  if (!idempotencyHeader.ok) {
+    sendJson(
+      res,
+      400,
+      {
+        error: {
+          code: idempotencyHeader.errorCode,
+          message: "Invalid idempotency header",
+        },
+      },
+      ctx.requestId
+    );
+    return;
+  }
+  const trustedScope: TrustedRequestScope = {
+    tenantId: config.requireAuth ? ctx.tenantId : "public",
+    principalId: auth.principal,
+    routeNamespace: reqUrl.pathname,
+  };
+
   const upstreamUrls = buildUpstreamUrls(reqUrl, config);
   let attemptedUpstreamUrl = upstreamUrls[0];
   let lastUpstreamError: unknown;
@@ -787,7 +898,13 @@ async function proxyLangGraph(
       try {
         upstreamResponse = await fetch(upstreamUrl, {
           method: req.method,
-          headers: copyRequestHeaders(req, ctx),
+          headers: copyRequestHeaders(
+            req,
+            ctx,
+            trustedScope,
+            idempotencyHeader,
+            config.idempotencyTtlMs
+          ),
           body,
           signal: abortController.signal,
         });

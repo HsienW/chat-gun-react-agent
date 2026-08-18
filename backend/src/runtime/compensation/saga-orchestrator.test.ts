@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { AuditLogger } from "../../platform/observability.js";
+import type { BusinessEffectLedger } from "../side-effect/business-effect-ledger.js";
 import type { EventRepository } from "../persistence/event-repository.js";
 import type {
   PersistedAgentStep,
@@ -123,13 +124,38 @@ function createHarness(task: AgentTask, steps: AgentStep[]) {
     async (_eventName: string, _payload: Record<string, unknown>) => undefined
   );
   const auditLogger: AuditLogger = { record: recordAudit };
+  const sideEffectLedger = {
+    prepare: vi.fn<BusinessEffectLedger["prepare"]>(),
+    findExecutionByReplayKey: vi.fn<
+      BusinessEffectLedger["findExecutionByReplayKey"]
+    >(),
+    recordAttempt: vi.fn<BusinessEffectLedger["recordAttempt"]>(),
+    completeAttempt: vi.fn<BusinessEffectLedger["completeAttempt"]>(),
+    transitionExecution: vi.fn<BusinessEffectLedger["transitionExecution"]>(),
+    transitionBusinessEffect: vi.fn<
+      BusinessEffectLedger["transitionBusinessEffect"]
+    >(),
+    commitExecutionAndBusinessEffect: vi.fn<
+      BusinessEffectLedger["commitExecutionAndBusinessEffect"]
+    >(),
+    findCommittedExecutionByStepId: vi.fn<
+      BusinessEffectLedger["findCommittedExecutionByStepId"]
+    >(async () => null),
+    prepareCompensationExecution: vi.fn<
+      BusinessEffectLedger["prepareCompensationExecution"]
+    >(async () => undefined),
+    transitionCompensationExecution: vi.fn<
+      BusinessEffectLedger["transitionCompensationExecution"]
+    >(async () => undefined),
+  } satisfies BusinessEffectLedger;
   const registry = new CompensationRegistryImpl();
   const orchestrator = new SagaOrchestratorImpl(
     registry,
     taskRepository,
     stepRepository,
     eventRepository,
-    auditLogger
+    auditLogger,
+    sideEffectLedger
   );
 
   return {
@@ -139,6 +165,7 @@ function createHarness(task: AgentTask, steps: AgentStep[]) {
     orchestrator,
     recordAudit,
     registry,
+    sideEffectLedger,
     updateStepStatus,
     updateTaskStatus,
   };
@@ -304,7 +331,7 @@ describe("SagaOrchestratorImpl", () => {
       succeeded: 0,
       failed: 0,
       skippedIrreversible: 1,
-      overallStatus: "partial_failure",
+      overallStatus: "manual_intervention_required",
       skippedIrreversibleActions: [
         {
           stepId: "step-a",
@@ -323,6 +350,10 @@ describe("SagaOrchestratorImpl", () => {
         actionId: "irreversible-action",
         reason: "irreversible_requires_manual_intervention",
       }
+    );
+    expect(harness.updateStepStatus).not.toHaveBeenCalledWith(
+      "step-a",
+      "compensated"
     );
   });
 
@@ -352,7 +383,7 @@ describe("SagaOrchestratorImpl", () => {
       succeeded: 1,
       failed: 0,
       skippedIrreversible: 1,
-      overallStatus: "partial_failure",
+      overallStatus: "manual_intervention_required",
     });
   });
 
@@ -401,7 +432,7 @@ describe("SagaOrchestratorImpl", () => {
       succeeded: 1,
       failed: 2,
       skippedIrreversible: 0,
-      overallStatus: "partial_failure",
+      overallStatus: "manual_intervention_required",
       failures: [
         {
           stepId: "step-b",
@@ -435,6 +466,102 @@ describe("SagaOrchestratorImpl", () => {
         actionId: "thrown-failure",
         error: { message: "External API unavailable" },
       })
+    );
+    expect(harness.updateStepStatus).not.toHaveBeenCalledWith(
+      "step-b",
+      "compensated"
+    );
+  });
+
+  it("persists compensation lifecycle and injects committed execution ids", async () => {
+    const steps = [
+      createStep("step-a", "step-a-type", "succeeded"),
+      createStep("step-b", "step-b-type", "terminal_failed"),
+    ];
+    const harness = createHarness(createTask("partially_failed", steps), steps);
+    harness.sideEffectLedger.findCommittedExecutionByStepId.mockResolvedValue({
+      toolExecutionId: "execution-1",
+      businessEffectId: "effect-1",
+    });
+    const action = createAction("action-a", async (context) => {
+      expect(context).toMatchObject({
+        taskId: "task-1",
+        stepId: "step-a",
+        toolExecutionId: "execution-1",
+        businessEffectId: "effect-1",
+      });
+      return { status: "failed", error: { message: "provider rejected" } };
+    });
+    harness.registry.register("step-a-type", action);
+
+    const result = await harness.orchestrator.compensate("task-1");
+
+    expect(result.overallStatus).toBe("manual_intervention_required");
+    expect(
+      harness.sideEffectLedger.prepareCompensationExecution
+    ).toHaveBeenCalledWith({
+      compensationExecutionId: expect.any(String),
+      businessEffectId: "effect-1",
+      toolExecutionId: "execution-1",
+      compensationActionId: "action-a",
+      context: {
+        taskId: "task-1",
+        stepId: "step-a",
+        toolExecutionId: "execution-1",
+        businessEffectId: "effect-1",
+      },
+    });
+    expect(
+      harness.sideEffectLedger.transitionCompensationExecution
+    ).toHaveBeenLastCalledWith({
+      compensationExecutionId: expect.any(String),
+      expectedStatus: "executing",
+      nextStatus: "manual_intervention_required",
+    });
+    expect(harness.updateStepStatus).not.toHaveBeenCalledWith(
+      "step-a",
+      "compensated"
+    );
+  });
+
+  it("audits uncertainty when persisting manual compensation state fails", async () => {
+    const steps = [
+      createStep("step-a", "step-a-type", "succeeded"),
+      createStep("step-b", "step-b-type", "terminal_failed"),
+    ];
+    const harness = createHarness(createTask("partially_failed", steps), steps);
+    harness.sideEffectLedger.findCommittedExecutionByStepId.mockResolvedValue({
+      toolExecutionId: "execution-1",
+      businessEffectId: "effect-1",
+    });
+    harness.sideEffectLedger.transitionCompensationExecution
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("ledger unavailable"));
+    harness.registry.register(
+      "step-a-type",
+      createAction("action-a", async () => ({
+        status: "failed",
+        error: { message: "provider rejected" },
+      }))
+    );
+
+    const result = await harness.orchestrator.compensate("task-1");
+
+    expect(result.overallStatus).toBe("manual_intervention_required");
+    expect(harness.recordAudit).toHaveBeenCalledWith(
+      "compensation.persistence_uncertain",
+      expect.objectContaining({
+        resourceType: "compensation_execution",
+        resourceId: expect.any(String),
+        compensationExecutionId: expect.any(String),
+        expectedStatus: "executing",
+        nextStatus: "manual_intervention_required",
+        errorName: "Error",
+      })
+    );
+    expect(harness.updateStepStatus).not.toHaveBeenCalledWith(
+      "step-a",
+      "compensated"
     );
   });
 

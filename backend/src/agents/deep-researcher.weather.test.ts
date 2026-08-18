@@ -516,6 +516,21 @@ describe("Deep Research weather structured result integration", () => {
     expect(outcome.messageContent).not.toContain("failed by tool governance");
   });
 
+  it("converts a stable governance cancellation code into a weather cancellation", () => {
+    const outcome = deepResearcherWeatherTestInternals.resolveWeatherToolOutcome(
+      "Error: current_weather failed by tool governance - [governance_cancelled] cancelled before dispatch",
+      { raw: "Tokyo", location: "Tokyo" },
+      "current_weather"
+    );
+
+    expect(outcome.result).toMatchObject({
+      status: "error",
+      code: "weather_cancelled",
+      retryable: false,
+    });
+    expect(() => JSON.parse(outcome.messageContent)).not.toThrow();
+  });
+
   it("synthesizes weather timeout from weatherExecution without reusing old clarification evidence", async () => {
     const timeoutResult: WeatherToolResult = {
       schemaVersion: "1.0",

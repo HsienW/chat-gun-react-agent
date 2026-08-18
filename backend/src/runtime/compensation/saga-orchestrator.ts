@@ -7,6 +7,11 @@ import type { EventRepository } from "../persistence/event-repository.js";
 import type { StepRepository } from "../persistence/step-repository.js";
 import type { TaskRepository } from "../persistence/task-repository.js";
 import type { AgentStep, AgentTask, TaskEvent } from "../types.js";
+import {
+  createCompensationExecutionId,
+  type BusinessEffectLedger,
+  type CommittedToolExecutionReference,
+} from "../side-effect/business-effect-ledger.js";
 import type {
   CompensateOptions,
   CompensationError,
@@ -35,7 +40,8 @@ export class SagaOrchestratorImpl implements SagaOrchestrator {
     private readonly taskRepository: TaskRepository,
     private readonly stepRepository: StepRepository,
     private readonly eventRepository: EventRepository,
-    private readonly auditLogger: AuditLogger
+    private readonly auditLogger: AuditLogger,
+    private readonly sideEffectLedger?: BusinessEffectLedger
   ) {}
 
   async compensate(
@@ -98,6 +104,10 @@ export class SagaOrchestratorImpl implements SagaOrchestrator {
     for (const step of [...completedSteps].reverse()) {
       await this.stepRepository.updateStatus(step.stepId, "compensating");
       const actions = this.registry.getActions(step.stepName);
+      const committedExecution = this.sideEffectLedger
+        ? await this.sideEffectLedger.findCommittedExecutionByStepId(step.stepId)
+        : null;
+      let stepRequiresManualIntervention = false;
 
       for (const action of [...actions].reverse()) {
         totalActions += 1;
@@ -108,6 +118,7 @@ export class SagaOrchestratorImpl implements SagaOrchestrator {
             reason: IRREVERSIBLE_REASON,
           };
           skippedIrreversibleActions.push(skippedEntry);
+          stepRequiresManualIntervention = true;
           await this.auditLogger.record(
             "compensation.action_skipped_irreversible",
             {
@@ -119,14 +130,55 @@ export class SagaOrchestratorImpl implements SagaOrchestrator {
           continue;
         }
 
+        const actionContext = createActionContext(
+          opts,
+          taskId,
+          step.stepId,
+          committedExecution
+        );
+        const compensationExecutionId = committedExecution
+          ? createCompensationExecutionId()
+          : undefined;
+        if (
+          compensationExecutionId &&
+          committedExecution &&
+          this.sideEffectLedger
+        ) {
+          try {
+            await this.sideEffectLedger.prepareCompensationExecution({
+              compensationExecutionId,
+              businessEffectId: committedExecution.businessEffectId,
+              toolExecutionId: committedExecution.toolExecutionId,
+              compensationActionId: action.actionId,
+              context: createPersistedCompensationContext(
+                taskId,
+                step.stepId,
+                committedExecution
+              ),
+            });
+            await this.sideEffectLedger.transitionCompensationExecution({
+              compensationExecutionId,
+              expectedStatus: "prepared",
+              nextStatus: "executing",
+            });
+          } catch {
+            failed += 1;
+            stepRequiresManualIntervention = true;
+            const failureEntry = createFailureEntry(step, action.actionId, {
+              message: "Compensation ledger unavailable",
+              code: "COMPENSATION_LEDGER_UNAVAILABLE",
+            });
+            failures.push(failureEntry);
+            await this.recordActionFailure(taskId, failureEntry);
+            continue;
+          }
+        }
+
         try {
-          const actionResult = await action.execute({
-            ...opts.context,
-            taskId,
-            stepId: step.stepId,
-          });
+          const actionResult = await action.execute(actionContext);
           if (actionResult.status === "failed") {
             failed += 1;
+            stepRequiresManualIntervention = true;
             const compensationError =
               actionResult.error ?? {
                 message: ACTION_REPORTED_FAILURE_MESSAGE,
@@ -137,30 +189,66 @@ export class SagaOrchestratorImpl implements SagaOrchestrator {
               compensationError
             );
             failures.push(failureEntry);
+            await this.markCompensationManual(
+              compensationExecutionId,
+              "executing"
+            );
             await this.recordActionFailure(taskId, failureEntry);
             continue;
           }
 
+          if (compensationExecutionId && this.sideEffectLedger) {
+            try {
+              await this.sideEffectLedger.transitionCompensationExecution({
+                compensationExecutionId,
+                expectedStatus: "executing",
+                nextStatus: "compensated",
+              });
+            } catch {
+              failed += 1;
+              stepRequiresManualIntervention = true;
+              const failureEntry = createFailureEntry(step, action.actionId, {
+                message: "Compensation result persistence failed",
+                code: "COMPENSATION_PERSISTENCE_UNCERTAIN",
+              });
+              failures.push(failureEntry);
+              await this.recordActionFailure(taskId, failureEntry);
+              continue;
+            }
+          }
           succeeded += 1;
           await this.auditLogger.record("compensation.action_succeeded", {
             ...createCompensationActionAuditResource(action.actionId),
             taskId,
             stepId: step.stepId,
             actionId: action.actionId,
+            ...(committedExecution
+              ? {
+                  toolExecutionId: committedExecution.toolExecutionId,
+                  businessEffectId: committedExecution.businessEffectId,
+                }
+              : {}),
           });
         } catch (error) {
           failed += 1;
+          stepRequiresManualIntervention = true;
           const failureEntry = createFailureEntry(
             step,
             action.actionId,
             normalizeThrownError(error)
           );
           failures.push(failureEntry);
+          await this.markCompensationManual(
+            compensationExecutionId,
+            "executing"
+          );
           await this.recordActionFailure(taskId, failureEntry);
         }
       }
 
-      await this.stepRepository.updateStatus(step.stepId, "compensated");
+      if (!stepRequiresManualIntervention) {
+        await this.stepRepository.updateStatus(step.stepId, "compensated");
+      }
     }
 
     const result: CompensationResult = {
@@ -203,6 +291,71 @@ export class SagaOrchestratorImpl implements SagaOrchestrator {
       error: toAuditError(failureEntry.error),
     });
   }
+
+  private async markCompensationManual(
+    compensationExecutionId: string | undefined,
+    expectedStatus: "prepared" | "executing" | "failed"
+  ): Promise<void> {
+    if (!compensationExecutionId || !this.sideEffectLedger) return;
+    try {
+      await this.sideEffectLedger.transitionCompensationExecution({
+        compensationExecutionId,
+        expectedStatus,
+        nextStatus: "manual_intervention_required",
+      });
+    } catch (error) {
+      try {
+        await this.auditLogger.record("compensation.persistence_uncertain", {
+          resourceType: "compensation_execution",
+          resourceId: compensationExecutionId,
+          compensationExecutionId,
+          expectedStatus,
+          nextStatus: "manual_intervention_required",
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        });
+      } catch (auditError) {
+        console.warn(
+          JSON.stringify({
+            event: "compensation_persistence_audit_failed",
+            errorName:
+              auditError instanceof Error ? auditError.name : "UnknownError",
+          })
+        );
+      }
+    }
+  }
+}
+
+function createActionContext(
+  opts: CompensateOptions,
+  taskId: string,
+  stepId: string,
+  committedExecution: CommittedToolExecutionReference | null
+): Record<string, unknown> {
+  return {
+    ...opts.context,
+    taskId,
+    stepId,
+    ...(committedExecution
+      ? {
+          toolExecutionId: committedExecution.toolExecutionId,
+          businessEffectId: committedExecution.businessEffectId,
+        }
+      : {}),
+  };
+}
+
+function createPersistedCompensationContext(
+  taskId: string,
+  stepId: string,
+  committedExecution: CommittedToolExecutionReference
+): Record<string, unknown> {
+  return {
+    taskId,
+    stepId,
+    toolExecutionId: committedExecution.toolExecutionId,
+    businessEffectId: committedExecution.businessEffectId,
+  };
 }
 
 function createCompensationAuditResource(taskId: string): {
@@ -283,7 +436,7 @@ function resolveOverallStatus(
     return "no_actions_needed";
   }
   if (failed > 0 || skippedIrreversible > 0) {
-    return "partial_failure";
+    return "manual_intervention_required";
   }
   return "all_compensated";
 }

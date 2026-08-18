@@ -108,4 +108,41 @@ describe("PgAuditLogger", () => {
     await expect(logger.record("tool.invoke.start", { toolName: "weather" })).resolves.toBeUndefined();
     expect(warning).toHaveBeenCalledOnce();
   });
+
+  it("persists side-effect correlation without a raw business effect key", async () => {
+    const db = new FakeAuditDb();
+    const logger = new PgAuditLogger(db);
+    const businessEffectKeyHash = "a".repeat(64);
+
+    await logger.record("tool.side_effect.committed", {
+      resourceType: "tool_execution",
+      resourceId: "execution-1",
+      taskId: "task-1",
+      stepId: "step-1",
+      toolExecutionId: "execution-1",
+      requestId: "request-1",
+      threadId: "thread-1",
+      runId: "run-1",
+      replayKey: "b".repeat(64),
+      businessEffectKey: businessEffectKeyHash,
+      externalSystemNamespace: "payment",
+      externalOperationId: "operation-1",
+    });
+
+    expect(db.rows[0]).toMatchObject({
+      tool_execution_id: "execution-1",
+      resource_type: "tool_execution",
+      resource_id: "execution-1",
+      payload: {
+        requestId: "request-1",
+        threadId: "thread-1",
+        runId: "run-1",
+        replayKey: "b".repeat(64),
+        businessEffectKey: businessEffectKeyHash,
+        externalSystemNamespace: "payment",
+        externalOperationId: "operation-1",
+      },
+    });
+    expect(JSON.stringify(db.rows[0])).not.toContain("customer@example.com");
+  });
 });
