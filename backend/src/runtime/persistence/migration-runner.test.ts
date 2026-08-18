@@ -14,6 +14,8 @@ const migrationNames = [
   "008_create_tool_execution_attempts.sql",
   "009_create_compensation_executions.sql",
   "010_create_result_references.sql",
+  "011_create_permission_grants.sql",
+  "012_create_permission_decisions.sql",
 ] as const;
 
 function expectedResults(
@@ -86,6 +88,14 @@ describe("runMigrations", () => {
     );
     expect(executedSql).toContain("manual_intervention_required");
     expect(executedSql).toContain("payload_ref TEXT NOT NULL");
+    expect(executedSql).toContain("grantee_tenant_id TEXT NOT NULL");
+    expect(executedSql).toContain(
+      "UNIQUE (resource_tenant_id, resource_id, grantee_scope_id)"
+    );
+    expect(executedSql).toContain("idx_permission_grants_active_match");
+    expect(executedSql).toContain("context_summary JSONB");
+    expect(executedSql).toContain("idx_permission_decisions_tool_execution_id");
+    expect(executedSql).toContain("ADD COLUMN IF NOT EXISTS decision_id TEXT");
   });
 
   it("runs down migrations in reverse order when applied", async () => {
