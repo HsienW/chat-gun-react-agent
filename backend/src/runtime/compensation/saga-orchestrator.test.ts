@@ -131,6 +131,9 @@ function createHarness(task: AgentTask, steps: AgentStep[]) {
     >(),
     recordAttempt: vi.fn<BusinessEffectLedger["recordAttempt"]>(),
     completeAttempt: vi.fn<BusinessEffectLedger["completeAttempt"]>(),
+    linkAuthorizationDecision: vi.fn<
+      BusinessEffectLedger["linkAuthorizationDecision"]
+    >(),
     transitionExecution: vi.fn<BusinessEffectLedger["transitionExecution"]>(),
     transitionBusinessEffect: vi.fn<
       BusinessEffectLedger["transitionBusinessEffect"]

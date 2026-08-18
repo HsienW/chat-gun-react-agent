@@ -57,6 +57,7 @@ export interface ToolExecutionRecord {
   stepId: string;
   toolName: string;
   toolVersion: string;
+  decisionId?: string;
 }
 
 export interface CommittedToolExecutionReference {
@@ -123,6 +124,10 @@ export interface BusinessEffectLedger {
     dispatchState: "before" | "after" | "unknown";
     errorCode?: string;
   }): Promise<void>;
+  linkAuthorizationDecision(input: {
+    toolExecutionId: string;
+    decisionId: string;
+  }): Promise<void>;
   transitionExecution(input: {
     toolExecutionId: string;
     expectedStatus: ToolExecutionStatus;
@@ -183,6 +188,7 @@ interface ToolExecutionRow extends Record<string, unknown> {
   step_id: string;
   tool_name: string;
   tool_version: string;
+  decision_id: string | null;
 }
 
 const BUSINESS_EFFECT_COLUMNS = `
@@ -193,7 +199,7 @@ const BUSINESS_EFFECT_COLUMNS = `
 const TOOL_EXECUTION_COLUMNS = `
   tool_execution_id, business_effect_id, replay_key, request_id, thread_id,
   run_id, task_id, step_id, tool_name, tool_version, call_index, status,
-  request_hash, result_ref, created_at, updated_at
+  request_hash, result_ref, decision_id, created_at, updated_at
 `;
 
 function toOptionalIsoString(value: string | Date | null): string | undefined {
@@ -249,6 +255,7 @@ function mapToolExecution(row: ToolExecutionRow): ToolExecutionRecord {
     stepId: row.step_id,
     toolName: row.tool_name,
     toolVersion: row.tool_version,
+    ...(row.decision_id ? { decisionId: row.decision_id } : {}),
   };
 }
 
@@ -454,6 +461,24 @@ export class PgBusinessEffectLedger implements BusinessEffectLedger {
       throw new SideEffectStateConflictError(
         "tool_execution_attempt",
         input.toolExecutionAttemptId
+      );
+    }
+  }
+
+  async linkAuthorizationDecision(input: {
+    toolExecutionId: string;
+    decisionId: string;
+  }): Promise<void> {
+    const result = await this.db.query(
+      `UPDATE tool_executions
+       SET decision_id = $2, updated_at = NOW()
+       WHERE tool_execution_id = $1 AND status = 'executing'`,
+      [input.toolExecutionId, input.decisionId]
+    );
+    if ((result.rowCount ?? 0) !== 1) {
+      throw new SideEffectStateConflictError(
+        "tool_execution",
+        input.toolExecutionId
       );
     }
   }

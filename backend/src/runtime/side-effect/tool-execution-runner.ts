@@ -54,7 +54,12 @@ export type ToolExecutionRunResult<TResult> =
         | "SIDE_EFFECT_PERSISTENCE_UNCERTAIN";
       toolExecutionId?: string;
     }
-  | { type: "failed"; errorCode: string; toolExecutionId?: string }
+  | {
+      type: "failed";
+      errorCode: string;
+      toolExecutionId?: string;
+      decisionId?: string;
+    }
   | {
       type: "cancelled";
       dispatchState: "before" | "after" | "unknown";
@@ -99,7 +104,12 @@ function errorCodeOf<TResult>(
 function dispatchStateOf<TResult>(
   outcome: GovernedToolOutcome<TResult>
 ): "before" | "after" | "unknown" {
-  if (outcome.type === "rejected_before_dispatch") return "before";
+  if (
+    outcome.type === "rejected_before_dispatch" ||
+    outcome.type === "denied_by_authorization"
+  ) {
+    return "before";
+  }
   if (outcome.type === "cancelled") return outcome.dispatchState;
   return "after";
 }
@@ -346,6 +356,79 @@ export class ToolExecutionRunner {
     let retryBudget = input.retryBudget;
 
     while (true) {
+      const executionConfig = {
+        signal: input.signal,
+        configurable: {
+          ...(input.requestId ? { requestId: input.requestId } : {}),
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+          runId: input.identity.runId,
+          ...(input.taskId ? { taskId: input.taskId } : {}),
+          stepId: input.identity.stepId,
+          toolExecutionId,
+          toolCallId:
+            input.identity.logicalToolCallId ?? input.identity.toolCallId,
+        },
+      };
+      let executeAttempt = input.executor.executeTyped.bind(input.executor);
+      if (input.executor.authorizeTyped !== undefined) {
+        if (input.executor.executeAuthorizedTyped === undefined) {
+          await this.transitionOrDefer(toolExecutionId, "executing", "failed");
+          return {
+            type: "failed",
+            errorCode: "AUTHORIZATION_UNAVAILABLE",
+            toolExecutionId,
+          };
+        }
+
+        let authorizationOutcome;
+        try {
+          authorizationOutcome = await input.executor.authorizeTyped(
+            input.input,
+            executionConfig
+          );
+        } catch {
+          await this.transitionOrDefer(toolExecutionId, "executing", "failed");
+          return {
+            type: "failed",
+            errorCode: "AUTHORIZATION_UNAVAILABLE",
+            toolExecutionId,
+          };
+        }
+
+        if (authorizationOutcome.decisionId === undefined) {
+          await this.transitionOrDefer(toolExecutionId, "executing", "failed");
+          return {
+            type: "failed",
+            errorCode: "AUTHORIZATION_UNAVAILABLE",
+            toolExecutionId,
+          };
+        }
+        try {
+          await this.ledger.linkAuthorizationDecision({
+            toolExecutionId,
+            decisionId: authorizationOutcome.decisionId,
+          });
+        } catch {
+          return {
+            type: "deferred",
+            errorCode: "SIDE_EFFECT_LEDGER_UNAVAILABLE",
+            toolExecutionId,
+          };
+        }
+        if (authorizationOutcome.type === "denied_by_authorization") {
+          await this.transitionOrDefer(toolExecutionId, "executing", "failed");
+          return {
+            type: "failed",
+            errorCode: authorizationOutcome.errorCode,
+            toolExecutionId,
+            decisionId: authorizationOutcome.decisionId,
+          };
+        }
+        executeAttempt = input.executor.executeAuthorizedTyped.bind(
+          input.executor
+        );
+      }
+
       executionAttempt += 1;
       if (retryBudget) retryBudget = recordBudgetAttempt(retryBudget);
       const attemptIdentity = createToolExecutionAttemptIdentity({
@@ -362,14 +445,7 @@ export class ToolExecutionRunner {
         };
       }
 
-      const outcome = await input.executor.executeTyped(input.input, {
-        signal: input.signal,
-        configurable: {
-          stepId: input.identity.stepId,
-          toolCallId:
-            input.identity.logicalToolCallId ?? input.identity.toolCallId,
-        },
-      });
+      const outcome = await executeAttempt(input.input, executionConfig);
       try {
         await this.ledger.completeAttempt({
           toolExecutionAttemptId: attemptIdentity.toolExecutionAttemptId,
@@ -406,6 +482,15 @@ export class ToolExecutionRunner {
       if (outcome.type === "rejected_before_dispatch") {
         await this.transitionOrDefer(toolExecutionId, "executing", "failed");
         return { type: "failed", errorCode: outcome.errorCode, toolExecutionId };
+      }
+      if (outcome.type === "denied_by_authorization") {
+        await this.transitionOrDefer(toolExecutionId, "executing", "failed");
+        return {
+          type: "failed",
+          errorCode: outcome.errorCode,
+          toolExecutionId,
+          decisionId: outcome.decisionId,
+        };
       }
       if (outcome.type === "failed_not_committed") {
         const canRetry = retryBudget

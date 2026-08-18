@@ -126,6 +126,8 @@ function withAtomicCommitFailure(delegate: BusinessEffectLedger): BusinessEffect
       delegate.findExecutionByReplayKey(replayKey),
     recordAttempt: (input) => delegate.recordAttempt(input),
     completeAttempt: (input) => delegate.completeAttempt(input),
+    linkAuthorizationDecision: (input) =>
+      delegate.linkAuthorizationDecision(input),
     transitionExecution: (input) => delegate.transitionExecution(input),
     transitionBusinessEffect: (input) => delegate.transitionBusinessEffect(input),
     commitExecutionAndBusinessEffect: async () => {
