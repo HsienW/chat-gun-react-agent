@@ -39,6 +39,7 @@ export interface CompensationResult {
   overallStatus:
     | "all_compensated"
     | "partial_failure"
+    | "manual_intervention_required"
     | "no_actions_needed";
   failures: CompensationFailureEntry[];
   skippedIrreversibleActions: SkippedIrreversibleEntry[];

@@ -5,6 +5,9 @@ import "dotenv/config";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const defaultFrontendDist = path.resolve(dirname, "../../frontend/dist");
+const MIN_IDEMPOTENCY_TTL_MS = 60_000;
+const MAX_IDEMPOTENCY_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const DEFAULT_IDEMPOTENCY_TTL_MS = 5 * 60_000;
 
 function readNumber(name: string, fallback: number): number {
   const value = process.env[name];
@@ -12,6 +15,19 @@ function readNumber(name: string, fallback: number): number {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readBoundedNumber(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(Math.trunc(parsed), max));
 }
 
 function readBoolean(name: string, fallback: boolean): boolean {
@@ -42,6 +58,7 @@ export type BffConfig = {
   apiKeys: Set<string>;
   maxBodyBytes: number;
   upstreamTimeoutMs: number;
+  idempotencyTtlMs: number;
   rateLimitWindowMs: number;
   rateLimitMaxRequests: number;
   redisRateLimitUri?: string;
@@ -63,6 +80,19 @@ export function loadConfig(): BffConfig {
       process.env.LANGGRAPH_API_URL ??
       "http://localhost:2024"
   );
+  const upstreamTimeoutMs = readNumber("BFF_UPSTREAM_TIMEOUT_MS", 120_000);
+  const minimumIdempotencyTtlMs = Math.max(
+    MIN_IDEMPOTENCY_TTL_MS,
+    upstreamTimeoutMs
+  );
+  const maximumIdempotencyTtlMs = Math.max(
+    MAX_IDEMPOTENCY_TTL_MS,
+    minimumIdempotencyTtlMs
+  );
+  const defaultIdempotencyTtlMs = Math.max(
+    DEFAULT_IDEMPOTENCY_TTL_MS,
+    minimumIdempotencyTtlMs
+  );
 
   return {
     port: readNumber("BFF_PORT", 8787),
@@ -78,7 +108,13 @@ export function loadConfig(): BffConfig {
     requireAuth: readBoolean("BFF_REQUIRE_AUTH", false),
     apiKeys: new Set(readCsv("BFF_API_KEYS")),
     maxBodyBytes: readNumber("BFF_MAX_BODY_BYTES", 50 * 1024 * 1024),
-    upstreamTimeoutMs: readNumber("BFF_UPSTREAM_TIMEOUT_MS", 120_000),
+    upstreamTimeoutMs,
+    idempotencyTtlMs: readBoundedNumber(
+      "BFF_IDEMPOTENCY_TTL_MS",
+      defaultIdempotencyTtlMs,
+      minimumIdempotencyTtlMs,
+      maximumIdempotencyTtlMs
+    ),
     rateLimitWindowMs: readNumber("BFF_RATE_LIMIT_WINDOW_MS", 60_000),
     rateLimitMaxRequests: readNumber("BFF_RATE_LIMIT_MAX_REQUESTS", 120),
     redisRateLimitUri: readOptionalString("BFF_RATE_LIMIT_REDIS_URI"),

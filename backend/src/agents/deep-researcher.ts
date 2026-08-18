@@ -5,6 +5,7 @@ import { Annotation, Command, END, START, StateGraph, interrupt } from "@langcha
 import { MemorySaver } from "@langchain/langgraph-checkpoint";
 
 import { getBooleanEnv } from "../platform/env.js";
+import { GOVERNANCE_CANCELLED_PREFIX } from "../platform/tool-governance.js";
 import { BACKEND_ERROR_MESSAGES } from "../platform/error-messages.js";
 import { createPlannerFailureRoutingDecision } from "../platform/agent-routing-policy.js";
 import {
@@ -879,15 +880,22 @@ function resolveWeatherToolOutcome(
   const isGovernanceTimeout =
     /\[governance_timeout\]/i.test(content) ||
     /tool execution timed out/i.test(content);
-  const code = isGovernanceTimeout
-    ? "weather_timeout"
-    : "weather_unknown_error";
-  const message = isGovernanceTimeout
-    ? "Weather lookup exceeded the governed deadline."
-    : "Weather tool returned an invalid result.";
-  const summary = isGovernanceTimeout
-    ? "Weather lookup timed out."
-    : "Weather service returned an invalid response.";
+  const isGovernanceCancelled = content.includes(GOVERNANCE_CANCELLED_PREFIX);
+  const code = isGovernanceCancelled
+    ? "weather_cancelled"
+    : isGovernanceTimeout
+      ? "weather_timeout"
+      : "weather_unknown_error";
+  const message = isGovernanceCancelled
+    ? "Weather lookup was cancelled."
+    : isGovernanceTimeout
+      ? "Weather lookup exceeded the governed deadline."
+      : "Weather tool returned an invalid result.";
+  const summary = isGovernanceCancelled
+    ? "Weather lookup was cancelled."
+    : isGovernanceTimeout
+      ? "Weather lookup timed out."
+      : "Weather service returned an invalid response.";
   const result: WeatherToolResult =
     toolName === DEEP_RESEARCH_TOOL_NAMES.weatherForecast
       ? {

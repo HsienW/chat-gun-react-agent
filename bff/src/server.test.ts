@@ -26,6 +26,7 @@ function createTestConfig(langGraphApiUrl: string, overrides: Partial<BffConfig>
     apiKeys: new Set(),
     maxBodyBytes: 1024 * 1024,
     upstreamTimeoutMs: 1_000,
+    idempotencyTtlMs: 300_000,
     rateLimitWindowMs: 60_000,
     rateLimitMaxRequests: 1_000,
     redisRateLimitUri: undefined,
@@ -82,6 +83,26 @@ async function withBff<T>(
   } finally {
     await started.close();
   }
+}
+
+async function rawRequest(
+  url: string,
+  headers: http.OutgoingHttpHeaders
+): Promise<{ statusCode: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, { headers }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      response.on("end", () => {
+        resolve({
+          statusCode: response.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString("utf8"),
+        });
+      });
+    });
+    request.once("error", reject);
+    request.end();
+  });
 }
 
 describe("BFF metrics proxy", () => {
@@ -220,29 +241,128 @@ describe("BFF LangGraph stream proxy", () => {
   });
 
 
-  it("forwards x-idempotency-key unchanged when present", async () => {
+  it("forwards a trusted namespaced idempotency key when present", async () => {
     let forwardedIdempotencyKey: string | undefined;
+    let forwardedPrincipal: string | undefined;
+    let forwardedTenant: string | undefined;
+    let forwardedTtl: string | undefined;
 
     await withServer(
       (req, res) => {
         const header = req.headers["x-idempotency-key"];
         forwardedIdempotencyKey = Array.isArray(header) ? header[0] : header;
+        forwardedPrincipal = req.headers["x-bff-user-id"] as string | undefined;
+        forwardedTenant = req.headers["x-bff-tenant-id"] as string | undefined;
+        forwardedTtl = req.headers["x-bff-idempotency-ttl-ms"] as
+          | string
+          | undefined;
         res.end("ok");
       },
       async (upstream) => {
-        await withBff(createTestConfig(upstream.url), async (bff) => {
+        await withBff(createTestConfig(upstream.url, {
+          requireAuth: true,
+          apiKeys: new Set(["bff-key"]),
+        }), async (bff) => {
           const response = await fetch(`${bff.url}/api/langgraph/runs`, {
             headers: {
-              "x-idempotency-key":
-                "tool_execution:task-abc:step-1:current_weather:1:v1",
+              "x-api-key": "bff-key",
+              "x-user-id": "principal-1",
+              "x-tenant-id": "tenant-1",
+              "x-idempotency-key": "client-key-1",
             },
           });
 
           assert.equal(response.status, 200);
-          assert.equal(
-            forwardedIdempotencyKey,
-            "tool_execution:task-abc:step-1:current_weather:1:v1"
-          );
+          assert.match(forwardedIdempotencyKey ?? "", /^[a-f0-9]{64}$/);
+          assert.notEqual(forwardedIdempotencyKey, "client-key-1");
+          assert.equal(forwardedPrincipal, "principal-1");
+          assert.equal(forwardedTenant, "tenant-1");
+          assert.equal(forwardedTtl, "300000");
+        });
+      }
+    );
+  });
+
+  it("includes canonical and alias idempotency headers in CORS preflight", async () => {
+    await withBff(
+      createTestConfig("http://127.0.0.1:1", {
+        allowedOrigins: ["https://app.example.test"],
+      }),
+      async (bff) => {
+        const response = await fetch(`${bff.url}/api/langgraph/runs`, {
+          method: "OPTIONS",
+          headers: { origin: "https://app.example.test" },
+        });
+        const allowedHeaders = response.headers.get(
+          "access-control-allow-headers"
+        );
+        assert.equal(response.status, 204);
+        assert.match(allowedHeaders ?? "", /x-idempotency-key/i);
+        assert.match(allowedHeaders ?? "", /idempotency-key/i);
+      }
+    );
+  });
+
+  it("rejects duplicate canonical headers and alias conflicts", async () => {
+    let upstreamCalls = 0;
+    await withServer(
+      (_req, res) => {
+        upstreamCalls += 1;
+        res.end("ok");
+      },
+      async (upstream) => {
+        await withBff(createTestConfig(upstream.url), async (bff) => {
+          const duplicate = await rawRequest(`${bff.url}/api/langgraph/runs`, {
+            "x-idempotency-key": ["key-1", "key-2"],
+          });
+          assert.equal(duplicate.statusCode, 400);
+
+          const conflict = await fetch(`${bff.url}/api/langgraph/runs`, {
+            headers: {
+              "x-idempotency-key": "key-1",
+              "idempotency-key": "key-2",
+            },
+          });
+          assert.equal(conflict.status, 400);
+          assert.equal(upstreamCalls, 0);
+        });
+      }
+    );
+  });
+
+  it("rejects invalid idempotency key format and length", async () => {
+    await withBff(createTestConfig("http://127.0.0.1:1"), async (bff) => {
+      const invalidFormat = await fetch(`${bff.url}/api/langgraph/runs`, {
+        headers: { "x-idempotency-key": "invalid key" },
+      });
+      assert.equal(invalidFormat.status, 400);
+
+      const tooLong = await fetch(`${bff.url}/api/langgraph/runs`, {
+        headers: { "x-idempotency-key": "x".repeat(257) },
+      });
+      assert.equal(tooLong.status, 400);
+    });
+  });
+
+  it("keeps requestDedupKey absent when no idempotency header is present", async () => {
+    let forwardedIdempotencyKey: string | undefined;
+    let forwardedTtl: string | undefined;
+    await withServer(
+      (req, res) => {
+        forwardedIdempotencyKey = req.headers["x-idempotency-key"] as
+          | string
+          | undefined;
+        forwardedTtl = req.headers["x-bff-idempotency-ttl-ms"] as
+          | string
+          | undefined;
+        res.end("ok");
+      },
+      async (upstream) => {
+        await withBff(createTestConfig(upstream.url), async (bff) => {
+          const response = await fetch(`${bff.url}/api/langgraph/runs`);
+          assert.equal(response.status, 200);
+          assert.equal(forwardedIdempotencyKey, undefined);
+          assert.equal(forwardedTtl, undefined);
         });
       }
     );

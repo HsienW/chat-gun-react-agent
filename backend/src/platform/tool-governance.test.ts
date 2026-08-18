@@ -3,7 +3,12 @@ import { tool, type StructuredToolInterface } from "@langchain/core/tools";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { applyToolGovernance } from "./tool-governance.js";
+import {
+  applyToolGovernance,
+  defaultToolPolicy,
+  GovernanceExecutor,
+  GovernedDispatchError,
+} from "./tool-governance.js";
 import {
   createNoopOpikTracer,
   setOpikTracerForTests,
@@ -125,5 +130,164 @@ describe("applyToolGovernance", () => {
 
     expect(receivedAbort).toBe(true);
     expect(result).toContain("[governance_timeout]");
+  });
+});
+
+describe("GovernanceExecutor.executeTyped", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    setOpikTracerForTests(undefined);
+  });
+
+  it("returns succeeded with the governed result", async () => {
+    const executor = new GovernanceExecutor(
+      createEchoTool("ok"),
+      { ...defaultToolPolicy("contract_echo"), audit: false }
+    );
+
+    await expect(executor.executeTyped({ value: "valid" })).resolves.toEqual({
+      type: "succeeded",
+      result: "valid:ok",
+    });
+  });
+
+  it("rejects oversized input before dispatch", async () => {
+    const invoked = vi.fn(async () => "unexpected");
+    const sourceTool = tool(invoked, {
+      name: "contract_rejected",
+      description: "Must not be invoked for oversized input.",
+      schema: z.object({ value: z.string() }),
+    }) as StructuredToolInterface;
+    const executor = new GovernanceExecutor(sourceTool, {
+      ...defaultToolPolicy(sourceTool.name),
+      audit: false,
+      maxInputChars: 1,
+    });
+
+    await expect(executor.executeTyped({ value: "too large" })).resolves.toEqual({
+      type: "rejected_before_dispatch",
+      errorCode: "TOOL_INPUT_TOO_LARGE",
+    });
+    expect(invoked).not.toHaveBeenCalled();
+  });
+
+  it("preserves an explicit failed-not-committed outcome", async () => {
+    const sourceTool = tool(
+      async () => {
+        throw new GovernedDispatchError(
+          "failed_not_committed",
+          "PROVIDER_REJECTED"
+        );
+      },
+      {
+        name: "contract_not_committed",
+        description: "Reports a definitive downstream rejection.",
+        schema: z.object({ value: z.string() }),
+      }
+    ) as StructuredToolInterface;
+    const executor = new GovernanceExecutor(sourceTool, {
+      ...defaultToolPolicy(sourceTool.name),
+      audit: false,
+    });
+
+    await expect(executor.executeTyped({ value: "valid" })).resolves.toEqual({
+      type: "failed_not_committed",
+      errorCode: "PROVIDER_REJECTED",
+    });
+  });
+
+  it("treats an unknown error after dispatch as ambiguous", async () => {
+    const sourceTool = tool(
+      async () => {
+        throw new Error("response was lost");
+      },
+      {
+        name: "contract_ambiguous",
+        description: "Loses the downstream response.",
+        schema: z.object({ value: z.string() }),
+      }
+    ) as StructuredToolInterface;
+    const executor = new GovernanceExecutor(sourceTool, {
+      ...defaultToolPolicy(sourceTool.name),
+      audit: false,
+    });
+
+    await expect(executor.executeTyped({ value: "valid" })).resolves.toEqual({
+      type: "ambiguous_after_dispatch",
+      errorCode: "TOOL_EXECUTION_OUTCOME_UNKNOWN",
+    });
+  });
+
+  it("distinguishes external cancellation before dispatch", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled by caller"));
+    const executor = new GovernanceExecutor(
+      createEchoTool("unexpected"),
+      { ...defaultToolPolicy("contract_echo"), audit: false }
+    );
+
+    await expect(
+      executor.executeTyped(
+        { value: "valid" },
+        { signal: controller.signal }
+      )
+    ).resolves.toEqual({ type: "cancelled", dispatchState: "before" });
+  });
+
+  it("does not dispatch when cancellation races with listener registration", async () => {
+    const controller = new AbortController();
+    const invoked = vi.fn(async () => "unexpected");
+    const sourceTool = tool(invoked, {
+      name: "contract_cancel_race",
+      description: "Must not run after cancellation wins the dispatch race.",
+      schema: z.object({ value: z.string() }),
+    }) as StructuredToolInterface;
+    const tracer = createNoopOpikTracer();
+    tracer.withToolSpan = async function abortBeforeOperation<T>(
+      _metadata: ToolSpanMetadata,
+      operation: () => Promise<T>
+    ): Promise<T> {
+      controller.abort(new Error("cancelled before dispatch"));
+      return operation();
+    };
+    setOpikTracerForTests(tracer);
+    const executor = new GovernanceExecutor(sourceTool, {
+      ...defaultToolPolicy(sourceTool.name),
+      audit: false,
+    });
+
+    await expect(
+      executor.executeTyped(
+        { value: "valid" },
+        { signal: controller.signal }
+      )
+    ).resolves.toEqual({ type: "cancelled", dispatchState: "before" });
+    expect(invoked).not.toHaveBeenCalled();
+  });
+
+  it("maps governance timeout after dispatch to ambiguous", async () => {
+    vi.useFakeTimers();
+    const waitingTool = tool(
+      async () => new Promise<string>(() => undefined),
+      {
+        name: "contract_typed_timeout",
+        description: "Never resolves.",
+        schema: z.object({ value: z.string() }),
+      }
+    ) as StructuredToolInterface;
+    const executor = new GovernanceExecutor(waitingTool, {
+      ...defaultToolPolicy(waitingTool.name),
+      audit: false,
+      timeoutMs: 1_000,
+    });
+
+    const outcomePromise = executor.executeTyped({ value: "valid" });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(outcomePromise).resolves.toEqual({
+      type: "ambiguous_after_dispatch",
+      errorCode: "GOVERNANCE_TIMEOUT",
+    });
   });
 });
