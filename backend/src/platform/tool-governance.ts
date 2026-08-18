@@ -5,9 +5,22 @@ import {
 import type { RunnableConfig } from "@langchain/core/runnables";
 
 import type {
+  GovernedAuthorizationOutcome,
   GovernedToolExecutor,
   GovernedToolOutcome,
 } from "../runtime/side-effect/governed-outcome.js";
+import type {
+  AuthorizationDecision,
+  AuthorizationEngine,
+  AuthorizationRequest,
+} from "../runtime/authorization/authorization.js";
+import type { DecisionStore } from "../runtime/authorization/decision-store.js";
+import type { PrincipalContext } from "../runtime/authorization/principal.js";
+import type { RuntimeScope } from "../runtime/authorization/scope.js";
+import type {
+  ToolRiskPolicy,
+  ToolRiskRegistry,
+} from "../runtime/authorization/tool-risk.js";
 import { auditLogger, recordMetric } from "./observability.js";
 import { getOpikTracer } from "./tracing/opik/opik-tracer.js";
 
@@ -52,6 +65,64 @@ export class GovernedDispatchError extends Error {
     super(errorCode);
     this.name = "GovernedDispatchError";
   }
+}
+
+export interface ToolAuthorizationContext {
+  principal: PrincipalContext;
+  scope: RuntimeScope;
+}
+
+export interface ToolAuthorizationGovernanceConfig {
+  riskRegistry: ToolRiskRegistry;
+  authorizationEngine: Pick<AuthorizationEngine, "authorize">;
+  decisionStore: DecisionStore;
+  policyVersion?: string;
+  resolveContext?: (
+    config: unknown
+  ) => ToolAuthorizationContext | null | Promise<ToolAuthorizationContext | null>;
+  resolveAction?: (
+    input: unknown,
+    config: unknown,
+    policy: ToolRiskPolicy
+  ) => string | null;
+  onRequireConfirmation?: (
+    decision: AuthorizationDecision,
+    request: AuthorizationRequest
+  ) => void | Promise<void>;
+}
+
+const DEFAULT_AUTHORIZATION_POLICY_VERSION = "runtime-authorization-v1";
+
+interface DecisionCorrelation {
+  requestId?: string;
+  threadId?: string;
+  runId?: string;
+  taskId?: string;
+  stepId?: string;
+  toolExecutionId?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function resolveDecisionCorrelation(config: unknown): DecisionCorrelation {
+  if (!isRecord(config) || !isRecord(config.configurable)) return {};
+  const correlation: DecisionCorrelation = {};
+  for (const field of [
+    "requestId",
+    "threadId",
+    "runId",
+    "taskId",
+    "stepId",
+    "toolExecutionId",
+  ] as const) {
+    const value = config.configurable[field];
+    if (typeof value === "string" && value.length > 0) {
+      correlation[field] = value;
+    }
+  }
+  return correlation;
 }
 
 class GovernanceTimeoutError extends Error {
@@ -340,17 +411,181 @@ function legacyErrorForOutcome(
   return `Error: ${toolName} failed by tool governance - ${outcome.errorCode}`;
 }
 
+function createDevelopmentAuthorizationContext(): ToolAuthorizationContext {
+  return {
+    principal: {
+      principalId: "anonymous",
+      principalType: "user",
+      tenantId: "public",
+      roles: [],
+      scopes: [],
+      authSource: "development",
+      authenticatedAt: new Date().toISOString(),
+    },
+    scope: {
+      scopeId: "development-public-anonymous",
+      scopeType: "principal",
+      tenantId: "public",
+      ownerPrincipalId: "anonymous",
+    },
+  };
+}
+
+function authorizationDenial(
+  errorCode: string,
+  decisionId: string = globalThis.crypto.randomUUID()
+): Extract<
+  GovernedToolOutcome<never>,
+  { type: "denied_by_authorization" }
+> {
+  return {
+    type: "denied_by_authorization",
+    errorCode,
+    decisionId,
+  };
+}
+
+function resolvePolicyAction(
+  policy: ToolRiskPolicy,
+  input: unknown,
+  config: unknown,
+  authorization: ToolAuthorizationGovernanceConfig
+): string | null {
+  const resolved = authorization.resolveAction?.(input, config, policy);
+  if (resolved !== undefined) return resolved;
+  return policy.actions.length === 1 ? policy.actions[0] ?? null : null;
+}
+
+async function authorizeToolDispatch(
+  sourceTool: StructuredToolInterface,
+  input: unknown,
+  config: unknown,
+  authorization: ToolAuthorizationGovernanceConfig
+): Promise<GovernedAuthorizationOutcome> {
+  const policy = authorization.riskRegistry.get(sourceTool.name);
+  if (policy === null) {
+    const classification = authorization.riskRegistry.classify(
+      sourceTool.name,
+      ""
+    );
+    return classification.effect === "allow"
+      ? { type: "authorized" }
+      : authorizationDenial(classification.reasonCode);
+  }
+
+  try {
+    const action = resolvePolicyAction(policy, input, config, authorization);
+    if (action === null) return authorizationDenial("TOOL_ACTION_AMBIGUOUS");
+
+    const classification = authorization.riskRegistry.classify(
+      sourceTool.name,
+      action
+    );
+    if (classification.effect === "deny") {
+      return authorizationDenial(classification.reasonCode);
+    }
+
+    const context =
+      (await authorization.resolveContext?.(config)) ??
+      createDevelopmentAuthorizationContext();
+    const correlation = resolveDecisionCorrelation(config);
+    const request: AuthorizationRequest = {
+      principal: context.principal,
+      scope: context.scope,
+      action,
+      resource: policy.resourceRefResolver(input, context.scope),
+      context: { toolName: sourceTool.name, ...correlation },
+    };
+    const decision = await authorization.authorizationEngine.authorize(request);
+    if (decision.effect === "deny") {
+      await authorization.decisionStore.record({
+        request,
+        decision,
+        policyVersion:
+          authorization.policyVersion ?? DEFAULT_AUTHORIZATION_POLICY_VERSION,
+        ...correlation,
+      });
+      return authorizationDenial(decision.reasonCode, decision.decisionId);
+    }
+    const requiresConfirmation =
+      decision.effect === "require_confirmation" ||
+      classification.requiresConfirmation;
+    if (requiresConfirmation) {
+      const confirmationDecision: AuthorizationDecision = {
+        ...decision,
+        effect: "require_confirmation",
+        reasonCode: "REQUIRES_CONFIRMATION",
+      };
+      await authorization.decisionStore.record({
+        request,
+        decision: confirmationDecision,
+        policyVersion:
+          authorization.policyVersion ?? DEFAULT_AUTHORIZATION_POLICY_VERSION,
+        ...correlation,
+      });
+      await authorization.onRequireConfirmation?.(
+        confirmationDecision,
+        request
+      );
+      return authorizationDenial(
+        confirmationDecision.reasonCode,
+        confirmationDecision.decisionId
+      );
+    }
+    await authorization.decisionStore.record({
+      request,
+      decision,
+      policyVersion:
+        authorization.policyVersion ?? DEFAULT_AUTHORIZATION_POLICY_VERSION,
+      ...correlation,
+    });
+    return { type: "authorized", decisionId: decision.decisionId };
+  } catch {
+    return authorizationDenial("AUTHORIZATION_UNAVAILABLE");
+  }
+}
+
 export class GovernanceExecutor<TResult = unknown>
   implements GovernedToolExecutor<unknown, TResult>
 {
   constructor(
     private readonly sourceTool: StructuredToolInterface,
-    private readonly policy: ToolPolicy
+    private readonly policy: ToolPolicy,
+    private readonly authorization?: ToolAuthorizationGovernanceConfig
   ) {}
 
   async executeTyped(
     input: unknown,
     config?: unknown
+  ): Promise<GovernedToolOutcome<TResult>> {
+    return this.executeInternal(input, config, false);
+  }
+
+  async authorizeTyped(
+    input: unknown,
+    config?: unknown
+  ): Promise<GovernedAuthorizationOutcome> {
+    return this.authorization === undefined
+      ? { type: "authorized" }
+      : authorizeToolDispatch(
+          this.sourceTool,
+          input,
+          config,
+          this.authorization
+        );
+  }
+
+  async executeAuthorizedTyped(
+    input: unknown,
+    config?: unknown
+  ): Promise<GovernedToolOutcome<TResult>> {
+    return this.executeInternal(input, config, true);
+  }
+
+  private async executeInternal(
+    input: unknown,
+    config: unknown,
+    authorizationAlreadyEvaluated: boolean
   ): Promise<GovernedToolOutcome<TResult>> {
     const startedAt = Date.now();
     const inputChars = serializeForLimit(input).length;
@@ -382,6 +617,13 @@ export class GovernanceExecutor<TResult = unknown>
     const externalSignal = getAbortSignal(config);
     if (externalSignal?.aborted) {
       return { type: "cancelled", dispatchState: "before" };
+    }
+
+    if (!authorizationAlreadyEvaluated) {
+      const authorizationOutcome = await this.authorizeTyped(input, config);
+      if (authorizationOutcome.type === "denied_by_authorization") {
+        return authorizationOutcome;
+      }
     }
 
     await auditToolEvent("tool.invoke.start", this.policy, commonAuditPayload);
@@ -453,7 +695,8 @@ export class GovernanceExecutor<TResult = unknown>
 
 function wrapToolWithGovernance(
   sourceTool: StructuredToolInterface,
-  policy: ToolPolicy
+  policy: ToolPolicy,
+  authorization?: ToolAuthorizationGovernanceConfig
 ): StructuredToolInterface {
   if (governedTools.has(sourceTool as object)) {
     return sourceTool;
@@ -463,7 +706,7 @@ function wrapToolWithGovernance(
     Object.create(Object.getPrototypeOf(sourceTool)) as StructuredToolInterface,
     sourceTool
   );
-  const executor = new GovernanceExecutor(sourceTool, policy);
+  const executor = new GovernanceExecutor(sourceTool, policy, authorization);
   const governedInvoke = async (input: unknown, config?: unknown): Promise<unknown> => {
     const outcome = await executor.executeTyped(input, config);
     return outcome.type === "succeeded"
@@ -479,12 +722,15 @@ function wrapToolWithGovernance(
 }
 
 export function applyToolGovernance(
-  tools: StructuredToolInterface[]
+  tools: StructuredToolInterface[],
+  authorization?: ToolAuthorizationGovernanceConfig
 ): StructuredToolInterface[] {
   return tools
     .map((tool) => ({ tool, policy: defaultToolPolicy(tool.name) }))
     .filter((entry) => entry.policy.enabled)
-    .map((entry) => wrapToolWithGovernance(entry.tool, entry.policy));
+    .map((entry) =>
+      wrapToolWithGovernance(entry.tool, entry.policy, authorization)
+    );
 }
 
 export async function auditToolLoad(
