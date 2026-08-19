@@ -8,7 +8,9 @@ import {
   defaultToolPolicy,
   GovernanceExecutor,
   GovernedDispatchError,
+  type ToolAuthorizationGovernanceConfig,
 } from "./tool-governance.js";
+import { ToolRiskRegistry, type ToolRiskPolicy } from "../runtime/authorization/tool-risk.js";
 import {
   createNoopOpikTracer,
   setOpikTracerForTests,
@@ -26,6 +28,52 @@ function createEchoTool(output: string): StructuredToolInterface {
       }),
     }
   ) as StructuredToolInterface;
+}
+
+function createAuthorizationConfig(
+  effect: "allow" | "deny" | "require_confirmation",
+  onRequireConfirmation?: ToolAuthorizationGovernanceConfig["onRequireConfirmation"],
+  riskTier: ToolRiskPolicy["riskTier"] = "read"
+): {
+  config: ToolAuthorizationGovernanceConfig;
+  authorize: ReturnType<typeof vi.fn>;
+  recordDecision: ReturnType<typeof vi.fn>;
+} {
+  const riskPolicy: ToolRiskPolicy = {
+    toolName: "contract_echo",
+    riskTier,
+    actions: ["task:read"],
+    requireConfirmation: false,
+    resourceRefResolver: (_input, scope) => ({
+      resourceType: "task",
+      resourceId: "task-1",
+      tenantId: scope.tenantId,
+    }),
+  };
+  const authorize = vi.fn(async () => ({
+    decisionId: `decision-${effect}`,
+    effect,
+    reasonCode:
+      effect === "allow"
+        ? ("POLICY_ALLOWED" as const)
+        : effect === "deny"
+          ? ("MISSING_ROLE_SCOPE_GRANT" as const)
+          : ("REQUIRES_CONFIRMATION" as const),
+    createdAt: "2026-08-18T00:00:00.000Z",
+  }));
+  const recordDecision = vi.fn(async () => undefined);
+  return {
+    authorize,
+    recordDecision,
+    config: {
+      riskRegistry: new ToolRiskRegistry([riskPolicy], {
+        unregisteredToolDefault: "read",
+      }),
+      authorizationEngine: { authorize },
+      decisionStore: { record: recordDecision },
+      ...(onRequireConfirmation === undefined ? {} : { onRequireConfirmation }),
+    },
+  };
 }
 
 describe("applyToolGovernance", () => {
@@ -150,6 +198,184 @@ describe("GovernanceExecutor.executeTyped", () => {
       type: "succeeded",
       result: "valid:ok",
     });
+  });
+
+  it("authorizes with an isolated development identity before dispatch", async () => {
+    const invoked = vi.fn(async ({ value }: { value: string }) => `${value}:ok`);
+    const sourceTool = tool(invoked, {
+      name: "contract_echo",
+      description: "Echoes a value after authorization.",
+      schema: z.object({ value: z.string() }),
+    }) as StructuredToolInterface;
+    const authorization = createAuthorizationConfig("allow");
+    const executor = new GovernanceExecutor(
+      sourceTool,
+      { ...defaultToolPolicy(sourceTool.name), audit: false },
+      authorization.config
+    );
+
+    await expect(executor.executeTyped({ value: "valid" })).resolves.toEqual({
+      type: "succeeded",
+      result: "valid:ok",
+    });
+    expect(invoked).toHaveBeenCalledOnce();
+    expect(authorization.authorize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        principal: expect.objectContaining({
+          principalId: "anonymous",
+          tenantId: "public",
+          authSource: "development",
+        }),
+        scope: expect.objectContaining({ tenantId: "public" }),
+        resource: expect.objectContaining({ tenantId: "public" }),
+      })
+    );
+  });
+
+  it("returns a typed authorization denial without dispatch", async () => {
+    const invoked = vi.fn(async () => "unexpected");
+    const sourceTool = tool(invoked, {
+      name: "contract_echo",
+      description: "Must not dispatch after denial.",
+      schema: z.object({ value: z.string() }),
+    }) as StructuredToolInterface;
+    const authorization = createAuthorizationConfig("deny");
+    const executor = new GovernanceExecutor(
+      sourceTool,
+      { ...defaultToolPolicy(sourceTool.name), audit: false },
+      authorization.config
+    );
+
+    await expect(executor.executeTyped({ value: "valid" })).resolves.toEqual({
+      type: "denied_by_authorization",
+      errorCode: "MISSING_ROLE_SCOPE_GRANT",
+      decisionId: "decision-deny",
+    });
+    expect(invoked).not.toHaveBeenCalled();
+    expect(authorization.recordDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: expect.objectContaining({
+          decisionId: "decision-deny",
+          effect: "deny",
+        }),
+      })
+    );
+  });
+
+  it("persists correlation before dispatch and redacts it through the decision store", async () => {
+    const invoked = vi.fn(async () => "ok");
+    const sourceTool = tool(invoked, {
+      name: "contract_echo",
+      description: "Persists its authorization decision before dispatch.",
+      schema: z.object({ value: z.string() }),
+    }) as StructuredToolInterface;
+    const authorization = createAuthorizationConfig("allow");
+    const executor = new GovernanceExecutor(
+      sourceTool,
+      { ...defaultToolPolicy(sourceTool.name), audit: false },
+      authorization.config
+    );
+
+    await executor.executeTyped(
+      { value: "valid" },
+      {
+        configurable: {
+          requestId: "request-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          taskId: "task-1",
+          stepId: "step-1",
+          toolExecutionId: "execution-1",
+        },
+      }
+    );
+
+    expect(authorization.recordDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        policyVersion: "runtime-authorization-v1",
+        taskId: "task-1",
+        stepId: "step-1",
+        toolExecutionId: "execution-1",
+      })
+    );
+    expect(
+      authorization.recordDecision.mock.invocationCallOrder[0]
+    ).toBeLessThan(invoked.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER);
+  });
+
+  it("enters the injected HITL bridge and does not dispatch", async () => {
+    const invoked = vi.fn(async () => "unexpected");
+    const sourceTool = tool(invoked, {
+      name: "contract_echo",
+      description: "Waits for confirmation before dispatch.",
+      schema: z.object({ value: z.string() }),
+    }) as StructuredToolInterface;
+    const onRequireConfirmation = vi.fn(async () => undefined);
+    const authorization = createAuthorizationConfig(
+      "require_confirmation",
+      onRequireConfirmation
+    );
+    const executor = new GovernanceExecutor(
+      sourceTool,
+      { ...defaultToolPolicy(sourceTool.name), audit: false },
+      authorization.config
+    );
+
+    await expect(executor.executeTyped({ value: "valid" })).resolves.toEqual({
+      type: "denied_by_authorization",
+      errorCode: "REQUIRES_CONFIRMATION",
+      decisionId: "decision-require_confirmation",
+    });
+    expect(onRequireConfirmation).toHaveBeenCalledOnce();
+    expect(invoked).not.toHaveBeenCalled();
+  });
+
+  it("does not let sensitive confirmation override an authorization deny", async () => {
+    const invoked = vi.fn(async () => "unexpected");
+    const sourceTool = tool(invoked, {
+      name: "contract_echo",
+      description: "Must remain denied before confirmation.",
+      schema: z.object({ value: z.string() }),
+    }) as StructuredToolInterface;
+    const onRequireConfirmation = vi.fn(async () => undefined);
+    const authorization = createAuthorizationConfig(
+      "deny",
+      onRequireConfirmation,
+      "sensitive"
+    );
+    const executor = new GovernanceExecutor(
+      sourceTool,
+      { ...defaultToolPolicy(sourceTool.name), audit: false },
+      authorization.config
+    );
+
+    await expect(executor.executeTyped({ value: "valid" })).resolves.toEqual({
+      type: "denied_by_authorization",
+      errorCode: "MISSING_ROLE_SCOPE_GRANT",
+      decisionId: "decision-deny",
+    });
+    expect(onRequireConfirmation).not.toHaveBeenCalled();
+    expect(invoked).not.toHaveBeenCalled();
+  });
+
+  it("maps typed authorization denial to a legacy string at the wrapper", async () => {
+    vi.stubEnv("TOOL_AUDIT_ENABLED", "false");
+    const invoked = vi.fn(async () => "unexpected");
+    const sourceTool = tool(invoked, {
+      name: "contract_echo",
+      description: "Must expose a legacy-safe denial string.",
+      schema: z.object({ value: z.string() }),
+    }) as StructuredToolInterface;
+    const authorization = createAuthorizationConfig("deny");
+    const [governedTool] = applyToolGovernance(
+      [sourceTool],
+      authorization.config
+    );
+
+    await expect(governedTool.invoke({ value: "valid" })).resolves.toContain(
+      "MISSING_ROLE_SCOPE_GRANT"
+    );
+    expect(invoked).not.toHaveBeenCalled();
   });
 
   it("rejects oversized input before dispatch", async () => {

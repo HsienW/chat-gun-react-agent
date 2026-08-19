@@ -1,4 +1,12 @@
+import { createHash } from "node:crypto";
+
 import type { AuditLogger } from "../../platform/observability.js";
+import type { SpanManager } from "../../platform/tracing/span-manager.js";
+import {
+  DefaultContextRedactor,
+  type AuthorizationDecisionObserver,
+  type RecordDecisionInput,
+} from "../authorization/decision-store.js";
 import type { Queryable } from "../persistence/rows.js";
 import {
   createAuditEvent,
@@ -128,11 +136,44 @@ function mapAuditEvent(row: AuditEventRow): AuditEvent {
   };
 }
 
-export class PgAuditLogger implements AuditLogger {
+export class PgAuditLogger implements AuditLogger, AuthorizationDecisionObserver {
   constructor(
     private readonly db: Queryable,
-    private readonly redactEnabled = true
+    private readonly redactEnabled = true,
+    private readonly spanManager?: Pick<SpanManager, "getActiveSpan" | "setAttributes">,
+    private readonly authorizationRedactor = new DefaultContextRedactor()
   ) {}
+
+  private async persistEvent(event: AuditEvent): Promise<void> {
+    await this.db.query(
+      `INSERT INTO audit_events (
+         event_id, task_id, step_id, tool_execution_id,
+         actor_type, actor_id, action, resource_type, resource_id,
+         decision, reason_code, payload, before_state_ref, after_state_ref,
+         created_at
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+         $11, $12, $13, $14, $15
+       )`,
+      [
+        event.eventId,
+        event.taskId ?? null,
+        event.stepId ?? null,
+        event.toolExecutionId ?? null,
+        event.actorType,
+        event.actorId,
+        event.action,
+        event.resourceType,
+        event.resourceId,
+        event.decision,
+        event.reasonCode ?? null,
+        event.payload ?? null,
+        event.beforeStateRef ?? null,
+        event.afterStateRef ?? null,
+        event.createdAt,
+      ]
+    );
+  }
 
   async record(eventName: string, payload: Record<string, unknown>): Promise<void> {
     try {
@@ -158,34 +199,7 @@ export class PgAuditLogger implements AuditLogger {
         payload: persistedPayload,
       });
 
-      await this.db.query(
-        `INSERT INTO audit_events (
-           event_id, task_id, step_id, tool_execution_id,
-           actor_type, actor_id, action, resource_type, resource_id,
-           decision, reason_code, payload, before_state_ref, after_state_ref,
-           created_at
-         ) VALUES (
-           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-           $11, $12, $13, $14, $15
-         )`,
-        [
-          event.eventId,
-          event.taskId ?? null,
-          event.stepId ?? null,
-          event.toolExecutionId ?? null,
-          event.actorType,
-          event.actorId,
-          event.action,
-          event.resourceType,
-          event.resourceId,
-          event.decision,
-          event.reasonCode ?? null,
-          event.payload ?? null,
-          event.beforeStateRef ?? null,
-          event.afterStateRef ?? null,
-          event.createdAt,
-        ]
-      );
+      await this.persistEvent(event);
     } catch (error) {
       console.warn(
         JSON.stringify({
@@ -194,6 +208,61 @@ export class PgAuditLogger implements AuditLogger {
           errorName: error instanceof Error ? error.name : "UnknownError",
         })
       );
+    }
+  }
+
+  async recordAuthorizationDecision(
+    input: RecordDecisionInput,
+    contextSummary: Readonly<Record<string, unknown>> =
+      this.authorizationRedactor.redact(input.request.context ?? {})
+  ): Promise<void> {
+    const opaquePrincipalId = `principal_sha256:${createHash("sha256")
+      .update(input.request.principal.principalId)
+      .digest("hex")}`;
+    const event = createAuditEvent({
+      ...(input.taskId ? { taskId: input.taskId } : {}),
+      ...(input.stepId ? { stepId: input.stepId } : {}),
+      ...(input.toolExecutionId
+        ? { toolExecutionId: input.toolExecutionId }
+        : {}),
+      actorType:
+        input.request.principal.principalType === "service" ? "system" : "user",
+      actorId: opaquePrincipalId,
+      action: "authorization.decision",
+      resourceType: input.request.resource.resourceType,
+      resourceId: input.request.resource.resourceId,
+      decision:
+        input.decision.effect === "require_confirmation"
+          ? "pending_confirmation"
+          : input.decision.effect,
+      reasonCode: input.decision.reasonCode,
+      payload: {
+        decisionId: input.decision.decisionId,
+        principalId: opaquePrincipalId,
+        scopeId: input.request.scope.scopeId,
+        tenantId: input.request.principal.tenantId,
+        action: input.request.action,
+        ...(input.policyVersion ? { policyVersion: input.policyVersion } : {}),
+        ...(input.decision.matchedPolicy
+          ? { matchedPolicy: input.decision.matchedPolicy }
+          : {}),
+        ...(input.decision.matchedGrantId
+          ? { matchedGrantId: input.decision.matchedGrantId }
+          : {}),
+        contextSummary: { ...contextSummary },
+      },
+    });
+
+    await this.persistEvent(event);
+    const span = this.spanManager?.getActiveSpan();
+    if (span) {
+      this.spanManager?.setAttributes(span, {
+        "authorization.decision_id": input.decision.decisionId,
+        "authorization.principal_id": opaquePrincipalId,
+        "authorization.scope_id": input.request.scope.scopeId,
+        "authorization.effect": input.decision.effect,
+        "authorization.reason_code": input.decision.reasonCode,
+      });
     }
   }
 

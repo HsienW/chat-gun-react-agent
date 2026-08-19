@@ -97,6 +97,7 @@ function createLedger() {
     completeAttempt: vi.fn<BusinessEffectLedger["completeAttempt"]>(
       async () => undefined
     ),
+    linkAuthorizationDecision: vi.fn(async () => undefined),
     transitionExecution: vi.fn<BusinessEffectLedger["transitionExecution"]>(
       async () => undefined
     ),
@@ -117,6 +118,36 @@ function createLedger() {
     >(async () => undefined),
   } satisfies BusinessEffectLedger;
   return ledger;
+}
+
+function createPreflightExecutor(
+  authorizationOutcomes: Array<
+    | { type: "authorized"; decisionId?: string }
+    | {
+        type: "denied_by_authorization";
+        errorCode: string;
+        decisionId: string;
+      }
+  >,
+  outcomes: Array<
+    Awaited<
+      ReturnType<GovernedToolExecutor<TestInput, TestResult>["executeTyped"]>
+    >
+  >
+) {
+  const authorizeTyped = vi.fn();
+  authorizationOutcomes.forEach((outcome) =>
+    authorizeTyped.mockResolvedValueOnce(outcome)
+  );
+  const executeAuthorizedTyped = vi.fn();
+  outcomes.forEach((outcome) =>
+    executeAuthorizedTyped.mockResolvedValueOnce(outcome)
+  );
+  return {
+    authorizeTyped,
+    executeAuthorizedTyped,
+    executeTyped: vi.fn(),
+  };
 }
 
 function createResultStore(overrides: Partial<ResultReferenceStore> = {}) {
@@ -291,6 +322,120 @@ describe("ToolExecutionRunner", () => {
       businessEffectId: "effect-1",
       expectedEffectState: "prepared",
     });
+  });
+
+  it("links an allow decision before creating a physical attempt", async () => {
+    const ledger = createLedger();
+    const executor = createPreflightExecutor(
+      [{ type: "authorized", decisionId: "decision-allow" }],
+      [{ type: "succeeded", result: { operationId: "operation-1" } }]
+    );
+    const runner = createRunner(ledger, createResultStore());
+
+    await expect(
+      runner.execute(runInput(executor, createDescriptor()))
+    ).resolves.toMatchObject({ type: "succeeded", source: "live" });
+    expect(ledger.linkAuthorizationDecision).toHaveBeenCalledWith({
+      toolExecutionId: "execution-1",
+      decisionId: "decision-allow",
+    });
+    expect(
+      ledger.linkAuthorizationDecision.mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      ledger.recordAttempt.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER
+    );
+    expect(executor.executeTyped).not.toHaveBeenCalled();
+    expect(executor.executeAuthorizedTyped).toHaveBeenCalledOnce();
+    expect(executor.authorizeTyped).toHaveBeenCalledWith(
+      { resourceId: "resource-1" },
+      expect.objectContaining({
+        configurable: expect.objectContaining({
+          requestId: "request-1",
+          threadId: "thread-1",
+          runId: "run-1",
+          taskId: "task-1",
+          stepId: "step-1",
+          toolExecutionId: "execution-1",
+        }),
+      })
+    );
+  });
+
+  it("does not create or retry a physical attempt after authorization deny", async () => {
+    const ledger = createLedger();
+    const executor = createPreflightExecutor(
+      [
+        {
+          type: "denied_by_authorization",
+          errorCode: "MISSING_ROLE_SCOPE_GRANT",
+          decisionId: "decision-deny",
+        },
+      ],
+      []
+    );
+    const runner = createRunner(ledger, createResultStore());
+
+    await expect(
+      runner.execute(
+        runInput(executor, createDescriptor(), createBudget(3))
+      )
+    ).resolves.toEqual({
+      type: "failed",
+      errorCode: "MISSING_ROLE_SCOPE_GRANT",
+      toolExecutionId: "execution-1",
+      decisionId: "decision-deny",
+    });
+    expect(ledger.recordAttempt).not.toHaveBeenCalled();
+    expect(executor.executeAuthorizedTyped).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before dispatch when authorization omits decisionId", async () => {
+    const ledger = createLedger();
+    const executor = createPreflightExecutor(
+      [{ type: "authorized" }],
+      [{ type: "succeeded", result: { operationId: "unexpected" } }]
+    );
+    const runner = createRunner(ledger, createResultStore());
+
+    await expect(
+      runner.execute(runInput(executor, createDescriptor()))
+    ).resolves.toEqual({
+      type: "failed",
+      errorCode: "AUTHORIZATION_UNAVAILABLE",
+      toolExecutionId: "execution-1",
+    });
+    expect(ledger.linkAuthorizationDecision).not.toHaveBeenCalled();
+    expect(ledger.recordAttempt).not.toHaveBeenCalled();
+    expect(executor.executeAuthorizedTyped).not.toHaveBeenCalled();
+  });
+
+  it("re-authorizes before retry and stops before a second physical attempt", async () => {
+    const ledger = createLedger();
+    const executor = createPreflightExecutor(
+      [
+        { type: "authorized", decisionId: "decision-allow" },
+        {
+          type: "denied_by_authorization",
+          errorCode: "MISSING_ROLE_SCOPE_GRANT",
+          decisionId: "decision-deny",
+        },
+      ],
+      [{ type: "failed_not_committed", errorCode: "PROVIDER_REJECTED" }]
+    );
+    const runner = createRunner(ledger, createResultStore());
+
+    await expect(
+      runner.execute(
+        runInput(executor, createDescriptor(), createBudget(3))
+      )
+    ).resolves.toMatchObject({
+      type: "failed",
+      errorCode: "MISSING_ROLE_SCOPE_GRANT",
+      decisionId: "decision-deny",
+    });
+    expect(ledger.recordAttempt).toHaveBeenCalledOnce();
+    expect(executor.executeAuthorizedTyped).toHaveBeenCalledOnce();
+    expect(executor.authorizeTyped).toHaveBeenCalledTimes(2);
   });
 
   it("retries a reconciled not_committed outcome with a new physical attempt", async () => {

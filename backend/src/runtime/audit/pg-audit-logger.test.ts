@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PgAuditLogger } from "./pg-audit-logger.js";
 import type { Queryable } from "../persistence/rows.js";
+import type { SpanManager } from "../../platform/tracing/span-manager.js";
 
 interface AuditRow extends Record<string, unknown> {
   event_id: string;
@@ -144,5 +145,131 @@ describe("PgAuditLogger", () => {
       },
     });
     expect(JSON.stringify(db.rows[0])).not.toContain("customer@example.com");
+  });
+
+  it("writes authorization correlation with an opaque actor and no raw credential", async () => {
+    const db = new FakeAuditDb();
+    const setAttributes = vi.fn<SpanManager["setAttributes"]>();
+    const spanManager = {
+      setAttributes,
+      getActiveSpan: vi.fn(() => ({}) as ReturnType<SpanManager["getActiveSpan"]>),
+    } as Pick<SpanManager, "getActiveSpan" | "setAttributes">;
+    const logger = new PgAuditLogger(db, true, spanManager);
+
+    await logger.recordAuthorizationDecision({
+      request: {
+        principal: {
+          principalId: "person@example.com",
+          principalType: "user",
+          tenantId: "tenant-1",
+          roles: ["member"],
+          scopes: ["scope-1"],
+          authSource: "trusted_gateway",
+          authenticatedAt: "2026-08-18T00:00:00.000Z",
+        },
+        scope: {
+          scopeId: "scope-1",
+          scopeType: "principal",
+          tenantId: "tenant-1",
+          ownerPrincipalId: "person@example.com",
+        },
+        action: "task:read",
+        resource: {
+          resourceType: "task",
+          resourceId: "task-resource-1",
+          tenantId: "tenant-1",
+        },
+        context: {
+          environment: "test",
+          authorization: "Bearer raw-secret",
+          email: "person@example.com",
+        },
+      },
+      decision: {
+        decisionId: "decision-1",
+        effect: "allow",
+        reasonCode: "POLICY_ALLOWED",
+        createdAt: "2026-08-18T00:00:00.000Z",
+      },
+      policyVersion: "runtime-authorization-v1",
+      taskId: "task-1",
+      stepId: "step-1",
+      toolExecutionId: "execution-1",
+    });
+
+    const baseRequest = {
+      principal: {
+        principalId: "person@example.com",
+        principalType: "user" as const,
+        tenantId: "tenant-1",
+        roles: ["member"],
+        scopes: ["scope-1"],
+        authSource: "trusted_gateway" as const,
+        authenticatedAt: "2026-08-18T00:00:00.000Z",
+      },
+      scope: {
+        scopeId: "scope-1",
+        scopeType: "principal" as const,
+        tenantId: "tenant-1",
+        ownerPrincipalId: "person@example.com",
+      },
+      action: "task:read",
+      resource: {
+        resourceType: "task",
+        resourceId: "task-resource-1",
+        tenantId: "tenant-1",
+      },
+      context: { authorization: "Bearer raw-secret" },
+    };
+    await logger.recordAuthorizationDecision({
+      request: baseRequest,
+      decision: {
+        decisionId: "decision-deny",
+        effect: "deny",
+        reasonCode: "MISSING_ROLE_SCOPE_GRANT",
+        createdAt: "2026-08-18T00:00:01.000Z",
+      },
+    });
+    await logger.recordAuthorizationDecision({
+      request: baseRequest,
+      decision: {
+        decisionId: "decision-confirm",
+        effect: "require_confirmation",
+        reasonCode: "REQUIRES_CONFIRMATION",
+        createdAt: "2026-08-18T00:00:02.000Z",
+      },
+    });
+
+    expect(db.rows[0]).toMatchObject({
+      task_id: "task-1",
+      step_id: "step-1",
+      tool_execution_id: "execution-1",
+      actor_type: "user",
+      action: "authorization.decision",
+      resource_type: "task",
+      resource_id: "task-resource-1",
+      decision: "allow",
+      reason_code: "POLICY_ALLOWED",
+      payload: expect.objectContaining({
+        decisionId: "decision-1",
+        scopeId: "scope-1",
+        tenantId: "tenant-1",
+      }),
+    });
+    expect(db.rows[0]?.actor_id).toMatch(/^principal_sha256:[a-f0-9]{64}$/);
+    expect(JSON.stringify(db.rows[0])).not.toContain("person@example.com");
+    expect(JSON.stringify(db.rows[0])).not.toContain("raw-secret");
+    expect(setAttributes).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        "authorization.decision_id": "decision-1",
+        "authorization.scope_id": "scope-1",
+      })
+    );
+    expect(db.rows.map((row) => row.decision)).toEqual([
+      "allow",
+      "deny",
+      "pending_confirmation",
+    ]);
   });
 });

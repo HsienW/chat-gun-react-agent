@@ -88,3 +88,11 @@ describe("idempotency TTL configuration", () => {
     );
   });
 });
+
+describe("identity compatibility configuration", () => {
+  it("keeps legacy trusted headers enabled by default", () => {
+    vi.stubEnv("BFF_LEGACY_HEADER_MODE", "");
+
+    expect(loadConfig().legacyHeaderMode).toBe(true);
+  });
+});

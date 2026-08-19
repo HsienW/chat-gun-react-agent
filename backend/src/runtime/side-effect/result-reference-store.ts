@@ -7,6 +7,7 @@ import {
   type ResultReferencePolicy,
 } from "./side-effect-descriptor.js";
 import type { TrustedScope } from "./identity.js";
+import { isScopeCompatible } from "../authorization/scope.js";
 
 export interface ResultReferenceRecord {
   resultRefId: string;
@@ -80,14 +81,6 @@ function mapResultReference(row: ResultReferenceRow): ResultReferenceRecord {
   };
 }
 
-function isSameScope(left: TrustedScope, right: TrustedScope): boolean {
-  return (
-    left.scopeId === right.scopeId &&
-    left.tenantId === right.tenantId &&
-    left.principalId === right.principalId
-  );
-}
-
 export class PgResultReferenceStore implements ResultReferenceStore {
   constructor(private readonly db: Queryable) {}
 
@@ -146,7 +139,13 @@ export class PgResultReferenceStore implements ResultReferenceStore {
     if (!row) return null;
     const record = mapResultReference(row);
 
-    if (!isSameScope(record.scope, input.scope)) {
+    if (
+      !isScopeCompatible(
+        input.scope,
+        { principalId: input.scope.principalId },
+        record.scope
+      )
+    ) {
       await this.markCacheState(record.resultRefId, "authorization_mismatch");
       return null;
     }
