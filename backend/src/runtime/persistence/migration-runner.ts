@@ -18,6 +18,7 @@ const MIGRATION_FILES = [
   "010_create_result_references.sql",
   "011_create_permission_grants.sql",
   "012_create_permission_decisions.sql",
+  "013_create_active_run_ownership.sql",
 ] as const;
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "migrations");

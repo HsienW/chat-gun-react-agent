@@ -16,6 +16,7 @@ const migrationNames = [
   "010_create_result_references.sql",
   "011_create_permission_grants.sql",
   "012_create_permission_decisions.sql",
+  "013_create_active_run_ownership.sql",
 ] as const;
 
 function expectedResults(
@@ -96,6 +97,10 @@ describe("runMigrations", () => {
     expect(executedSql).toContain("context_summary JSONB");
     expect(executedSql).toContain("idx_permission_decisions_tool_execution_id");
     expect(executedSql).toContain("ADD COLUMN IF NOT EXISTS decision_id TEXT");
+    expect(executedSql).toContain("CREATE TABLE IF NOT EXISTS active_run_ownership");
+    expect(executedSql).toContain(
+      "WHERE status = 'active'"
+    );
   });
 
   it("runs down migrations in reverse order when applied", async () => {
