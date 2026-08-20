@@ -7,17 +7,14 @@ export const TASK_STATUSES = [
   "compensating",
   "failed",
   "cancelled",
+  "cancelling",
+  "superseded",
+  "rollback_requested",
+  "cancelled_after_commit",
+  "manual_intervention_required",
 ] as const;
 
-export type TaskStatus =
-  | "created"
-  | "running"
-  | "waiting_confirmation"
-  | "completed"
-  | "partially_failed"
-  | "compensating"
-  | "failed"
-  | "cancelled";
+export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 export const STEP_STATUSES = [
   "pending",
@@ -86,21 +83,19 @@ export const TASK_EVENT_TYPES = [
   "compensation_completed",
   "waiting_confirmation",
   "resumed",
+  "queued",
+  "cancelling",
+  "cancelled",
+  "superseded",
+  "rollback_requested",
+  "cancelled_after_commit",
+  "manual_intervention_required",
+  "input_classification_tentative",
+  "clarification_requested",
+  "clarification_resumed",
 ] as const;
 
-export type TaskEventType =
-  | "task_created"
-  | "step_started"
-  | "step_completed"
-  | "step_failed"
-  | "step_retrying"
-  | "task_completed"
-  | "task_failed"
-  | "task_cancelled"
-  | "compensation_triggered"
-  | "compensation_completed"
-  | "waiting_confirmation"
-  | "resumed";
+export type TaskEventType = (typeof TASK_EVENT_TYPES)[number];
 
 export interface TaskEvent {
   eventId: string;

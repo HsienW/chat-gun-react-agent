@@ -18,14 +18,35 @@ export const TASK_TRANSITIONS: ReadonlyMap<TaskStatus, ReadonlySet<TaskStatus>> 
         "partially_failed",
         "failed",
         "cancelled",
+        "cancelling",
+        "superseded",
+        "rollback_requested",
+        "cancelled_after_commit",
+        "manual_intervention_required",
       ]),
     ],
-    ["waiting_confirmation", new Set(["running", "completed", "cancelled"])],
+    [
+      "waiting_confirmation",
+      new Set(["running", "completed", "cancelled", "cancelling"]),
+    ],
     ["partially_failed", new Set(["compensating"])],
-    ["compensating", new Set(["failed"])],
+    ["compensating", new Set(["failed", "cancelled", "manual_intervention_required"])],
+    [
+      "cancelling",
+      new Set([
+        "cancelled",
+        "rollback_requested",
+        "cancelled_after_commit",
+        "manual_intervention_required",
+      ]),
+    ],
+    ["rollback_requested", new Set(["compensating", "manual_intervention_required"])],
+    ["manual_intervention_required", new Set(["completed", "failed", "cancelled"])],
     ["completed", new Set()],
     ["failed", new Set()],
     ["cancelled", new Set()],
+    ["superseded", new Set()],
+    ["cancelled_after_commit", new Set()],
   ]);
 
 export const STEP_TRANSITIONS: ReadonlyMap<StepStatus, ReadonlySet<StepStatus>> =
@@ -139,7 +160,13 @@ export function transitionTaskStep<TStep extends string>(
   to: StepStatus,
   opts: StepTransitionOptions = {}
 ): TransitionResult<AgentTask<TStep>> {
-  if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") {
+  if (
+    task.status === "completed" ||
+    task.status === "failed" ||
+    task.status === "cancelled" ||
+    task.status === "superseded" ||
+    task.status === "cancelled_after_commit"
+  ) {
     return {
       valid: false,
       reason: `task is terminal: ${task.status}`,
