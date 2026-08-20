@@ -6,6 +6,7 @@ import { WelcomeScreen } from '@/components/WelcomeScreen';
 import { ChatMessagesView } from '@/components/ChatMessagesView';
 import {
   extractAgentRuntimeEvents,
+  extractTaskEventGeneration,
   extractWeatherClarificationInterruptToolResult,
   isLangGraphInterruptEvent,
   runtimeEventToProcessedEvent,
@@ -274,6 +275,7 @@ export default function App() {
       dispatchStreamActivity({
         type: 'streamEventsReceived',
         events: processedEvents,
+        generation: extractTaskEventGeneration(event),
       });
     }
   }, []);

@@ -15,13 +15,14 @@ export type StreamActivityState = {
   liveActivityEvents: ProcessedEvent[];
   historicalActivities: Record<string, ProcessedEvent[]>;
   pendingArchive: PendingArchive | null;
+  activeGeneration?: number;
   errorKind?: StreamErrorKind;
   errorMessage?: string;
 };
 
 export type StreamActivityAction =
   | { type: 'streamStarted' }
-  | { type: 'streamEventsReceived'; events: ProcessedEvent[] }
+  | { type: 'streamEventsReceived'; events: ProcessedEvent[]; generation?: number }
   | {
       type: 'streamFinished';
       messagesLengthAtTerminal: number;
@@ -103,10 +104,11 @@ export function streamActivityReducer(
         lifecycle: 'running',
         liveActivityEvents: [],
         pendingArchive: null,
+        activeGeneration: undefined,
         errorKind: undefined,
         errorMessage: undefined,
       };
-    case 'streamEventsReceived':
+    case 'streamEventsReceived': {
       if (
         action.events.length === 0 ||
         state.lifecycle === 'idle' ||
@@ -114,11 +116,26 @@ export function streamActivityReducer(
       ) {
         return state;
       }
+      if (
+        action.generation !== undefined &&
+        state.activeGeneration !== undefined &&
+        action.generation < state.activeGeneration
+      ) {
+        return state;
+      }
+      const replacesActiveGeneration =
+        action.generation !== undefined &&
+        state.activeGeneration !== undefined &&
+        action.generation > state.activeGeneration;
       return {
         ...state,
         lifecycle: 'running',
-        liveActivityEvents: [...state.liveActivityEvents, ...action.events],
+        liveActivityEvents: replacesActiveGeneration
+          ? [...action.events]
+          : [...state.liveActivityEvents, ...action.events],
+        activeGeneration: action.generation ?? state.activeGeneration,
       };
+    }
     case 'streamFinished': {
       if (isTerminal(state.lifecycle)) return state;
       const finishedState: StreamActivityState = {

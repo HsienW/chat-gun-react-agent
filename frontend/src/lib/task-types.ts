@@ -7,6 +7,11 @@ export const TASK_STATUSES = [
   'compensating',
   'failed',
   'cancelled',
+  'cancelling',
+  'superseded',
+  'rollback_requested',
+  'cancelled_after_commit',
+  'manual_intervention_required',
 ] as const;
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -38,6 +43,16 @@ export const TASK_EVENT_TYPES = [
   'compensation_completed',
   'waiting_confirmation',
   'resumed',
+  'queued',
+  'cancelling',
+  'cancelled',
+  'superseded',
+  'rollback_requested',
+  'cancelled_after_commit',
+  'manual_intervention_required',
+  'input_classification_tentative',
+  'clarification_requested',
+  'clarification_resumed',
 ] as const;
 
 export type TaskEventType = (typeof TASK_EVENT_TYPES)[number];

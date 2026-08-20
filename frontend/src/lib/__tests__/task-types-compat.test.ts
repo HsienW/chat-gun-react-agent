@@ -18,6 +18,11 @@ describe('task type compatibility', () => {
       'compensating',
       'failed',
       'cancelled',
+      'cancelling',
+      'superseded',
+      'rollback_requested',
+      'cancelled_after_commit',
+      'manual_intervention_required',
     ]);
   });
 
@@ -35,7 +40,7 @@ describe('task type compatibility', () => {
     ]);
   });
 
-  it('keeps all 12 task event types aligned with the backend contract', () => {
+  it('keeps all task event types aligned with the backend contract', () => {
     expect(TASK_EVENT_TYPES).toEqual([
       'task_created',
       'step_started',
@@ -49,6 +54,16 @@ describe('task type compatibility', () => {
       'compensation_completed',
       'waiting_confirmation',
       'resumed',
+      'queued',
+      'cancelling',
+      'cancelled',
+      'superseded',
+      'rollback_requested',
+      'cancelled_after_commit',
+      'manual_intervention_required',
+      'input_classification_tentative',
+      'clarification_requested',
+      'clarification_resumed',
     ]);
   });
 

@@ -5,10 +5,25 @@ import {
   extractDirectAgentRuntimeEvents,
   extractNestedAgentRuntimeEvents,
   extractNodeAdapterRuntimeEvents,
+  extractTaskEventGeneration,
   extractWeatherClarificationInterruptToolResult,
   isLangGraphInterruptEvent,
   runtimeEventToProcessedEvent,
 } from '@/lib/agent-runtime-events';
+
+describe('extractTaskEventGeneration', () => {
+  it('reads the standard task event payload generation without coercion', () => {
+    expect(
+      extractTaskEventGeneration({
+        event: 'task_event',
+        data: { eventType: 'superseded', payload: { generation: 7 } },
+      })
+    ).toBe(7);
+    expect(
+      extractTaskEventGeneration({ payload: { generation: '7' } })
+    ).toBeUndefined();
+  });
+});
 
 describe('agent runtime event extraction', () => {
   it('extracts direct runtime events from raw stream updates', () => {

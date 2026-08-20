@@ -102,6 +102,42 @@ function parseJsonRecord(value: unknown): Record<string, unknown> | undefined {
   }
 }
 
+function asPositiveGeneration(value: unknown): number | undefined {
+  return typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value > 0
+    ? value
+    : undefined;
+}
+
+function findTaskEventGeneration(value: unknown, depth: number): number | undefined {
+  if (depth > 4) return undefined;
+  const record = asRecord(value) ?? parseJsonRecord(value);
+  if (!record) return undefined;
+
+  const payload = asRecord(record.payload);
+  if (typeof record.eventType === 'string') {
+    const generation = asPositiveGeneration(payload?.generation);
+    if (generation !== undefined) return generation;
+  }
+
+  for (const key of ['data', 'taskEvent', 'task_event', 'payload']) {
+    const generation = findTaskEventGeneration(record[key], depth + 1);
+    if (generation !== undefined) return generation;
+  }
+  if (Array.isArray(record.events)) {
+    for (const event of record.events) {
+      const generation = findTaskEventGeneration(event, depth + 1);
+      if (generation !== undefined) return generation;
+    }
+  }
+  return undefined;
+}
+
+export function extractTaskEventGeneration(value: unknown): number | undefined {
+  return findTaskEventGeneration(value, 0);
+}
+
 function isSerializablePrimitive(value: unknown): boolean {
   return (
     value === null ||

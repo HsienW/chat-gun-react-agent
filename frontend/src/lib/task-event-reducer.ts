@@ -40,6 +40,42 @@ function getPayloadError(value: unknown): StepError | undefined {
   return asRecord(asRecord(value)?.error) as StepError | undefined;
 }
 
+function getPayloadGeneration(value: unknown): number | undefined {
+  const generation = asRecord(value)?.generation;
+  return typeof generation === 'number' &&
+    Number.isSafeInteger(generation) &&
+    generation > 0
+    ? generation
+    : undefined;
+}
+
+function getActiveGeneration(metadata: Record<string, unknown>): number | undefined {
+  const generation = metadata.activeGeneration;
+  return typeof generation === 'number' &&
+    Number.isSafeInteger(generation) &&
+    generation > 0
+    ? generation
+    : undefined;
+}
+
+function applyEventMetadata<TStep extends string>(
+  state: AgentTask<TStep>,
+  event: IncomingTaskEvent,
+  interactionState?: string
+): AgentTask<TStep> {
+  const generation = getPayloadGeneration(event.payload);
+  const confirmationType = asRecord(event.payload)?.confirmationType;
+  return {
+    ...state,
+    metadata: {
+      ...state.metadata,
+      ...(generation === undefined ? {} : { activeGeneration: generation }),
+      ...(interactionState === undefined ? {} : { interactionState }),
+      ...(typeof confirmationType === 'string' ? { confirmationType } : {}),
+    },
+  };
+}
+
 function updateTaskStatus<TStep extends string>(
   state: AgentTask<TStep>,
   status: TaskStatus,
@@ -123,42 +159,58 @@ export function taskEventReducer<TStep extends string>(
   }
 
   if (event.eventType === 'task_created') {
-    return getPayloadTask(event.payload) as AgentTask<TStep> | undefined ?? null;
+    const task = getPayloadTask(event.payload) as AgentTask<TStep> | undefined;
+    return task ? applyEventMetadata(task, event) : null;
   }
 
   if (!state) {
     return null;
   }
 
+  const eventGeneration = getPayloadGeneration(event.payload);
+  const activeGeneration = getActiveGeneration(state.metadata);
+  if (
+    eventGeneration !== undefined &&
+    activeGeneration !== undefined &&
+    eventGeneration < activeGeneration
+  ) {
+    return state;
+  }
+  const currentState = applyEventMetadata(state, event);
+
   switch (event.eventType) {
     case 'step_started':
-      return applyStepStatus(state, event, 'running');
+      return applyStepStatus(currentState, event, 'running');
     case 'step_completed':
-      return applyStepStatus(state, event, 'succeeded');
+      return applyStepStatus(currentState, event, 'succeeded');
     case 'step_failed':
       return applyStepStatus(
-        state,
+        currentState,
         event,
         statusFromFailedStep(getPayloadStep(event.payload))
       );
     case 'step_retrying':
-      return updateStep(state, event.stepId, (step) => ({
+      return updateStep(currentState, event.stepId, (step) => ({
         ...step,
         status: 'running',
         attempt: getPayloadStep(event.payload)?.attempt ?? step.attempt + 1,
         updatedAt: event.createdAt,
       }));
     case 'task_completed':
-      return updateTaskStatus(state, 'completed', event.createdAt);
+      return updateTaskStatus(currentState, 'completed', event.createdAt);
     case 'task_failed':
-      return updateTaskStatus(state, 'failed', event.createdAt);
+      return updateTaskStatus(currentState, 'failed', event.createdAt);
     case 'task_cancelled':
-      return updateTaskStatus(state, 'cancelled', event.createdAt);
+      return updateTaskStatus(currentState, 'cancelled', event.createdAt);
     case 'compensation_triggered':
-      return updateTaskStatus(state, 'compensating', event.createdAt);
+      return updateTaskStatus(
+        applyEventMetadata(currentState, event, 'compensation_waiting'),
+        'compensating',
+        event.createdAt
+      );
     case 'compensation_completed':
       return updateTaskStatus(
-        updateStep(state, event.stepId, (step) => ({
+        updateStep(currentState, event.stepId, (step) => ({
           ...step,
           status: 'compensated',
           updatedAt: event.createdAt,
@@ -168,7 +220,7 @@ export function taskEventReducer<TStep extends string>(
       );
     case 'waiting_confirmation':
       return updateTaskStatus(
-        updateStep(state, event.stepId, (step) => ({
+        updateStep(currentState, event.stepId, (step) => ({
           ...step,
           status: 'waiting_confirmation',
           updatedAt: event.createdAt,
@@ -177,6 +229,50 @@ export function taskEventReducer<TStep extends string>(
         event.createdAt
       );
     case 'resumed':
-      return updateTaskStatus(state, 'running', event.createdAt);
+      return updateTaskStatus(currentState, 'running', event.createdAt);
+    case 'queued':
+      return applyEventMetadata(currentState, event, 'queued');
+    case 'cancelling':
+      return updateTaskStatus(
+        applyEventMetadata(currentState, event, 'cancelling'),
+        'cancelling',
+        event.createdAt
+      );
+    case 'cancelled':
+      return updateTaskStatus(currentState, 'cancelled', event.createdAt);
+    case 'superseded':
+      return updateTaskStatus(
+        applyEventMetadata(currentState, event, 'superseded'),
+        'superseded',
+        event.createdAt
+      );
+    case 'rollback_requested':
+      return updateTaskStatus(
+        applyEventMetadata(currentState, event, 'compensation_waiting'),
+        'rollback_requested',
+        event.createdAt
+      );
+    case 'cancelled_after_commit':
+      return updateTaskStatus(currentState, 'cancelled_after_commit', event.createdAt);
+    case 'manual_intervention_required':
+      return updateTaskStatus(
+        applyEventMetadata(currentState, event, 'corrective_manual'),
+        'manual_intervention_required',
+        event.createdAt
+      );
+    case 'input_classification_tentative':
+      return updateTaskStatus(currentState, 'waiting_confirmation', event.createdAt);
+    case 'clarification_requested':
+      return updateTaskStatus(
+        applyEventMetadata(currentState, event, 'clarification_requested'),
+        'waiting_confirmation',
+        event.createdAt
+      );
+    case 'clarification_resumed':
+      return updateTaskStatus(
+        applyEventMetadata(currentState, event, 'clarification_resumed'),
+        'running',
+        event.createdAt
+      );
   }
 }
