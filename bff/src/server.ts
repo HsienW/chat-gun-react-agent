@@ -88,6 +88,17 @@ type ValidatedIdempotencyHeader =
         | "invalid_idempotency_key";
     };
 
+type ValidatedActiveRunHint =
+  | { ok: true; present: false }
+  | { ok: true; present: true; runId: string; generation: string }
+  | {
+      ok: false;
+      errorCode:
+        | "duplicate_active_run_hint_header"
+        | "incomplete_active_run_hint"
+        | "invalid_active_run_hint";
+    };
+
 type StreamPipeResult = {
   completed: boolean;
   clientDisconnected: boolean;
@@ -154,6 +165,37 @@ function validateIdempotencyHeader(
   return { ok: true, present: true, clientKey };
 }
 
+function validateActiveRunHint(req: IncomingMessage): ValidatedActiveRunHint {
+  const runIdValues = getRawHeaderValues(req, "x-active-run-id");
+  const generationValues = getRawHeaderValues(
+    req,
+    "x-active-run-generation"
+  );
+  if (runIdValues.length > 1 || generationValues.length > 1) {
+    return { ok: false, errorCode: "duplicate_active_run_hint_header" };
+  }
+
+  const runId = runIdValues[0];
+  const generation = generationValues[0];
+  if (runId === undefined && generation === undefined) {
+    return { ok: true, present: false };
+  }
+  if (runId === undefined || generation === undefined) {
+    return { ok: false, errorCode: "incomplete_active_run_hint" };
+  }
+  const parsedGeneration = Number(generation);
+  if (
+    runId.length < 1 ||
+    runId.length > 256 ||
+    !/^[A-Za-z0-9_\-:.]+$/.test(runId) ||
+    !/^[1-9]\d*$/.test(generation) ||
+    !Number.isSafeInteger(parsedGeneration)
+  ) {
+    return { ok: false, errorCode: "invalid_active_run_hint" };
+  }
+  return { ok: true, present: true, runId, generation };
+}
+
 function createTrustedRequestDedupKey(
   scope: TrustedRequestScope,
   clientKey: string
@@ -203,7 +245,7 @@ function applyCors(req: IncomingMessage, res: ServerResponse, config: BffConfig)
   res.setHeader("access-control-allow-credentials", "true");
   res.setHeader(
     "access-control-allow-headers",
-    "authorization, content-type, idempotency-key, x-api-key, x-idempotency-key, x-request-id, x-tenant-id, x-user-id"
+    "authorization, content-type, idempotency-key, x-active-run-generation, x-active-run-id, x-api-key, x-idempotency-key, x-request-id, x-tenant-id, x-user-id"
   );
   res.setHeader(
     "access-control-allow-methods",
@@ -278,6 +320,7 @@ function copyRequestHeaders(
   principal: PrincipalContext,
   routeNamespace: string,
   idempotencyHeader: Extract<ValidatedIdempotencyHeader, { ok: true }>,
+  activeRunHint: Extract<ValidatedActiveRunHint, { ok: true }>,
   idempotencyTtlMs: number,
   legacyHeaderMode: boolean
 ): Headers {
@@ -317,6 +360,10 @@ function copyRequestHeaders(
       )
     );
     headers.set("x-bff-idempotency-ttl-ms", String(idempotencyTtlMs));
+  }
+  if (activeRunHint.present) {
+    headers.set("x-active-run-id", activeRunHint.runId);
+    headers.set("x-active-run-generation", activeRunHint.generation);
   }
   headers.set("x-forwarded-for", ctx.clientIp);
   headers.set("x-forwarded-host", getHeader(req, "host") ?? "unknown");
@@ -833,6 +880,21 @@ async function proxyLangGraph(
     );
     return;
   }
+  const activeRunHint = validateActiveRunHint(req);
+  if (!activeRunHint.ok) {
+    sendJson(
+      res,
+      400,
+      {
+        error: {
+          code: activeRunHint.errorCode,
+          message: "Invalid active-run hint",
+        },
+      },
+      ctx.requestId
+    );
+    return;
+  }
   const upstreamUrls = buildUpstreamUrls(reqUrl, config);
   let attemptedUpstreamUrl = upstreamUrls[0];
   let lastUpstreamError: unknown;
@@ -903,6 +965,7 @@ async function proxyLangGraph(
             principalResolution.principal,
             reqUrl.pathname,
             idempotencyHeader,
+            activeRunHint,
             config.idempotencyTtlMs,
             config.legacyHeaderMode
           ),
