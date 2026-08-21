@@ -30,11 +30,11 @@ Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 建構的�
 - **Native Tools**：內建計算、由 Tavily Search API 提供的網路搜尋、網頁擷取、目前天氣與天氣預報工具，Agent 可依問題選擇合適工具。
 - **MCP integration**：可選擇載入 Filesystem 與 Brave Search MCP Server；Brave Search 以選配 MCP Tool 的形式擴充搜尋能力。
 - **Model providers**：支援 Qwen、OpenAI-compatible 與 CCR-compatible endpoints，統一由 LLM Gateway 處理模型能力與呼叫介面。
-- **API Gateway**：BFF 集中處理 API key authentication、CORS、request size validation、Timeout、Cancellation propagation 與 Rate limiting。
+- **API Gateway**：BFF 集中處理 API key authentication、將已驗證 API key 映射為 Trusted Principal context、CORS、request size validation、Timeout、Cancellation propagation 與 Rate limiting；啟用驗證時，client 提供的 identity／tenant headers 不會被當成可信身分來源。
 - **Observability & Evaluation**：提供 Metrics 與 OpenTelemetry，並可啟用 Opik tracing、versioned datasets 與 experiments 來追蹤及評估 Agent 行為。
 
 > 📌
-> 預設僅適用於本機開發。公開部署前，請啟用 Authentication、設定明確的 CORS allowlist、妥善管理 Secrets 與資料庫憑證，並依部署架構配置共享 Rate limiting、TLS 與 Reverse Proxy。若需要跨重啟或多實例恢復 Agent 執行，請改用 durable checkpointer。
+> 預設僅適用於本地開發。公開部署前，請啟用 Authentication、設定明確的 CORS allowlist、妥善管理 Secrets 與資料庫憑證，並依部署架構配置共享 Rate limiting、TLS 與 Reverse Proxy。若需要跨重啟或多實例恢復 Agent 執行，請改用 durable checkpointer。
 
 ## Demo
 
@@ -59,18 +59,18 @@ Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 建構的�
 ```text
 Browser
   -> frontend: Vite + React 19 + TypeScript
-  -> bff: Node.js + TypeScript
-  -> backend: LangGraph JS + LangChain
+  -> bff: Node + TypeScript
+  -> backend: LangGraph JS + TypeScript
   -> Model Provider / Native Tools / MCP Tools
 ```
 
-| 目錄 | 用途 | 本機預設 port |
+| 目錄 | 用途 | 本地預設 port |
 | --- | --- | ---: |
 | `frontend/` | Chat UI、串流狀態、工具結果與圖片輸入 | `5173` |
 | `bff/` | API gateway、驗證、代理、逾時與限流 | `8787` |
 | `backend/` | LangGraph agents、模型整合、Tools 與 MCP | `2024` |
 
-本機開發時，Frontend 會把 `/api/*` 代理至 BFF；LangGraph 請求經由 `/api/langgraph/*` 轉送到 Backend。模型、Tool 與 MCP credential 只保留在 Server 端。
+本地開發時，Frontend 會把 `/api/*` 代理至 BFF；LangGraph 請求經由 `/api/langgraph/*` 轉送到 Backend。模型、Tool 與 MCP credential 只保留在 Server 端。
 
 ```text
 http://localhost:5173/app/
@@ -91,8 +91,8 @@ Frontend 提供 `qwen-plus`、`qwen-max` 與 `qwen-turbo`，預設選用 `qwen-p
 
 ## 系統需求
 
-- Node.js 22
-- npm
+- Node >= 22
+- npm >= 10.8.x
 - Qwen API key，或可用的 OpenAI-compatible／CCR-compatible endpoint
 - Tavily Search API key（使用內建 `web_search` 時需要）
 - Brave Search API key（啟用 Brave Search MCP Server 時需要，選用）
@@ -129,7 +129,7 @@ Set-Location ..
 
 ### Backend
 
-從範例建立本機設定：
+從範例建立本地設定：
 
 ```bash
 cp backend/.env.example backend/.env
@@ -188,17 +188,28 @@ Copy-Item bff/.env.example bff/.env
 | --- | --- |
 | `BFF_LANGGRAPH_API_URL` | LangGraph API URL |
 | `BFF_ALLOWED_ORIGINS` | 允許存取 BFF 的瀏覽器 origins |
-| `BFF_REQUIRE_AUTH` | 是否要求 API key 或 Bearer token |
-| `BFF_API_KEYS` | 允許使用的 API keys |
+| `BFF_REQUIRE_AUTH` | 是否要求 API key 或 Bearer token；啟用時還需要對應的 Trusted Principal profile |
+| `BFF_API_KEYS` | 通常留空；若設定，每個 key 仍需有對應的 Principal profile |
+| `BFF_API_KEY_PRINCIPALS_JSON` | 以 API key 為索引的 Principal profile JSON，包含 `principalId`、`principalType`、`tenantId`、`roles` 與 `scopes` |
+| `BFF_LEGACY_HEADER_MODE` | 是否繼續向 Backend 傳送相容用的 `x-bff-user-id`；預設為 `true` |
 | `BFF_MAX_BODY_BYTES` | Request body 上限 |
 | `BFF_UPSTREAM_TIMEOUT_MS` | Upstream request timeout |
 | `BFF_RATE_LIMIT_REDIS_URI` | Redis rate limiter；留空時使用 in-memory limiter |
 
-完整選項請參閱 [`bff/.env.example`](./bff/.env.example)。
+其他 BFF 選項請參閱 [`bff/.env.example`](./bff/.env.example)。
+
+啟用 BFF authentication 時，每個 API key 都必須具有 Trusted Principal profile；只設定 `BFF_API_KEYS` 會因缺少可信身分資料而回傳 `401`。BFF 會忽略 client 傳入的 `x-user-id`／`x-tenant-id`，並依 profile 產生及轉送 `x-bff-*` headers 至 Backend。Resource-level authorization 由需要保護的 Tool 或 workflow 顯式啟用。
+
+```env
+BFF_REQUIRE_AUTH=true
+BFF_API_KEY_PRINCIPALS_JSON={"replace-with-a-long-random-key":{"principalId":"local-user","principalType":"user","tenantId":"local","roles":[],"scopes":[]}}
+```
+
+`BFF_API_KEY_PRINCIPALS_JSON` 的 JSON key 本身就是 credential，請只透過環境變數或 secret manager 提供，不要提交到版本控制。
 
 ### Frontend
 
-本機開發不需要建立 `frontend/.env`。Frontend 預設使用同源 `/api/langgraph`；分開部署時可指定 BFF URL：
+本地開發不需要建立 `frontend/.env`。Frontend 預設使用同源 `/api/langgraph`；分開部署時可指定 BFF URL：
 
 ```env
 VITE_LANGGRAPH_API_URL=https://api.example.com/api/langgraph
@@ -206,7 +217,7 @@ VITE_LANGGRAPH_API_URL=https://api.example.com/api/langgraph
 
 圖片輸入限制請參閱 [`frontend/.env.example`](./frontend/.env.example)。`VITE_*` 會出現在瀏覽器 bundle，不能用來保存 secret。
 
-## 本機開發
+## 本地開發
 
 分別啟動 Backend、BFF 與 Frontend。
 

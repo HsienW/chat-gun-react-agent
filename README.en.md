@@ -30,7 +30,7 @@ Chat Gun React Agent is a full-stack agent chat application built with React, Ty
 - **Native Tools**: Includes calculation, web search powered by the Tavily Search API, web fetching, current weather, and weather forecast tools that agents can select as needed.
 - **MCP integration**: Optionally loads Filesystem and Brave Search MCP Servers; Brave Search extends search capabilities as an optional MCP Tool.
 - **Model providers**: Supports Qwen, OpenAI-compatible, and CCR-compatible endpoints through a shared LLM Gateway interface.
-- **API Gateway**: The BFF centralizes API key authentication, CORS, request size validation, timeouts, cancellation propagation, and rate limiting.
+- **API Gateway**: The BFF centralizes API key authentication, maps verified API keys to trusted principal contexts, and handles CORS, request size validation, timeouts, cancellation propagation, and rate limiting. When authentication is enabled, client-supplied identity and tenant headers are not treated as trusted identity sources.
 - **Observability & Evaluation**: Provides metrics and OpenTelemetry, with optional Opik tracing, versioned datasets, and experiments for tracking and evaluating agent behavior.
 
 > 📌
@@ -60,7 +60,7 @@ Chat Gun React Agent is a full-stack agent chat application built with React, Ty
 Browser
   -> frontend: Vite + React 19 + TypeScript
   -> bff: Node.js + TypeScript
-  -> backend: LangGraph JS + LangChain
+  -> backend: LangGraph JS + TypeScript
   -> Model Provider / Native Tools / MCP Tools
 ```
 
@@ -91,8 +91,8 @@ The frontend offers `qwen-plus`, `qwen-max`, and `qwen-turbo`, with `qwen-plus` 
 
 ## Requirements
 
-- Node.js 22
-- npm
+- Node >= 22
+- npm >= 10.8.x
 - A Qwen API key or an available OpenAI-compatible or CCR-compatible endpoint
 - A Tavily Search API key for the built-in `web_search` tool
 - A Brave Search API key when enabling the optional Brave Search MCP Server
@@ -188,13 +188,24 @@ Copy-Item bff/.env.example bff/.env
 | --- | --- |
 | `BFF_LANGGRAPH_API_URL` | LangGraph API URL |
 | `BFF_ALLOWED_ORIGINS` | Browser origins allowed to access the BFF |
-| `BFF_REQUIRE_AUTH` | Whether an API key or Bearer token is required |
-| `BFF_API_KEYS` | Accepted API keys |
+| `BFF_REQUIRE_AUTH` | Whether an API key or Bearer token is required; trusted principal profiles are also required when enabled |
+| `BFF_API_KEYS` | Usually left empty; when set, every key still needs a corresponding principal profile |
+| `BFF_API_KEY_PRINCIPALS_JSON` | API-key-indexed principal profile JSON containing `principalId`, `principalType`, `tenantId`, `roles`, and `scopes` |
+| `BFF_LEGACY_HEADER_MODE` | Whether to continue forwarding the compatibility `x-bff-user-id` header to the Backend; defaults to `true` |
 | `BFF_MAX_BODY_BYTES` | Request body size limit |
 | `BFF_UPSTREAM_TIMEOUT_MS` | Upstream request timeout |
 | `BFF_RATE_LIMIT_REDIS_URI` | Redis rate limiter; uses the in-memory limiter when unset |
 
-See [`bff/.env.example`](./bff/.env.example) for all available options.
+See [`bff/.env.example`](./bff/.env.example) for other BFF options.
+
+When BFF authentication is enabled, every API key must have a trusted principal profile. Setting only `BFF_API_KEYS` returns `401` because trusted identity data is missing. The BFF ignores client-supplied `x-user-id` and `x-tenant-id` headers, derives the `x-bff-*` headers from the profile, and forwards them to the Backend. Resource-level authorization is enabled explicitly by each tool or workflow that requires it.
+
+```env
+BFF_REQUIRE_AUTH=true
+BFF_API_KEY_PRINCIPALS_JSON={"replace-with-a-long-random-key":{"principalId":"local-user","principalType":"user","tenantId":"local","roles":[],"scopes":[]}}
+```
+
+The JSON key in `BFF_API_KEY_PRINCIPALS_JSON` is itself a credential. Provide it only through environment variables or a secret manager, and never commit it to version control.
 
 ### Frontend
 
