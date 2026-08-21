@@ -19,6 +19,7 @@ export const INTERACTION_TASK_EVENT_TYPES = [
   "input_classification_tentative",
   "clarification_requested",
   "clarification_resumed",
+  "interaction_decision",
 ] as const satisfies readonly TaskEventType[];
 
 export type InteractionTaskEventType =
@@ -42,6 +43,12 @@ export interface InteractionEventPayload {
   sideEffectState: CancellationPhase;
   compensationResult: string | null;
   reconciliationResult: string | null;
+  decision?: {
+    strategy: string;
+    disposition: string;
+    classification?: InputClassification;
+    reasonCode: string;
+  };
 }
 
 export type InteractionTaskEvent = TaskEvent & {
@@ -122,6 +129,7 @@ export function createInteractionTaskEvent(
       sideEffectState: input.sideEffectState,
       compensationResult: input.compensationResult,
       reconciliationResult: input.reconciliationResult,
+      ...(input.decision ? { decision: input.decision } : {}),
     },
     createdAt: dependencies.now().toISOString(),
   };
@@ -227,6 +235,14 @@ export class InteractionEventRecorder {
       sideEffectState: payload.sideEffectState,
       inputDigest: payload.input.digest,
       inputByteLength: payload.input.byteLength,
+      ...(payload.decision
+        ? {
+            decision: payload.decision.disposition,
+            strategy: payload.decision.strategy,
+            classification: payload.decision.classification ?? null,
+            decisionReasonCode: payload.decision.reasonCode,
+          }
+        : {}),
     });
     if (auditPayload === null || typeof auditPayload !== "object") {
       throw new Error("Invalid redacted interaction audit payload");
@@ -245,6 +261,19 @@ export class InteractionEventRecorder {
         "interaction.run_id": payload.priorRunId,
         "interaction.generation": payload.generation,
         "interaction.side_effect_state": payload.sideEffectState,
+        ...(payload.decision
+          ? {
+              "interaction.decision": payload.decision.disposition,
+              "interaction.strategy": payload.decision.strategy,
+              "interaction.decision_reason_code": payload.decision.reasonCode,
+              ...(payload.decision.classification
+                ? {
+                    "interaction.classification":
+                      payload.decision.classification,
+                  }
+                : {}),
+            }
+          : {}),
         ...(payload.replacementRunId
           ? { "interaction.replacement_run_id": payload.replacementRunId }
           : {}),

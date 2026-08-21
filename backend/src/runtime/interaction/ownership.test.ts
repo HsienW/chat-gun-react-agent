@@ -75,7 +75,17 @@ class FakeOwnershipDatabase implements OwnershipDatabase {
         task_id: String(values[2]),
         run_id: String(values[3]),
         status: "active",
-        generation: Number(values[4]),
+        generation:
+          Math.max(
+            0,
+            ...this.rows
+              .filter(
+                (candidate) =>
+                  candidate.thread_id === values[0] &&
+                  candidate.scope_id === values[1]
+              )
+              .map((candidate) => candidate.generation)
+          ) + 1,
         superseded_by_run_id: null,
         updated_at: "2026-08-20T00:00:00.000Z",
       };
@@ -94,6 +104,19 @@ class FakeOwnershipDatabase implements OwnershipDatabase {
       if (!row) return { rows: [], rowCount: 0 };
       row.status = "superseded";
       row.superseded_by_run_id = String(values[3]);
+      return { rows: [structuredClone(row) as unknown as TResult], rowCount: 1 };
+    }
+
+    if (text.includes("SET status = $4") && text.includes("run_id = $3")) {
+      const row = this.rows.find(
+        (candidate) =>
+          candidate.thread_id === values[0] &&
+          candidate.scope_id === values[1] &&
+          candidate.run_id === values[2] &&
+          candidate.status === "active"
+      );
+      if (!row) return { rows: [], rowCount: 0 };
+      row.status = String(values[3]) as "completed" | "cancelled";
       return { rows: [structuredClone(row) as unknown as TResult], rowCount: 1 };
     }
 
@@ -192,5 +215,67 @@ describe("PgActiveRunOwnershipRepository", () => {
       attempts.find((attempt) => attempt.status === "rejected")
     ).toMatchObject({ reason: expect.any(ActiveRunOwnershipConflictError) });
     expect(database.rows.filter((row) => row.status === "active")).toHaveLength(1);
+  });
+
+  it("marks only the authoritative run terminal while retaining its generation", async () => {
+    const database = new FakeOwnershipDatabase();
+    const repository = new PgActiveRunOwnershipRepository(database);
+    await repository.claim({
+      threadId: "thread-1",
+      scopeId: "scope-1",
+      taskId: "task-1",
+      runId: "run-1",
+    });
+
+    await expect(
+      repository.markTerminal({
+        threadId: "thread-1",
+        scopeId: "scope-1",
+        runId: "run-1",
+        status: "completed",
+      })
+    ).resolves.toMatchObject({
+      runId: "run-1",
+      status: "completed",
+      generation: 1,
+    });
+    await expect(
+      repository.markTerminal({
+        threadId: "thread-1",
+        scopeId: "scope-1",
+        runId: "stale-run",
+        status: "cancelled",
+      })
+    ).resolves.toBeNull();
+  });
+
+  it("claims the next generation after the prior run becomes terminal", async () => {
+    const database = new FakeOwnershipDatabase();
+    const repository = new PgActiveRunOwnershipRepository(database);
+    await repository.claim({
+      threadId: "thread-1",
+      scopeId: "scope-1",
+      taskId: "task-1",
+      runId: "run-1",
+    });
+    await repository.markTerminal({
+      threadId: "thread-1",
+      scopeId: "scope-1",
+      runId: "run-1",
+      status: "completed",
+    });
+
+    await expect(
+      repository.claim({
+        threadId: "thread-1",
+        scopeId: "scope-1",
+        taskId: "task-2",
+        runId: "run-2",
+      })
+    ).resolves.toMatchObject({
+      runId: "run-2",
+      generation: 2,
+      status: "active",
+    });
   });
 });

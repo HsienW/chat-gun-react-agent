@@ -21,6 +21,32 @@ export interface ActiveRunOwnership {
   updatedAt: string;
 }
 
+export interface ActiveRunOwnershipRepository {
+  findActive(
+    threadId: string,
+    scopeId: string
+  ): Promise<ActiveRunOwnership | null>;
+  claim(input: {
+    threadId: string;
+    scopeId: string;
+    taskId: string;
+    runId: string;
+  }): Promise<ActiveRunOwnership>;
+  supersede(input: {
+    threadId: string;
+    scopeId: string;
+    expectedGeneration: number;
+    replacementTaskId: string;
+    replacementRunId: string;
+  }): Promise<ActiveRunOwnership>;
+  markTerminal(input: {
+    threadId: string;
+    scopeId: string;
+    runId: string;
+    status: "completed" | "cancelled";
+  }): Promise<ActiveRunOwnership | null>;
+}
+
 export interface OwnershipDatabase extends Queryable {
   withTransaction<TResult>(
     operation: (transaction: Queryable) => Promise<TResult>
@@ -98,7 +124,7 @@ function requireSingleRow(
   return row;
 }
 
-export class PgActiveRunOwnershipRepository {
+export class PgActiveRunOwnershipRepository implements ActiveRunOwnershipRepository {
   constructor(private readonly db: OwnershipDatabase) {}
 
   async findActive(
@@ -123,10 +149,15 @@ export class PgActiveRunOwnershipRepository {
     const result = await this.db.query<OwnershipRow>(
       `INSERT INTO active_run_ownership (
          thread_id, scope_id, task_id, run_id, status, generation
-       ) VALUES ($1, $2, $3, $4, 'active', $5)
+       ) VALUES (
+         $1, $2, $3, $4, 'active',
+         (SELECT COALESCE(MAX(generation), 0) + 1
+          FROM active_run_ownership
+          WHERE thread_id = $1 AND scope_id = $2)
+       )
        ON CONFLICT DO NOTHING
        RETURNING ${OWNERSHIP_COLUMNS}`,
-      [input.threadId, input.scopeId, input.taskId, input.runId, 1]
+      [input.threadId, input.scopeId, input.taskId, input.runId]
     );
     return mapOwnershipRow(
       requireSingleRow(result.rows, input.threadId, input.scopeId)
@@ -184,5 +215,22 @@ export class PgActiveRunOwnershipRepository {
         )
       );
     });
+  }
+
+  async markTerminal(input: {
+    threadId: string;
+    scopeId: string;
+    runId: string;
+    status: "completed" | "cancelled";
+  }): Promise<ActiveRunOwnership | null> {
+    const result = await this.db.query<OwnershipRow>(
+      `UPDATE active_run_ownership
+       SET status = $4, updated_at = NOW()
+       WHERE thread_id = $1 AND scope_id = $2
+         AND run_id = $3 AND status = 'active'
+       RETURNING ${OWNERSHIP_COLUMNS}`,
+      [input.threadId, input.scopeId, input.runId, input.status]
+    );
+    return result.rows[0] ? mapOwnershipRow(result.rows[0]) : null;
   }
 }

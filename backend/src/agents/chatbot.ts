@@ -4,6 +4,10 @@ import { END, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph
 
 import { getEnv } from "../platform/env.js";
 import { llmGateway } from "../platform/llm-gateway.js";
+import {
+  applyInteractionGovernance,
+  productionInteractionOrchestrator,
+} from "../platform/interaction-runtime.js";
 import { buildConversationContext, getLatestUserMessage } from "../state.js";
 import { chatbotInstructions } from "../prompts.js";
 
@@ -45,4 +49,7 @@ const builder = new StateGraph(MessagesAnnotation)
   .addEdge(START, "chat_response")
   .addEdge("chat_response", END);
 
-export const chatbotGraph = builder.compile();
+export const chatbotGraph = applyInteractionGovernance(
+  builder.compile(),
+  productionInteractionOrchestrator
+);

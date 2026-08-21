@@ -8,7 +8,15 @@
     "mcp_agent": "./src/agents/mcp-agent.ts:mcpAgentGraph"
   },
   "http": {
-    "app": "./src/platform/metrics/metrics-endpoint.ts:metricsApp"
+    "app": "./src/platform/metrics/metrics-endpoint.ts:metricsApp",
+    "configurable_headers": {
+      "includes": [
+        "x-request-id",
+        "x-idempotency-key",
+        "x-active-run-id",
+        "x-active-run-generation"
+      ]
+    }
   },
   "env": ".env"
 }
