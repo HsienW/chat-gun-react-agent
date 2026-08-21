@@ -37,6 +37,9 @@ const STREAM_METHODS = new Set<PropertyKey>([
   "streamEvents",
   "streamLog",
 ]);
+const NATIVE_QUEUE_OWNERSHIP_REQUIRED = "NATIVE_QUEUE_OWNERSHIP_REQUIRED";
+const NATIVE_QUEUE_OWNERSHIP_REQUIRED_DISPOSITION =
+  "native_queue_ownership_required";
 
 type MetricPayload = Record<string, string | number | boolean>;
 
@@ -88,7 +91,7 @@ export interface InteractionOrchestrator {
   readonly isConfigured: boolean;
   beforeRun(input: unknown, config: unknown): Promise<InteractionRunStart>;
   afterRun(
-    start: InteractionRunStart,
+    start: InteractionRunStart | undefined,
     terminalStatus: "completed" | "cancelled"
   ): Promise<void>;
 }
@@ -489,18 +492,26 @@ export function createInteractionOrchestrator(
         throw new InteractionGovernanceRejectedError("POLICY_REJECTED");
       }
 
-      if (!isSupersedingStrategy(effectiveStrategy)) {
+      if (effectiveStrategy === "enqueue") {
         const event = createDecisionEvent({
           context,
           activeOwnership,
           eventType: "interaction_decision",
           strategy: effectiveStrategy,
-          disposition: disposition.action,
+          disposition: NATIVE_QUEUE_OWNERSHIP_REQUIRED_DISPOSITION,
           classification: classification.classification,
-          reasonCode: classification.reasonCode,
+          reasonCode: NATIVE_QUEUE_OWNERSHIP_REQUIRED,
         });
         await recordDecision(config, event);
-        return { configured: true, context, events: [event] };
+        throw new InteractionGovernanceRejectedError(
+          NATIVE_QUEUE_OWNERSHIP_REQUIRED
+        );
+      }
+
+      if (!isSupersedingStrategy(effectiveStrategy)) {
+        throw new InteractionRuntimeConfigurationError(
+          `Unsupported interaction strategy: ${effectiveStrategy}`
+        );
       }
 
       if (!config.decideCancellation) {
@@ -564,7 +575,7 @@ export function createInteractionOrchestrator(
       };
     },
     async afterRun(start, terminalStatus) {
-      if (!start.context || start.ownership?.runId !== start.context.runId) {
+      if (!start?.context || start.ownership?.runId !== start.context.runId) {
         return;
       }
       await ownershipRepository.markTerminal({

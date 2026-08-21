@@ -7,6 +7,8 @@ import {
   applyInteractionGovernance,
   createInteractionOrchestrator,
   createProductionInteractionOrchestrator,
+  InteractionGovernanceRejectedError,
+  type InteractionOrchestrator,
   type InteractionOrchestratorConfig,
 } from "./interaction-runtime.js";
 
@@ -176,11 +178,8 @@ describe("interaction runtime production wrapper", () => {
     );
   });
 
-  it.each([
-    { strategy: "reject" as const, invokesGraph: false },
-    { strategy: "enqueue" as const, invokesGraph: true },
-  ])("applies the $strategy policy path", async ({ strategy, invokesGraph }) => {
-    const dependencies = configuredDependencies(strategy);
+  it("rejects a replacement run when the configured policy rejects", async () => {
+    const dependencies = configuredDependencies("reject");
     const graph = {
       invoke: vi.fn(async (_input: unknown, _config?: unknown) => ({ ok: true })),
     };
@@ -189,27 +188,90 @@ describe("interaction runtime production wrapper", () => {
       createInteractionOrchestrator(dependencies.config)
     );
 
-    const execution = governed.invoke(
-      { messages: ["new input"] },
-      runConfig()
-    );
-    if (strategy === "reject") {
-      await expect(execution).rejects.toMatchObject({
-        name: "InteractionGovernanceRejectedError",
-      });
-    } else {
-      await expect(execution).resolves.toEqual({ ok: true });
-    }
-    expect(graph.invoke).toHaveBeenCalledTimes(invokesGraph ? 1 : 0);
+    await expect(
+      governed.invoke({ messages: ["new input"] }, runConfig())
+    ).rejects.toMatchObject({
+      name: "InteractionGovernanceRejectedError",
+      reasonCode: "POLICY_REJECTED",
+    });
+    expect(graph.invoke).not.toHaveBeenCalled();
     expect(dependencies.ownershipRepository.supersede).not.toHaveBeenCalled();
     expect(dependencies.eventRecorder.record).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "interaction_decision",
         payload: expect.objectContaining({
-          decision: expect.objectContaining({ strategy }),
+          decision: expect.objectContaining({ strategy: "reject" }),
         }),
       })
     );
+  });
+
+  it("fails closed for enqueue until a native queue owns the replacement run", async () => {
+    const dependencies = configuredDependencies("enqueue");
+    const graph = {
+      invoke: vi.fn(async (_input: unknown, _config?: unknown) => ({ ok: true })),
+    };
+    const governed = applyInteractionGovernance(
+      graph,
+      createInteractionOrchestrator(dependencies.config)
+    );
+
+    await expect(
+      governed.invoke({ messages: ["new input"] }, runConfig())
+    ).rejects.toMatchObject({
+      name: "InteractionGovernanceRejectedError",
+      reasonCode: "NATIVE_QUEUE_OWNERSHIP_REQUIRED",
+    });
+    expect(graph.invoke).not.toHaveBeenCalled();
+    expect(dependencies.ownershipRepository.claim).not.toHaveBeenCalled();
+    expect(dependencies.ownershipRepository.supersede).not.toHaveBeenCalled();
+    expect(dependencies.ownershipRepository.markTerminal).not.toHaveBeenCalled();
+    expect(dependencies.eventRecorder.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "interaction_decision",
+        payload: expect.objectContaining({
+          priorRunId: "run-1",
+          generation: 3,
+          decision: {
+            strategy: "enqueue",
+            disposition: "native_queue_ownership_required",
+            classification: "intent_revision",
+            reasonCode: "NATIVE_QUEUE_OWNERSHIP_REQUIRED",
+          },
+        }),
+      })
+    );
+  });
+
+  it("preserves a beforeRun rejection without invoking terminal cleanup", async () => {
+    const beforeRunError = new InteractionGovernanceRejectedError(
+      "POLICY_REJECTED"
+    );
+    const graph = {
+      invoke: vi.fn(async (_input: unknown, _config?: unknown) => ({ ok: true })),
+    };
+    const orchestrator: InteractionOrchestrator = {
+      isConfigured: true,
+      beforeRun: vi.fn(async () => {
+        throw beforeRunError;
+      }),
+      afterRun: vi.fn(async () => undefined),
+    };
+    const governed = applyInteractionGovernance(graph, orchestrator);
+
+    await expect(governed.invoke({}, runConfig())).rejects.toBe(beforeRunError);
+    expect(graph.invoke).not.toHaveBeenCalled();
+    expect(orchestrator.afterRun).not.toHaveBeenCalled();
+  });
+
+  it("ignores terminal cleanup when run start is unavailable", async () => {
+    const dependencies = configuredDependencies("supersede");
+    const orchestrator = createInteractionOrchestrator(dependencies.config);
+
+    await expect(
+      orchestrator.afterRun(undefined, "completed")
+    ).resolves.toBeUndefined();
+    expect(dependencies.ownershipRepository.markTerminal).not.toHaveBeenCalled();
   });
 
   it("emits the generation before stream chunks and marks terminal ownership", async () => {
