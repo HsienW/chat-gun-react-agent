@@ -55,8 +55,10 @@ cp bff/.env.example bff/.env
 | `BFF_LANGGRAPH_API_URL` | `http://localhost:2024` | LangGraph API URL |
 | `BFF_FRONTEND_DIST` | `../frontend/dist` | Frontend build 目錄 |
 | `BFF_ALLOWED_ORIGINS` | 空 | CORS allowlist |
-| `BFF_REQUIRE_AUTH` | `false` | 是否要求 API key／Bearer token |
-| `BFF_API_KEYS` | 空 | 允許的 API keys，以逗號分隔 |
+| `BFF_REQUIRE_AUTH` | `false` | 是否要求 API key／Bearer token；啟用時必須設定 Principal profiles |
+| `BFF_API_KEYS` | 空 | 通常留空；若設定，每個 key 仍需有對應的 Principal profile |
+| `BFF_API_KEY_PRINCIPALS_JSON` | 空 | 以 API key 為索引的 Principal profile JSON |
+| `BFF_LEGACY_HEADER_MODE` | `true` | 是否另外向 Backend 傳送 `x-bff-user-id` |
 | `BFF_MAX_BODY_BYTES` | `52428800` | Request body 上限 |
 | `BFF_UPSTREAM_TIMEOUT_MS` | `120000` | LangGraph 與 metrics upstream timeout |
 | `BFF_RATE_LIMIT_REDIS_URI` | 空 | Redis rate limiter URL |
@@ -72,8 +74,10 @@ Docker Compose 會把 `BFF_MAX_BODY_BYTES` 預設覆寫為 `1048576`（1 MiB）�
 
 ```env
 BFF_REQUIRE_AUTH=true
-BFF_API_KEYS=replace-with-a-long-random-key
+BFF_API_KEY_PRINCIPALS_JSON={"replace-with-a-long-random-key":{"principalId":"local-user","principalType":"user","tenantId":"local","roles":[],"scopes":[]}}
 ```
+
+`BFF_API_KEY_PRINCIPALS_JSON` 必須是單行 JSON object。最外層 key 是 client 使用的 API key；profile 提供 BFF 轉送至 Backend 的可信 Principal 與 tenant context。API key 是 credential，請透過環境變數或 secret manager 提供，不要提交真實值。
 
 Client 可使用任一格式：
 
@@ -87,7 +91,9 @@ Authorization: Bearer replace-with-a-long-random-key
 
 認證會套用至 `/api/langgraph/*` 與 `/api/metrics`。Health、readiness 與 Frontend 靜態檔不要求 API key。
 
-`x-user-id` 與 `x-tenant-id` 目前只用於 request context、audit 與 rate-limit key，不是經過驗證的身份憑證。公開部署時，應由可信 reverse proxy 或 identity layer 驗證使用者後覆寫這些 headers，不能直接信任網際網路 client 傳入的值。
+啟用認證時，每個 API key 都必須在 `BFF_API_KEY_PRINCIPALS_JSON` 中有對應 profile；只設定 `BFF_API_KEYS` 會回傳 `401`。一般設定可讓 `BFF_API_KEYS` 保持空白。
+
+BFF 不信任或轉送 client 傳入的 `x-user-id`／`x-tenant-id`。它會從驗證成功的 profile 產生 `x-bff-principal-id`、`x-bff-principal-type`、`x-bff-tenant-id`、`x-bff-roles`、`x-bff-scopes`、`x-bff-auth-source` 與 `x-bff-authenticated-at`。需要 `x-bff-user-id` 時可保留 `BFF_LEGACY_HEADER_MODE=true`。
 
 ## CORS
 
@@ -101,7 +107,7 @@ BFF_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
 
 ## Rate limiting
 
-設定 `BFF_RATE_LIMIT_REDIS_URI` 後，BFF 會分別計算 user 與 socket-peer IP 配額；任一維度超限就回傳 `429`。
+設定 `BFF_RATE_LIMIT_REDIS_URI` 後，BFF 會分別計算已解析 Principal 與 socket-peer IP 配額；任一維度超限就回傳 `429`。
 
 ```env
 BFF_RATE_LIMIT_REDIS_URI=redis://localhost:6379
@@ -127,11 +133,10 @@ BFF 會移除 hop-by-hop headers，只轉送明確允許的 request headers。�
 
 - `accept`、`accept-language`、`content-type`、`user-agent`
 - `authorization`、`x-api-key`
-- `x-request-id`、`x-user-id`、`x-tenant-id`
 - `x-idempotency-key`
 - `traceparent`、`tracestate`
 
-W3C Trace Context 會原樣傳給 Backend，供 OpenTelemetry 建立跨服務 trace。
+BFF 會設定 `x-request-id` 及驗證後的 `x-bff-*` identity headers；client 無法用同名 headers 覆寫這些值。W3C Trace Context 會原樣傳給 Backend，供 OpenTelemetry 建立跨服務 trace。
 
 ## Upload validation
 
@@ -153,4 +158,4 @@ W3C Trace Context 會原樣傳給 Backend，供 OpenTelemetry 建立跨服務 tr
 
 ## Audit logs
 
-BFF 在 request 完成時輸出 JSON audit log，內容包括 request ID、method、path、status、duration、user、tenant 與 client IP。Log 不應被當作身份驗證依據，也不應額外加入 authorization header、API key 或完整 request body。
+BFF 在 request 完成時輸出 JSON audit log，內容包括 request ID、method、path、status、duration、已解析的 Principal、tenant 與 client IP。Log 不應額外加入 authorization header、API key 或完整 request body。

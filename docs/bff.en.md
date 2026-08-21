@@ -55,8 +55,10 @@ cp bff/.env.example bff/.env
 | `BFF_LANGGRAPH_API_URL` | `http://localhost:2024` | LangGraph API URL |
 | `BFF_FRONTEND_DIST` | `../frontend/dist` | Frontend build directory |
 | `BFF_ALLOWED_ORIGINS` | Empty | CORS allowlist |
-| `BFF_REQUIRE_AUTH` | `false` | Whether an API key or Bearer token is required |
-| `BFF_API_KEYS` | Empty | Accepted comma-separated API keys |
+| `BFF_REQUIRE_AUTH` | `false` | Whether an API key or Bearer token is required; principal profiles are required when enabled |
+| `BFF_API_KEYS` | Empty | Usually left empty; when set, every key still needs a corresponding principal profile |
+| `BFF_API_KEY_PRINCIPALS_JSON` | Empty | API-key-indexed principal profile JSON |
+| `BFF_LEGACY_HEADER_MODE` | `true` | Whether to also forward `x-bff-user-id` to the Backend |
 | `BFF_MAX_BODY_BYTES` | `52428800` | Request body size limit |
 | `BFF_UPSTREAM_TIMEOUT_MS` | `120000` | Upstream timeout for LangGraph and metrics requests |
 | `BFF_RATE_LIMIT_REDIS_URI` | Empty | Redis rate limiter URL |
@@ -72,8 +74,10 @@ Enable authentication:
 
 ```env
 BFF_REQUIRE_AUTH=true
-BFF_API_KEYS=replace-with-a-long-random-key
+BFF_API_KEY_PRINCIPALS_JSON={"replace-with-a-long-random-key":{"principalId":"local-user","principalType":"user","tenantId":"local","roles":[],"scopes":[]}}
 ```
+
+`BFF_API_KEY_PRINCIPALS_JSON` must be a single-line JSON object. Each top-level key is an API key used by a client, and its profile supplies the trusted principal and tenant context forwarded to the Backend. API keys are credentials; provide them through environment variables or a secret manager and never commit real values.
 
 Clients may use either format:
 
@@ -87,7 +91,9 @@ Authorization: Bearer replace-with-a-long-random-key
 
 Authentication applies to `/api/langgraph/*` and `/api/metrics`. Health, readiness, and frontend static files do not require an API key.
 
-`x-user-id` and `x-tenant-id` are currently used only for request context, audit logs, and rate-limit keys. They are not verified identity credentials. In public deployments, a trusted reverse proxy or identity layer must authenticate the user and overwrite these headers; values supplied directly by internet clients must not be trusted.
+When authentication is enabled, every API key must have a matching profile in `BFF_API_KEY_PRINCIPALS_JSON`; setting only `BFF_API_KEYS` returns `401`. A typical setup leaves `BFF_API_KEYS` empty.
+
+The BFF neither trusts nor forwards client-supplied `x-user-id` or `x-tenant-id`. It derives `x-bff-principal-id`, `x-bff-principal-type`, `x-bff-tenant-id`, `x-bff-roles`, `x-bff-scopes`, `x-bff-auth-source`, and `x-bff-authenticated-at` from the authenticated profile. Keep `BFF_LEGACY_HEADER_MODE=true` only when `x-bff-user-id` is required.
 
 ## CORS
 
@@ -101,7 +107,7 @@ When `BFF_ALLOWED_ORIGINS` is empty, the BFF accepts any origin. Production depl
 
 ## Rate Limiting
 
-When `BFF_RATE_LIMIT_REDIS_URI` is configured, the BFF tracks separate quotas for the user and the socket peer IP. A request returns `429` when either quota is exceeded.
+When `BFF_RATE_LIMIT_REDIS_URI` is configured, the BFF tracks separate quotas for the resolved principal and the socket peer IP. A request returns `429` when either quota is exceeded.
 
 ```env
 BFF_RATE_LIMIT_REDIS_URI=redis://localhost:6379
@@ -127,11 +133,10 @@ The BFF removes hop-by-hop headers and forwards only explicitly allowed request 
 
 - `accept`, `accept-language`, `content-type`, `user-agent`
 - `authorization`, `x-api-key`
-- `x-request-id`, `x-user-id`, `x-tenant-id`
 - `x-idempotency-key`
 - `traceparent`, `tracestate`
 
-W3C Trace Context is forwarded unchanged to the backend so OpenTelemetry can create cross-service traces.
+The BFF sets `x-request-id` and the authenticated `x-bff-*` identity headers; clients cannot override these values with same-name headers. W3C Trace Context is forwarded unchanged to the Backend so OpenTelemetry can create cross-service traces.
 
 ## Upload Validation
 
@@ -153,4 +158,4 @@ If an error occurs before an SSE stream starts, the BFF returns a JSON error env
 
 ## Audit Logs
 
-When a request completes, the BFF writes a JSON audit log containing the request ID, method, path, status, duration, user, tenant, and client IP. Logs must not be treated as proof of identity, and must not include authorization headers, API keys, or complete request bodies.
+When a request completes, the BFF writes a JSON audit log containing the request ID, method, path, status, duration, resolved principal, tenant, and client IP. Logs must not include authorization headers, API keys, or complete request bodies.
