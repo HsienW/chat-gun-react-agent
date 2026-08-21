@@ -53,6 +53,7 @@ export const TASK_EVENT_TYPES = [
   'input_classification_tentative',
   'clarification_requested',
   'clarification_resumed',
+  'interaction_decision',
 ] as const;
 
 export type TaskEventType = (typeof TASK_EVENT_TYPES)[number];

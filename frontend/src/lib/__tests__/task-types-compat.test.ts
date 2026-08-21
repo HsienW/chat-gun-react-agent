@@ -64,6 +64,7 @@ describe('task type compatibility', () => {
       'input_classification_tentative',
       'clarification_requested',
       'clarification_resumed',
+      'interaction_decision',
     ]);
   });
 

@@ -6,11 +6,18 @@ import { WelcomeScreen } from '@/components/WelcomeScreen';
 import { ChatMessagesView } from '@/components/ChatMessagesView';
 import {
   extractAgentRuntimeEvents,
+  extractTaskEventActiveRunHint,
   extractTaskEventGeneration,
   extractWeatherClarificationInterruptToolResult,
   isLangGraphInterruptEvent,
   runtimeEventToProcessedEvent,
 } from '@/lib/agent-runtime-events';
+import {
+  createInteractionMetadataFetch,
+  createInteractionRequestMetadata,
+  withInteractionRequestMetadata,
+} from '@/lib/interaction-request-metadata';
+import type { InteractionActiveRunHint } from '@/lib/interaction-request-metadata';
 import { getAgentRunConfig } from '@/lib/agent-run-config';
 import { FRONTEND_ERROR_MESSAGES } from '@/lib/error-messages';
 import {
@@ -140,6 +147,11 @@ export default function App() {
   const messagesRef = useRef<Message[]>([]);
   const streamActivityStateRef = useRef(streamActivityState);
   const clarificationResumePendingRef = useRef(false);
+  const activeRunHintRef = useRef<InteractionActiveRunHint | undefined>(undefined);
+  const interactionMetadataFetch = useMemo(
+    () => createInteractionMetadataFetch(),
+    []
+  );
 
   useEffect(() => {
     selectedAgentIdRef.current = selectedAgentId;
@@ -184,6 +196,7 @@ export default function App() {
         setCancelledMessage(null);
         setWeatherClarificationMessages(null);
         clarificationResumePendingRef.current = false;
+        activeRunHintRef.current = undefined;
       }
     },
     [selectedAgentId, validateAgentId]
@@ -245,6 +258,15 @@ export default function App() {
   }, []);
 
   const handleStreamUpdate = useCallback((event: Record<string, unknown>) => {
+    const activeRunHint = extractTaskEventActiveRunHint(event);
+    if (
+      activeRunHint &&
+      (!activeRunHintRef.current ||
+        activeRunHint.generation >= activeRunHintRef.current.generation)
+    ) {
+      activeRunHintRef.current = activeRunHint;
+    }
+
     const isInterruptEvent = isLangGraphInterruptEvent(event);
     if (isInterruptEvent) {
       clarificationResumePendingRef.current = false;
@@ -292,6 +314,7 @@ export default function App() {
     onError: handleStreamError,
     onFinish: handleStreamFinish,
     onUpdateEvent: handleStreamUpdate,
+    callerOptions: { fetch: interactionMetadataFetch },
   });
 
   useEffect(() => {
@@ -365,19 +388,24 @@ export default function App() {
           id: crypto.randomUUID(),
         },
       ];
+      const submitOptions = withInteractionRequestMetadata(
+        {},
+        createInteractionRequestMetadata(activeRunHintRef.current)
+      );
 
       if (validAgentId === AgentId.DEEP_RESEARCHER) {
         const runConfig = getAgentRunConfig(validAgentId, effort);
 
-        thread.submit({
-          messages: newMessages,
-          ...runConfig,
-          reasoning_model: model,
-        });
+        thread.submit(
+          {
+            messages: newMessages,
+            ...runConfig,
+            reasoning_model: model,
+          },
+          submitOptions
+        );
       } else {
-        thread.submit({
-          messages: newMessages,
-        });
+        thread.submit({ messages: newMessages }, submitOptions);
       }
     },
     [
@@ -399,9 +427,13 @@ export default function App() {
       setCancelledMessage(null);
       clarificationResumePendingRef.current = true;
 
-      thread.submit(null, {
-        command: { resume: resumeValue },
-      });
+      thread.submit(
+        null,
+        withInteractionRequestMetadata(
+          { command: { resume: resumeValue } },
+          createInteractionRequestMetadata(activeRunHintRef.current)
+        )
+      );
     },
     [rateLimitRetryAfter, thread]
   );

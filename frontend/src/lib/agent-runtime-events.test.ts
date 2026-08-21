@@ -5,6 +5,7 @@ import {
   extractDirectAgentRuntimeEvents,
   extractNestedAgentRuntimeEvents,
   extractNodeAdapterRuntimeEvents,
+  extractTaskEventActiveRunHint,
   extractTaskEventGeneration,
   extractWeatherClarificationInterruptToolResult,
   isLangGraphInterruptEvent,
@@ -21,6 +22,44 @@ describe('extractTaskEventGeneration', () => {
     ).toBe(7);
     expect(
       extractTaskEventGeneration({ payload: { generation: '7' } })
+    ).toBeUndefined();
+  });
+
+  it('extracts the authoritative replacement run hint from a nested interaction event', () => {
+    expect(
+      extractTaskEventActiveRunHint({
+        interaction_runtime: {
+          taskEvent: {
+            eventType: 'superseded',
+            payload: {
+              priorRunId: 'run-1',
+              replacementRunId: 'run-2',
+              generation: 8,
+            },
+          },
+        },
+      })
+    ).toEqual({ runId: 'run-2', generation: 8 });
+  });
+
+  it('rejects incomplete or non-positive active-run hints', () => {
+    expect(
+      extractTaskEventActiveRunHint({
+        eventType: 'queued',
+        payload: { priorRunId: 'run-1', generation: 0 },
+      })
+    ).toBeUndefined();
+    expect(
+      extractTaskEventActiveRunHint({
+        eventType: 'queued',
+        payload: { generation: 1 },
+      })
+    ).toBeUndefined();
+    expect(
+      extractTaskEventActiveRunHint({
+        eventType: 'superseded',
+        payload: { replacementRunId: '../../invalid', generation: 2 },
+      })
     ).toBeUndefined();
   });
 });

@@ -274,5 +274,7 @@ export function taskEventReducer<TStep extends string>(
         'running',
         event.createdAt
       );
+    case 'interaction_decision':
+      return applyEventMetadata(currentState, event, 'interaction_decision');
   }
 }

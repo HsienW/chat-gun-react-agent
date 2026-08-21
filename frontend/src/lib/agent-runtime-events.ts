@@ -2,6 +2,7 @@ import {
   RUNTIME_EVENT_LABELS,
   RUNTIME_EVENT_NODE_KEYS,
 } from '@/lib/runtime-event-config';
+import { isInteractionActiveRunHint } from '@/lib/interaction-request-metadata';
 import type {
   AgentRuntimeEvent,
   ContextSource,
@@ -22,6 +23,11 @@ export type WeatherClarificationInterruptToolResult = {
   toolName: 'current_weather' | 'weather_forecast';
   toolCallId: string;
   content: string;
+};
+
+export type TaskEventActiveRunHint = {
+  runId: string;
+  generation: number;
 };
 
 const KNOWN_RUNTIME_EVENT_TYPES = new Set<AgentRuntimeEvent['type']>([
@@ -121,7 +127,13 @@ function findTaskEventGeneration(value: unknown, depth: number): number | undefi
     if (generation !== undefined) return generation;
   }
 
-  for (const key of ['data', 'taskEvent', 'task_event', 'payload']) {
+  for (const key of [
+    'interaction_runtime',
+    'data',
+    'taskEvent',
+    'task_event',
+    'payload',
+  ]) {
     const generation = findTaskEventGeneration(record[key], depth + 1);
     if (generation !== undefined) return generation;
   }
@@ -136,6 +148,52 @@ function findTaskEventGeneration(value: unknown, depth: number): number | undefi
 
 export function extractTaskEventGeneration(value: unknown): number | undefined {
   return findTaskEventGeneration(value, 0);
+}
+
+function findTaskEventActiveRunHint(
+  value: unknown,
+  depth: number
+): TaskEventActiveRunHint | undefined {
+  if (depth > 5) return undefined;
+  const record = asRecord(value) ?? parseJsonRecord(value);
+  if (!record) return undefined;
+
+  const payload = asRecord(record.payload);
+  if (typeof record.eventType === 'string' && payload) {
+    const generation = asPositiveGeneration(payload.generation);
+    const runId =
+      typeof payload.replacementRunId === 'string' && payload.replacementRunId
+        ? payload.replacementRunId
+        : typeof payload.priorRunId === 'string' && payload.priorRunId
+          ? payload.priorRunId
+          : undefined;
+    const hint = { runId, generation };
+    if (isInteractionActiveRunHint(hint)) return hint;
+  }
+
+  for (const key of [
+    'interaction_runtime',
+    'data',
+    'taskEvent',
+    'task_event',
+    'payload',
+  ]) {
+    const hint = findTaskEventActiveRunHint(record[key], depth + 1);
+    if (hint) return hint;
+  }
+  if (Array.isArray(record.events)) {
+    for (const event of record.events) {
+      const hint = findTaskEventActiveRunHint(event, depth + 1);
+      if (hint) return hint;
+    }
+  }
+  return undefined;
+}
+
+export function extractTaskEventActiveRunHint(
+  value: unknown
+): TaskEventActiveRunHint | undefined {
+  return findTaskEventActiveRunHint(value, 0);
 }
 
 function isSerializablePrimitive(value: unknown): boolean {

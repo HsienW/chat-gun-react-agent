@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type StreamOptions = {
+  callerOptions?: { fetch?: typeof fetch };
   onError?: (error: unknown) => void;
   onFinish?: (event: unknown) => void;
   onUpdateEvent?: (event: Record<string, unknown>) => void;
@@ -224,6 +225,46 @@ describe('App stream activity state', () => {
     );
   });
 
+  it('originates per-submit metadata and carries the latest authoritative run hint', () => {
+    render(<App />);
+
+    act(() => {
+      mocks.options?.onUpdateEvent?.({
+        interaction_runtime: {
+          taskEvent: {
+            eventType: 'superseded',
+            payload: {
+              priorRunId: 'run-1',
+              replacementRunId: 'run-2',
+              generation: 2,
+            },
+          },
+        },
+      });
+    });
+    fireEvent.click(screen.getByText('submit-next'));
+
+    expect(mocks.options?.callerOptions?.fetch).toEqual(expect.any(Function));
+    expect(mocks.thread.submit).toHaveBeenCalledWith(
+      expect.objectContaining({ messages: expect.any(Array) }),
+      expect.objectContaining({
+        config: {
+          configurable: {
+            clientInteractionMetadata: {
+              requestId: expect.stringMatching(
+                /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+              ),
+              idempotencyKey: expect.stringMatching(
+                /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+              ),
+              activeRunHint: { runId: 'run-2', generation: 2 },
+            },
+          },
+        },
+      })
+    );
+  });
+
   it('resolves pending archive when the final assistant message id appears after finish', () => {
     const { rerender } = render(<App />);
 
@@ -257,14 +298,25 @@ describe('App stream activity state', () => {
     fireEvent.click(screen.getByText('resume-candidate'));
 
     expect(mocks.thread.submit).toHaveBeenCalledTimes(1);
-    expect(mocks.thread.submit).toHaveBeenCalledWith(null, {
-      command: {
-        resume: {
-          userReply: 'Springfield, Illinois, United States',
-          candidateIndex: 1,
+    expect(mocks.thread.submit).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({
+        command: {
+          resume: {
+            userReply: 'Springfield, Illinois, United States',
+            candidateIndex: 1,
+          },
         },
-      },
-    });
+        config: {
+          configurable: {
+            clientInteractionMetadata: expect.objectContaining({
+              requestId: expect.any(String),
+              idempotencyKey: expect.any(String),
+            }),
+          },
+        },
+      })
+    );
   });
 
   it('resumes cancellation with a structured cancel signal', () => {
@@ -273,9 +325,20 @@ describe('App stream activity state', () => {
     emitWeatherClarificationInterrupt();
     fireEvent.click(screen.getByText('resume-cancel'));
 
-    expect(mocks.thread.submit).toHaveBeenCalledWith(null, {
-      command: { resume: { cancel: true } },
-    });
+    expect(mocks.thread.submit).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({
+        command: { resume: { cancel: true } },
+        config: {
+          configurable: {
+            clientInteractionMetadata: expect.objectContaining({
+              requestId: expect.any(String),
+              idempotencyKey: expect.any(String),
+            }),
+          },
+        },
+      })
+    );
   });
 
   it('clears stale clarification once on the first non-interrupt resume event', () => {
