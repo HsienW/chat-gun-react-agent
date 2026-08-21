@@ -72,13 +72,13 @@
 
 ## Phase 7：Production Entrypoint 與 Metadata Origin（backend + frontend）
 
-- [ ] 7.1 建立 `backend/src/platform/interaction-runtime.ts`：`createInteractionOrchestrator(config)` 組合 policy/ownership/classify/cancel-decision/events + audit/metrics；`applyInteractionGovernance(graph, orchestrator)` 包裝 compiled graph（run-start interception + run-end terminal ownership callback）
-- [ ] 7.2 run-start interception：讀 `RunnableConfig.configurable`（threadId/runId/requestId/idempotency key/active-run hint/generation），執行 load policy → ownership CAS → classify → cancel dispatch → event/audit/OTel；client metadata 為 hint，以 `active_run_ownership` 為權威
-- [ ] 7.3 run-end terminal ownership callback：run 進入 terminal（completed/failed/cancelled）時將 `active_run_ownership.status` 轉為 completed/cancelled（保留 generation 供 audit）
-- [ ] 7.4 將 `applyInteractionGovernance` 套用至既有 graphs（chatbot/deep_researcher/math_agent/mcp_agent compile 後）；未配置 `InteractionPolicy` 時為 no-op 回退
-- [ ] 7.5 單元測試：orchestrator 依 config 分類並套用 policy（reject/supersede/enqueue 路徑）、terminal ownership callback、未配置 policy 回退、client hint 不被視為權威
-- [ ] 7.6 frontend 產生 idempotency key（client UUID v4）並以 `x-idempotency-key` 送出；追蹤最近互動事件之 runId + generation，於後續 request 以 `x-active-run-id`/`x-active-run-generation` hint 送出（非權威）
-- [ ] 7.7 單元測試：metadata origin 產生/追蹤/送出、非權威 hint 語意、正常串流回歸
+- [x] 7.1 建立 `backend/src/platform/interaction-runtime.ts`：`createInteractionOrchestrator(config)` 組合 policy/ownership/classify/cancel-decision/events + audit/metrics；`applyInteractionGovernance(graph, orchestrator)` 包裝 compiled graph（run-start interception + run-end terminal ownership callback）
+- [x] 7.2 run-start interception：讀 `RunnableConfig.configurable`（threadId/runId/requestId/idempotency key/active-run hint/generation），執行 load policy → ownership CAS → classify → cancel dispatch → event/audit/OTel；client metadata 為 hint，以 `active_run_ownership` 為權威
+- [x] 7.3 run-end terminal ownership callback：run 進入 terminal（completed/failed/cancelled）時將 `active_run_ownership.status` 轉為 completed/cancelled（保留 generation 供 audit）
+- [x] 7.4 將 `applyInteractionGovernance` 套用至既有 graphs（chatbot/deep_researcher/math_agent/mcp_agent compile 後）；未配置 `InteractionPolicy` 時為 no-op 回退
+- [x] 7.5 單元測試：orchestrator 依 config 分類並套用 policy（reject/supersede/enqueue 路徑）、terminal ownership callback、未配置 policy 回退、client hint 不被視為權威
+- [x] 7.6 frontend 產生 idempotency key（client UUID v4）並以 `x-idempotency-key` 送出；追蹤最近互動事件之 runId + generation，於後續 request 以 `x-active-run-id`/`x-active-run-generation` hint 送出（非權威）
+- [x] 7.7 單元測試：metadata origin 產生/追蹤/送出、非權威 hint 語意、正常串流回歸
 
 **驗收：** `cd backend && npx vitest run src/platform/interaction-runtime.test.ts` 與 `cd frontend && npm run test` 通過
 
@@ -90,7 +90,7 @@
 - [x] 8.4 `openspec validate add-agent-interaction-runtime --strict` 通過
 - [x] 8.5 確認無硬編碼業務句型／使用者輸入白名單、無自訂 queue/scheduler、無第二 Run Runtime
 - [x] 8.6 確認互動事件與 audit 遵循 redaction（無 raw credential/unmasked PII）
-- [ ] 8.7 確認 superseded run 延遲輸出不覆蓋目前 UI 狀態（generation 隔離端到端驗證：backend 標記 generation → BFF 透傳 → frontend 忽略低 generation stale chunk）
-- [ ] 8.8 確認未配置 policy 時 active-input runtime 路徑回退既有行為（端到端降級回歸）
+- [x] 8.7 確認 superseded run 延遲輸出不覆蓋目前 UI 狀態（generation 隔離端到端驗證：backend 標記 generation → BFF 透傳 → frontend 忽略低 generation stale chunk）
+- [x] 8.8 確認未配置 policy 時 active-input runtime 路徑回退既有行為（端到端降級回歸）
 
 **驗收：** Backend lint/test/build、BFF build/test、Frontend lint/test/build 全數通過，OpenSpec strict validation 0 issues，8.7／8.8 端到端驗證通過
