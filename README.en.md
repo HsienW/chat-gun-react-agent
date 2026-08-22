@@ -12,7 +12,8 @@
 
 <p align="center">
   <a href="./README.en.md">English</a> |
-  <a href="./README.md">繁體中文</a>
+  <a href="./README.md">繁體中文</a> |
+  <a href="./README.zh-CN.md">简体中文</a>
 </p>
 
 Chat Gun React Agent is a full-stack agent chat application built with React, TypeScript, and LangGraph JS. It supports multi-agent conversations, streamed responses, tool calling, image input, and human-in-the-loop workflows, with a BFF that manages API traffic between the browser and the LangGraph runtime.
