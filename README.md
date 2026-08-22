@@ -12,7 +12,8 @@
 
 <p align="center">
   <a href="./README.en.md">English</a> |
-  <a href="./README.md">繁體中文</a>
+  <a href="./README.md">繁體中文</a> |
+  <a href="./README.zh-CN.md">简体中文</a>
 </p>
 
 Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 建構的全端 Agent Chat 應用。它支援多 Agent 對話、串流回覆、Tool Calling、圖片輸入與 Human-in-the-Loop，並透過 BFF 統一處理瀏覽器與 LangGraph Runtime 之間的 API 流量。
