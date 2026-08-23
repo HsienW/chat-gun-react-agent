@@ -1,6 +1,10 @@
 # Chat Gun React Agent
 
-[![License](https://img.shields.io/github/license/HsienW/chat-gun-react-agent?color=22C55E)](./LICENSE)
+<p align="center">
+  <img src="./assets/chat-gun-logo.jpg" alt="chat-gun" width="1024" />
+</p>
+
+[![License](https://img.shields.io/badge/License-Apache%202.0-22C55E)](./LICENSE)
 [![LangGraph](https://img.shields.io/badge/LangGraph-JS-06B6D4)](https://langchain-ai.github.io/langgraphjs/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Observability-8A7600)](https://opentelemetry.io/)
 [![MCP](https://img.shields.io/badge/MCP-Protocol-111827)](https://modelcontextprotocol.io/)
@@ -40,19 +44,19 @@ Chat Gun React Agent 是一套以 React、TypeScript 与 LangGraph JS 构建的�
 ## Demo
 
 <p align="center">
-  <img src="./chat-gun-demo.gif" alt="Chat Gun React Agent demo" width="1280" />
+  <img src="./assets/chat-gun-demo.gif" alt="Chat Gun React Agent demo" width="1280" />
 </p>
 
 <p align="center">
-  <img src="./chat-gun-01.png" alt="Chat home screen" width="1280" />
+  <img src="./assets/chat-gun-01.png" alt="Chat home screen" width="1280" />
 </p>
 
 <p align="center">
-  <img src="./chat-gun-02.png" alt="Agent response and activity" width="1280" />
+  <img src="./assets/chat-gun-02.png" alt="Agent response and activity" width="1280" />
 </p>
 
 <p align="center">
-  <img src="./chat-gun-03.png" alt="Tool-assisted agent result" width="1280" />
+  <img src="./assets/chat-gun-03.png" alt="Tool-assisted agent result" width="1280" />
 </p>
 
 ## 架构
