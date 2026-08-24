@@ -20,7 +20,7 @@
   <a href="./README.zh-CN.md">简体中文</a>
 </p>
 
-Chat Gun React Agent 是一套以 React、TypeScript 与 LangGraph JS 构建的全端 Agent Chat 应用。它支持多 Agent 对话、串流回复、Tool Calling、图片输入与 Human-in-the-Loop，并通过 BFF 统一处理浏览器与 LangGraph Runtime 之间的 API 流量。
+Chat Gun React Agent 是一套以 React、TypeScript 与 LangGraph JS 构建的全栈 Agent Chat 应用。它支持多 Agent 对话、串流回复、Tool Calling、图片输入与 Human-in-the-Loop，并通过 BFF 统一处理浏览器与 LangGraph Runtime 之间的 API 流量。
 
 ## 核心功能
 
@@ -39,7 +39,7 @@ Chat Gun React Agent 是一套以 React、TypeScript 与 LangGraph JS 构建的�
 - **Observability & Evaluation**：提供 Metrics 与 OpenTelemetry，并可启用 Opik tracing、versioned datasets 与 experiments 来追踪及评估 Agent 行为。
 
 > 📌
-> 预设仅适用于本机开发。公开部署前，请启用 Authentication、设定明确的 CORS allowlist、妥善管理 Secrets 与数据库凭证，并依部署架构配置共享 Rate limiting、TLS 与 Reverse Proxy。若需要跨重启或多实例恢复 Agent 执行，请改用 durable checkpointer。
+> 默认仅适用于本机开发。公开部署前，请启用 Authentication、设定明确的 CORS allowlist、妥善管理 Secrets 与数据库凭证，并依部署架构配置共享 Rate limiting、TLS 与 Reverse Proxy。若需要跨重启或多实例恢复 Agent 执行，请改用 durable checkpointer。
 
 ## Demo
 
