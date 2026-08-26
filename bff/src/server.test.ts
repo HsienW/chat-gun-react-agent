@@ -309,6 +309,57 @@ describe("BFF LangGraph stream proxy", () => {
     );
   });
 
+  it("forwards the client active-run hint without making an ownership decision", async () => {
+    let upstreamHeaders: http.IncomingHttpHeaders = {};
+    await withServer(
+      (req, res) => {
+        upstreamHeaders = req.headers;
+        res.end("ok");
+      },
+      async (upstream) => {
+        await withBff(createTestConfig(upstream.url), async (bff) => {
+          const response = await fetch(`${bff.url}/api/langgraph/runs`, {
+            headers: {
+              "x-active-run-id": "run-current-1",
+              "x-active-run-generation": "42",
+            },
+          });
+
+          assert.equal(response.status, 200);
+          assert.equal(upstreamHeaders["x-active-run-id"], "run-current-1");
+          assert.equal(upstreamHeaders["x-active-run-generation"], "42");
+        });
+      }
+    );
+  });
+
+  it("rejects incomplete or malformed active-run hints before proxying", async () => {
+    let upstreamCalls = 0;
+    await withServer(
+      (_req, res) => {
+        upstreamCalls += 1;
+        res.end("ok");
+      },
+      async (upstream) => {
+        await withBff(createTestConfig(upstream.url), async (bff) => {
+          const incomplete = await fetch(`${bff.url}/api/langgraph/runs`, {
+            headers: { "x-active-run-id": "run-current-1" },
+          });
+          const malformed = await fetch(`${bff.url}/api/langgraph/runs`, {
+            headers: {
+              "x-active-run-id": "run-current-1",
+              "x-active-run-generation": "0",
+            },
+          });
+
+          assert.equal(incomplete.status, 400);
+          assert.equal(malformed.status, 400);
+          assert.equal(upstreamCalls, 0);
+        });
+      }
+    );
+  });
+
   it("emits canonical trusted headers from the resolver and ignores raw identity", async () => {
     let upstreamHeaders: http.IncomingHttpHeaders = {};
     await withServer(
@@ -419,6 +470,8 @@ describe("BFF LangGraph stream proxy", () => {
         assert.equal(response.status, 204);
         assert.match(allowedHeaders ?? "", /x-idempotency-key/i);
         assert.match(allowedHeaders ?? "", /idempotency-key/i);
+        assert.match(allowedHeaders ?? "", /x-active-run-id/i);
+        assert.match(allowedHeaders ?? "", /x-active-run-generation/i);
       }
     );
   });
@@ -502,6 +555,28 @@ describe("BFF LangGraph stream proxy", () => {
 
           assert.equal(response.status, 200);
           assert.equal(text, "data: one\n\ndata: two\n\n");
+        });
+      }
+    );
+  });
+
+  it("passes task event generation through without modification", async () => {
+    const frame = [
+      "event: task_event",
+      'data: {"eventType":"superseded","payload":{"generation":42}}',
+      "",
+      "",
+    ].join("\n");
+
+    await withServer(
+      (_req, res) => {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(frame);
+      },
+      async (upstream) => {
+        await withBff(createTestConfig(upstream.url), async (bff) => {
+          const response = await fetch(`${bff.url}/api/langgraph/runs/stream`);
+          assert.equal(await response.text(), frame);
         });
       }
     );

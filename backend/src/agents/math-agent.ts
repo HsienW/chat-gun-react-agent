@@ -4,6 +4,10 @@ import { END, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph
 
 import { getEnv } from "../platform/env.js";
 import { llmGateway } from "../platform/llm-gateway.js";
+import {
+  applyInteractionGovernance,
+  productionInteractionOrchestrator,
+} from "../platform/interaction-runtime.js";
 import { mathSystemMessage } from "../prompts.js";
 import { isHumanMessage } from "../state.js";
 import { calculatorTool } from "../tools/calculator.js";
@@ -71,4 +75,7 @@ const builder = new StateGraph(MessagesAnnotation)
   .addEdge(START, "call_model")
   .addEdge("call_model", END);
 
-export const mathAgentGraph = builder.compile();
+export const mathAgentGraph = applyInteractionGovernance(
+  builder.compile(),
+  productionInteractionOrchestrator
+);

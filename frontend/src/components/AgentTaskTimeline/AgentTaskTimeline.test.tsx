@@ -101,4 +101,22 @@ describe('AgentTaskTimeline', () => {
     expect(screen.getByText('Stream unavailable')).toBeInTheDocument();
     expect(screen.getByText('extract_intent')).toBeInTheDocument();
   });
+
+  it('renders structured interaction status without exposing raw input', () => {
+    render(
+      <AgentTaskTimeline
+        task={createTask({
+          status: 'rollback_requested',
+          metadata: {
+            interactionState: 'compensation_waiting',
+            inputDigest: 'sha256-only',
+          },
+        })}
+      />
+    );
+
+    expect(screen.getByText('Rollback requested')).toBeInTheDocument();
+    expect(screen.getByText('Compensation waiting')).toBeInTheDocument();
+    expect(screen.queryByText('sha256-only')).not.toBeInTheDocument();
+  });
 });

@@ -137,6 +137,78 @@ describe('taskEventReducer', () => {
     expect(result?.status).toBe('running');
   });
 
+  it.each([
+    ['cancelling', 'cancelling'],
+    ['cancelled', 'cancelled'],
+    ['superseded', 'superseded'],
+    ['rollback_requested', 'rollback_requested'],
+    ['cancelled_after_commit', 'cancelled_after_commit'],
+    ['manual_intervention_required', 'manual_intervention_required'],
+  ] as const)('maps interaction event %s to task status %s', (eventType, status) => {
+    const result = taskEventReducer(
+      createTask(),
+      createEvent(eventType, { generation: 3 })
+    );
+
+    expect(result?.status).toBe(status);
+    expect(result?.metadata.activeGeneration).toBe(3);
+  });
+
+  it('tracks queued and clarification interaction states from structured events', () => {
+    const queued = taskEventReducer(
+      createTask(),
+      createEvent('queued', { generation: 2 })
+    );
+    const clarification = taskEventReducer(
+      queued,
+      createEvent('clarification_requested', {
+        generation: 2,
+        confirmationType: 'input_classification',
+      })
+    );
+    const resumed = taskEventReducer(
+      clarification,
+      createEvent('clarification_resumed', { generation: 2 })
+    );
+
+    expect(queued?.metadata.interactionState).toBe('queued');
+    expect(clarification?.status).toBe('waiting_confirmation');
+    expect(clarification?.metadata).toEqual(
+      expect.objectContaining({
+        interactionState: 'clarification_requested',
+        confirmationType: 'input_classification',
+      })
+    );
+    expect(resumed?.status).toBe('running');
+    expect(resumed?.metadata.interactionState).toBe('clarification_resumed');
+  });
+
+  it('represents tentative classification as an explicit confirmation state', () => {
+    const result = taskEventReducer(
+      createTask(),
+      createEvent('input_classification_tentative', {
+        generation: 4,
+        confirmationType: 'input_classification',
+      })
+    );
+
+    expect(result?.status).toBe('waiting_confirmation');
+    expect(result?.metadata.confirmationType).toBe('input_classification');
+  });
+
+  it('ignores lower-generation task events without overwriting current UI state', () => {
+    const state = createTask({
+      status: 'running',
+      metadata: { activeGeneration: 5, interactionState: 'clarification_resumed' },
+    });
+    const stale = taskEventReducer(
+      state,
+      createEvent('superseded', { generation: 4 })
+    );
+
+    expect(stale).toBe(state);
+  });
+
   it('safely ignores unknown event types', () => {
     const state = createTask();
     const unknownEvent: IncomingTaskEvent = {

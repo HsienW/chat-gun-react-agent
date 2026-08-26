@@ -62,6 +62,16 @@ describe("transitionTask", () => {
     ["waiting_confirmation", "cancelled"],
     ["partially_failed", "compensating"],
     ["compensating", "failed"],
+    ["running", "cancelling"],
+    ["cancelling", "cancelled"],
+    ["running", "superseded"],
+    ["running", "rollback_requested"],
+    ["rollback_requested", "compensating"],
+    ["compensating", "cancelled"],
+    ["running", "cancelled_after_commit"],
+    ["running", "manual_intervention_required"],
+    ["manual_intervention_required", "cancelled"],
+    ["manual_intervention_required", "failed"],
   ] satisfies [TaskStatus, TaskStatus][])("allows %s -> %s", (from, to) => {
     expect(transitionTask(createTask(from), to).valid).toBe(true);
   });
@@ -72,6 +82,10 @@ describe("transitionTask", () => {
     ["cancelled", "running"],
     ["running", "compensating"],
     ["waiting_confirmation", "failed"],
+    ["superseded", "running"],
+    ["cancelled_after_commit", "running"],
+    ["rollback_requested", "completed"],
+    ["cancelling", "running"],
   ] satisfies [TaskStatus, TaskStatus][])("rejects %s -> %s", (from, to) => {
     const task = createTask(from);
 

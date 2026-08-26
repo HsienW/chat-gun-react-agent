@@ -25,6 +25,10 @@ import {
   llmGateway,
 } from "../platform/llm-gateway.js";
 import { auditLogger, recordMetric, recordWeatherAuditEvent } from "../platform/observability.js";
+import {
+  applyInteractionGovernance,
+  productionInteractionOrchestrator,
+} from "../platform/interaction-runtime.js";
 import { getAgentRuntimeConfig } from "../platform/runtime-config.js";
 import {
   getSpanManager,
@@ -2913,10 +2917,13 @@ const builder = new StateGraph(DeepResearchState)
 
 const deepResearcherCheckpointer = new MemorySaver();
 
-export const deepResearcherGraph = instrumentGraphWithOpik(
-  builder.compile({
-    checkpointer: deepResearcherCheckpointer,
-  }),
-  "weather"
+export const deepResearcherGraph = applyInteractionGovernance(
+  instrumentGraphWithOpik(
+    builder.compile({
+      checkpointer: deepResearcherCheckpointer,
+    }),
+    "weather"
+  ),
+  productionInteractionOrchestrator
 );
 

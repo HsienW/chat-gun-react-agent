@@ -32,6 +32,44 @@ describe('streamActivityReducer', () => {
     expect(updated.liveActivityEvents).toEqual([firstEvent]);
   });
 
+  it('initializes generation from the first event and ignores stale chunks', () => {
+    const started = streamActivityReducer(createInitialStreamActivityState(), {
+      type: 'streamStarted',
+    });
+    const current = streamActivityReducer(started, {
+      type: 'streamEventsReceived',
+      events: [firstEvent],
+      generation: 5,
+    });
+    const stale = streamActivityReducer(current, {
+      type: 'streamEventsReceived',
+      events: [lateEvent],
+      generation: 4,
+    });
+
+    expect(current.activeGeneration).toBe(5);
+    expect(stale).toBe(current);
+  });
+
+  it('replaces live activity when a higher generation becomes active', () => {
+    const started = streamActivityReducer(createInitialStreamActivityState(), {
+      type: 'streamStarted',
+    });
+    const firstGeneration = streamActivityReducer(started, {
+      type: 'streamEventsReceived',
+      events: [firstEvent],
+      generation: 2,
+    });
+    const replacement = streamActivityReducer(firstGeneration, {
+      type: 'streamEventsReceived',
+      events: [lateEvent],
+      generation: 3,
+    });
+
+    expect(replacement.activeGeneration).toBe(3);
+    expect(replacement.liveActivityEvents).toEqual([lateEvent]);
+  });
+
   it('ignores update events received before a stream starts', () => {
     const updated = streamActivityReducer(createInitialStreamActivityState(), {
       type: 'streamEventsReceived',

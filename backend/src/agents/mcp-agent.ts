@@ -5,6 +5,10 @@ import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { getEnv } from "../platform/env.js";
 import { llmGateway } from "../platform/llm-gateway.js";
 import {
+  applyInteractionGovernance,
+  productionInteractionOrchestrator,
+} from "../platform/interaction-runtime.js";
+import {
   instrumentGraphWithOpik,
   withOpikNode,
 } from "../platform/tracing/opik/opik-graph.js";
@@ -64,4 +68,7 @@ const builder = new StateGraph(MessagesAnnotation)
   })
   .addEdge("tools", "call_model");
 
-export const mcpAgentGraph = instrumentGraphWithOpik(builder.compile(), "mcp_agent");
+export const mcpAgentGraph = applyInteractionGovernance(
+  instrumentGraphWithOpik(builder.compile(), "mcp_agent"),
+  productionInteractionOrchestrator
+);
