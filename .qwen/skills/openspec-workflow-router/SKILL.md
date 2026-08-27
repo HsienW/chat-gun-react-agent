@@ -19,6 +19,7 @@ At the start of every task in this repository:
 6. For review stages, load `secondary-architecture-reviewer`.
 7. If CurrentState or required evidence is missing, output `INCOMPLETE`; never initialize or modify state.
 8. If it is not a lifecycle task, keep the context policy below in force and continue with `QWEN.md`.
+9. Before every write-capable action, verify the active role. A Reviewer must fail closed and emit only findings or a Handoff, even when the parent Qwen session retains `auto-edit`.
 
 ## Context Policy
 
@@ -29,6 +30,7 @@ At the start of every task in this repository:
 - Expand context only for contract conflicts, security concerns, unclear architecture, or test failures that cannot be localized.
 - Keep all user-facing output in Traditional Chinese.
 - Maintain Qwen's read-only boundary from `QWEN.md`.
+- Parent-session tool capability never grants the Reviewer role write authority.
 - Never recursively scan `.agent-runtime/`, read another Change/Run, or write Runtime Artifacts.
 
 ## Route Table
