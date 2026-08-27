@@ -25,6 +25,12 @@
 | Coordinator | CCR | 完成判定，確認是否可 archive |
 | Archivist | Codex + 人工 | 執行 OpenSpec archive；git commit / push 由人完成 |
 
+## 寫入前角色 Gate
+
+任何 Agent 在每一次寫入前都必須重新驗證 `role + currentPhase + currentOwner + target path + Handoff`。宿主具備 Write、Edit、Shell 或 MCP 能力不等於目前角色有權使用；改動只有一行、使用者接受決策方向或 Coordinator 想節省交接時間都不得豁免。
+
+驗證失敗、狀態缺失或任務由查詢／審查滑向實作時，Agent 必須 fail-closed，只產出 Structured Handoff，不得修改任何字。CCR 的實作 Handoff 一律交給 Codex；Qwen Reviewer 只輸出 stdout／聊天結果，由 adapter、CLIHost 或人工保存。
+
 ## 階段路由
 
 | 階段 | 使用時機 | Skill reference |

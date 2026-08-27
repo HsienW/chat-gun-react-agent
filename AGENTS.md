@@ -41,6 +41,21 @@ docs/openspec/agent-workflow-prompts.md
 
 任務開始時先判斷是否屬於 OpenSpec change lifecycle。若屬於，依 workflow-router 判定唯一階段並只載入該階段 reference；不得一次載入全部階段模板。若不屬於 OpenSpec 任務，仍須沿用 router 的上下文策略：優先使用使用者提供的檔案、摘要、diff 與驗證結果，只讀必要規則與相鄰檔案，忽略 `.gitignore` 已忽略內容、`node_modules/`、`dist/`、`build/`、`coverage/` 與無關 lockfile。
 
+### Agent 角色寫入前硬檢查
+
+任何 Agent 在呼叫可能寫入程式、規格、設定、測試、文件、Runtime Artifact 或外部系統的工具前，MUST 逐次完成下列檢查：
+
+1. 確認目前實際角色，而不是只確認宿主或模型名稱。
+2. 若屬於 OpenSpec lifecycle，讀取 CurrentState 並確認 `currentPhase`、`currentOwner` 與 Handoff。
+3. 確認目標路徑、操作種類與副作用屬於該角色在目前階段的責任。
+4. 確認宿主提供的 Write、Edit、Shell、MCP 或其他工具能力沒有被誤當成角色授權。
+
+任一條件缺失、未知、衝突或不符時 MUST fail-closed：只產出 Structured Handoff，不得修改任何字，也不得先做「暫時」「順手」或「只有一行」的修改。改動大小不構成豁免；使用者批准決策方向不等於授權目前角色執行。任務從查詢、回顧、規劃或審查轉為實作時，MUST 重新執行 workflow-router 與本檢查。
+
+CCR 只能執行 Coordinator／Planner 所有的寫入：合法 `PLAN_DRAFT` 中該 Change 的 OpenSpec artifacts，以及 owner／phase 合法的 coordinator CurrentState、Result 與 Handoff。CCR MUST NOT 修改 application code、測試、根規則、宿主設定或非目前 plan-change 的規格；Finding 必須交由 Codex 實作。
+
+Qwen 主工作階段即使保留寫入工具能力，也不代表 Reviewer 角色取得寫入權。Qwen Reviewer MUST 使用 `approvalMode: plan` 的 `secondary-architecture-reviewer` Subagent、維持唯讀工具白名單，只輸出 stdout／聊天結果；Runtime Artifact 與 CurrentState 由 adapter、CLIHost 或人工保存。無法證明父工作階段沒有覆蓋 Reviewer 隔離時，Verdict MUST 為 `INCOMPLETE`。
+
 ---
 
 ## 2. 指令與規格優先順序
@@ -487,5 +502,4 @@ Agent 預設不得讀取 `.gitignore` 已忽略內容。只有下列條件全部
 4. 讀取前確認檔案存在；內容不得包含 Secret、API Key、Token、Password 或 Credential。
 
 不得遞迴掃描 `.agent-runtime/`、讀取其他 Change／Run、建立歷史事件流，或將 Runtime Artifact 加入版本控制。
-Qwen Reviewer 在完成 `review-plan` 或 `review-result` 時，例外允許寫入 `.agent-runtime/<change-id>/artifacts/`
-路徑下的 artifact 檔案（如 `review-result.json`）。寫入必須滿足： 路徑必須以 `.agent-runtime/<change-id>/artifacts/` 開頭，不得包含 `..` 或絕對路徑。 不得寫入 `current-state.json` 或其他非 `artifacts/` 目錄的檔案。 寫入內容不得包含 Secret、API Key、Token、Password 或 Credential。此例外不放寬對原始碼、OpenSpec、設定的唯讀約束。
+Qwen Reviewer 不得直接寫入 Runtime Artifact。完成 `review-plan` 或 `review-result` 時，必須將 schema-valid `review_result` 輸出至 stdout／聊天回應，再由 `qwen-capture-adapter.mjs`、CLIHost 或人工驗證並保存至 `.agent-runtime/<change-id>/artifacts/`；Qwen 本身不得呼叫 Write、Edit 或 Shell 完成保存。
