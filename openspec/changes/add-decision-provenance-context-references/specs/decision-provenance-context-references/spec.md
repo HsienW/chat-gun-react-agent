@@ -28,6 +28,13 @@ WHEN 執行 runtime validation
 THEN MUST 回傳錯誤
 AND MUST NOT 持久化越界值
 
+#### Scenario: open-string 欄位超過長度上限被拒絕
+
+GIVEN 建立 `DecisionRecord` 時 `decisionType`／`outcome`／`reasonCode` 或 `policyVersion` 超過 128 字元
+WHEN 執行 runtime validation
+THEN MUST 回傳錯誤
+AND MUST NOT 持久化被截斷的值
+
 ---
 
 ### Requirement: EvidenceRef MUST 重用 X8.7 ResourceRef，MUST NOT 引進競爭資源身份
