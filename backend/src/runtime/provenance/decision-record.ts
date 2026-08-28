@@ -29,6 +29,8 @@ export interface CreateDecisionRecordInput {
   now?: () => Date;
 }
 
+const MAX_OPEN_STRING_LENGTH = 128;
+
 function requiredString(value: string, fieldName: string): string {
   if (value.trim().length === 0) {
     throw new Error(`${fieldName} is required`);
@@ -39,6 +41,32 @@ function requiredString(value: string, fieldName: string): string {
 function optionalString(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   return value.trim().length === 0 ? undefined : value;
+}
+
+function requiredOpenString(value: string, fieldName: string): string {
+  const requiredValue = requiredString(value, fieldName);
+  if (requiredValue.length > MAX_OPEN_STRING_LENGTH) {
+    throw new Error(
+      `${fieldName} must be at most ${MAX_OPEN_STRING_LENGTH} characters`
+    );
+  }
+  return requiredValue;
+}
+
+function optionalOpenString(
+  value: string | undefined,
+  fieldName: string
+): string | undefined {
+  const optionalValue = optionalString(value);
+  if (
+    optionalValue !== undefined &&
+    optionalValue.length > MAX_OPEN_STRING_LENGTH
+  ) {
+    throw new Error(
+      `${fieldName} must be at most ${MAX_OPEN_STRING_LENGTH} characters`
+    );
+  }
+  return optionalValue;
 }
 
 function validateConfidence(confidence: number | undefined): number | undefined {
@@ -63,7 +91,10 @@ export function createDecisionRecord(
   const taskId = optionalString(input.taskId);
   const stepId = optionalString(input.stepId);
   const confidence = validateConfidence(input.confidence);
-  const policyVersion = optionalString(input.policyVersion);
+  const policyVersion = optionalOpenString(
+    input.policyVersion,
+    "policyVersion"
+  );
 
   return {
     decisionId: requiredString(input.decisionId, "decisionId"),
@@ -72,9 +103,9 @@ export function createDecisionRecord(
     ...(runId === undefined ? {} : { runId }),
     ...(taskId === undefined ? {} : { taskId }),
     ...(stepId === undefined ? {} : { stepId }),
-    decisionType: requiredString(input.decisionType, "decisionType"),
-    outcome: requiredString(input.outcome, "outcome"),
-    reasonCode: requiredString(input.reasonCode, "reasonCode"),
+    decisionType: requiredOpenString(input.decisionType, "decisionType"),
+    outcome: requiredOpenString(input.outcome, "outcome"),
+    reasonCode: requiredOpenString(input.reasonCode, "reasonCode"),
     ...(confidence === undefined ? {} : { confidence }),
     ...(policyVersion === undefined ? {} : { policyVersion }),
     createdAt: input.createdAt ?? (input.now?.() ?? new Date()).toISOString(),

@@ -76,6 +76,42 @@ describe("createDecisionRecord", () => {
     ).toThrow("confidence must be a finite number between 0 and 1");
   });
 
+  it("accepts open-string fields at the 128-character limit", () => {
+    const openStringAtLimit = "x".repeat(128);
+
+    expect(
+      createDecisionRecord({
+        decisionId: "decision-1",
+        decisionType: openStringAtLimit,
+        outcome: openStringAtLimit,
+        reasonCode: openStringAtLimit,
+        policyVersion: openStringAtLimit,
+      })
+    ).toMatchObject({
+      decisionType: openStringAtLimit,
+      outcome: openStringAtLimit,
+      reasonCode: openStringAtLimit,
+      policyVersion: openStringAtLimit,
+    });
+  });
+
+  it.each([
+    ["decisionType", { decisionType: "x".repeat(129) }],
+    ["outcome", { outcome: "x".repeat(129) }],
+    ["reasonCode", { reasonCode: "x".repeat(129) }],
+    ["policyVersion", { policyVersion: "x".repeat(129) }],
+  ])("rejects %s longer than 128 characters", (fieldName, overrides) => {
+    expect(() =>
+      createDecisionRecord({
+        decisionId: "decision-1",
+        decisionType: "routing",
+        outcome: "selected",
+        reasonCode: "POLICY_MATCH",
+        ...overrides,
+      })
+    ).toThrow(`${fieldName} must be at most 128 characters`);
+  });
+
   it("does not expose raw chain-of-thought fields", () => {
     const record = createDecisionRecord({
       decisionId: "decision-1",

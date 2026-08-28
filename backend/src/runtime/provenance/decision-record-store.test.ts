@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { Queryable } from "../persistence/rows.js";
 import type { DecisionRecord } from "./decision-record.js";
@@ -108,21 +108,17 @@ describe("PgDecisionRecordStore", () => {
     expect(seenQueries.join("\n")).toContain("WHERE step_id = $1");
   });
 
-  it("summarizes long open strings before writing", async () => {
-    let insertValues: readonly unknown[] = [];
+  it("rejects long open strings instead of truncating them", async () => {
     const db: Queryable = {
-      query: createFakeQuery(async (_text, values) => {
-        insertValues = values;
-        return {
-          rows: [recordRow({ decision_type: String(values[6]) })],
-          rowCount: 1,
-        };
+      query: vi.fn(async () => {
+        throw new Error("write should not run");
       }),
     };
     const store = new PgDecisionRecordStore(db);
 
-    await store.record(record({ decisionType: "x".repeat(150) }));
-
-    expect(String(insertValues[6])).toHaveLength(128);
+    await expect(
+      store.record(record({ decisionType: "x".repeat(129) }))
+    ).rejects.toThrow("decisionType must be at most 128 characters");
+    expect(db.query).not.toHaveBeenCalled();
   });
 });

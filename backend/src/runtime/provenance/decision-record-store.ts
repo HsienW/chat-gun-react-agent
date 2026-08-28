@@ -8,7 +8,6 @@ const DECISION_RECORD_COLUMNS = `
   decision_id, request_id, thread_id, run_id, task_id, step_id,
   decision_type, outcome, reason_code, confidence, policy_version, created_at
 `;
-const MAX_OPEN_STRING_LENGTH = 128;
 
 interface DecisionRecordRow extends Record<string, unknown> {
   decision_id: unknown;
@@ -62,24 +61,6 @@ function isoString(value: unknown, column: string): string {
   return date.toISOString();
 }
 
-function limitOpenString(value: string): string {
-  return value.length <= MAX_OPEN_STRING_LENGTH
-    ? value
-    : value.slice(0, MAX_OPEN_STRING_LENGTH);
-}
-
-function summarizeRecord(record: DecisionRecord): DecisionRecord {
-  return {
-    ...record,
-    decisionType: limitOpenString(record.decisionType),
-    outcome: limitOpenString(record.outcome),
-    reasonCode: limitOpenString(record.reasonCode),
-    ...(record.policyVersion === undefined
-      ? {}
-      : { policyVersion: limitOpenString(record.policyVersion) }),
-  };
-}
-
 function mapDecisionRecordRow(row: DecisionRecordRow): DecisionRecord {
   const requestId = optionalString(row.request_id, "request_id");
   const threadId = optionalString(row.thread_id, "thread_id");
@@ -109,7 +90,7 @@ export class PgDecisionRecordStore implements DecisionRecordStore {
   constructor(private readonly db: Queryable) {}
 
   async record(record: DecisionRecord): Promise<DecisionRecord> {
-    const safeRecord = summarizeRecord(createDecisionRecord(record));
+    const validatedRecord = createDecisionRecord(record);
     const result = await this.db.query<DecisionRecordRow>(
       `INSERT INTO decision_records (
          decision_id, request_id, thread_id, run_id, task_id, step_id,
@@ -120,18 +101,18 @@ export class PgDecisionRecordStore implements DecisionRecordStore {
        )
        RETURNING ${DECISION_RECORD_COLUMNS}`,
       [
-        safeRecord.decisionId,
-        safeRecord.requestId ?? null,
-        safeRecord.threadId ?? null,
-        safeRecord.runId ?? null,
-        safeRecord.taskId ?? null,
-        safeRecord.stepId ?? null,
-        safeRecord.decisionType,
-        safeRecord.outcome,
-        safeRecord.reasonCode,
-        safeRecord.confidence ?? null,
-        safeRecord.policyVersion ?? null,
-        safeRecord.createdAt,
+        validatedRecord.decisionId,
+        validatedRecord.requestId ?? null,
+        validatedRecord.threadId ?? null,
+        validatedRecord.runId ?? null,
+        validatedRecord.taskId ?? null,
+        validatedRecord.stepId ?? null,
+        validatedRecord.decisionType,
+        validatedRecord.outcome,
+        validatedRecord.reasonCode,
+        validatedRecord.confidence ?? null,
+        validatedRecord.policyVersion ?? null,
+        validatedRecord.createdAt,
       ]
     );
     const row = result.rows[0];
