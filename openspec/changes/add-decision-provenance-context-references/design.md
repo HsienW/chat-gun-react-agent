@@ -47,6 +47,7 @@ interface DecisionRecord {
 - `decisionType`／`outcome`／`reasonCode` open string，與 X8.7 `ResourceRef.resourceType` 一致：預設列舉可用但不閉合，避免 Core 因新 Domain 決策類型而修改。
 - MUST NOT 存 raw hidden reasoning／chain-of-thought。`confidence` 若有，限制為 [0,1]；runtime validation 拒絕越界值。
 - 建立時 runtime validation：`decisionId` 非空、`decisionType`／`outcome`／`reasonCode` 非空。
+- open-string 欄位（`decisionType`／`outcome`／`reasonCode`／`policyVersion`）長度上限 128 字元；超過上限 runtime validation MUST reject（不得靜默截斷），避免不同值截斷後 collision 造成輸入／輸出不一致。
 
 ### EvidenceRef
 
@@ -104,6 +105,7 @@ interface ContextReferenceResolver {
 
 - `findRelated` 是唯一對外引用查詢入口；內部先對 `resource` 與每個候選 `target` 執行 X8.7 `authorize()`（read action），deny 即排除。
 - 預設 direct／1-hop（`source = resource` 或 `target = resource` 的 `context_refs`），`limit` 控制回傳上限；MUST NOT 提供任意 multi-hop 遞迴遍歷。
+- `limit` 語意為「最多查 N 筆候選」（SQL `LIMIT` 在授權過濾前套用），非「保證回傳 N 筆已授權結果」；候選被 deny 時最終回傳可能少於 N 筆。
 - `principal`／`scope` 由呼叫者注入（承接 X8.7 trusted identity 資料流），resolver 不自行解析身份。
 
 ## 資料模型
@@ -188,6 +190,7 @@ findRelated(resource, principal, scope, options)
 ```
 
 - 授權決策不可用時 fail-closed（回傳 `[]`，MUST NOT 放行）。
+- `AuthorizationDecision.effect` 三值中，`deny` 與 `require_confirmation` 目前皆視同 deny（fail-closed，回傳 `[]`）；resolver 不區分「明確 deny」與「待確認」。若未來需區分 pending confirmation，再擴充回傳契約。
 - 跨 tenant（`resource.tenantId !== principal.tenantId`）在第一步即被 X8.7 `authorize()` deny。
 
 **寫入側授權**：`ContextRefStore.record()` 於寫入前，若 `source.tenantId !== target.tenantId`，MUST 通過 X8.7 `authorize()`（對 target 執行 read action）檢查，deny 即拒絕寫入。寫入側授權與 `findRelated` 讀取側授權共同構成 ContextRef 的 tenant 邊界；兩者皆 fail-closed。
