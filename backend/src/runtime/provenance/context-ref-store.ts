@@ -45,6 +45,11 @@ export interface FindRelatedOneHopOptions {
 
 export interface ContextRefStore {
   record(input: RecordContextRefInput): Promise<ContextRef>;
+  /**
+   * Performs a raw one-hop persistence query without authorization checks.
+   * Callers must enforce authorization, normally through
+   * AuthorizedContextReferenceResolver.
+   */
   findRelatedOneHop(
     resource: ResourceRef,
     options?: FindRelatedOneHopOptions
