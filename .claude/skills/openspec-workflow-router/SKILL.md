@@ -18,6 +18,7 @@ At the start of every task in this repository:
 5. Read only `latestArtifactRefs` and current Handoff `requiredInputRefs`; validate changeId/runId, safe paths, existence, and absence of Secrets.
 6. If another host owns the stage, produce the handoff and evidence list, then update CurrentState only after output persistence.
 7. If it is not a lifecycle task, keep the context policy below in force and continue with `CLAUDE.md`.
+8. Before every write-capable tool call, verify CCR owns the role, phase, target path, and Handoff. If any check fails, emit only the Handoff and do not modify anything.
 
 ## Context Policy
 
@@ -28,6 +29,7 @@ At the start of every task in this repository:
 - Expand context only for contract conflicts, security concerns, unclear architecture, or test failures that cannot be localized.
 - Keep all user-facing output in Traditional Chinese.
 - Preserve Claude/CCR's coordinator role from `CLAUDE.md`.
+- Tool availability, change size, and user approval of a decision do not grant CCR implementation authority.
 - Never recursively scan `.agent-runtime/` or read another Change/Run.
 
 ## Route Table
