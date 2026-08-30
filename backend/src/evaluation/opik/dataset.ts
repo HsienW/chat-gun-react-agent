@@ -17,6 +17,10 @@ const WEATHER_DATASET_DESCRIPTION =
   "Immutable weather golden evaluation dataset; semantic version is stored per item.";
 const SEMVER_PATTERN = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const OPIK_DATASET_NAMESPACE = "477b9cd7-75c2-4a86-a642-4ba6dfb16f16";
+const OPIK_DATASET_READ_MAX_ATTEMPTS = 3;
+const OPIK_DATASET_READ_RETRY_BASE_DELAY_MS = 250;
+
+type SleepFunction = (durationMs: number) => Promise<void>;
 
 export interface DatasetUploadPort {
   hasVersion(datasetName: string, version: string): Promise<boolean>;
@@ -48,6 +52,10 @@ interface SdkDatasetClient {
   flush(options?: { silent?: boolean }): Promise<void>;
 }
 
+interface SdkDatasetUploaderOptions {
+  sleep?: SleepFunction;
+}
+
 interface OpikSdkModule {
   Opik: new (options: {
     apiKey: string;
@@ -71,6 +79,59 @@ function isOpikSdkModule(value: unknown): value is OpikSdkModule {
       "Opik" in value &&
       typeof value.Opik === "function"
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function getOpikErrorStatus(error: unknown): number | undefined {
+  if (!isRecord(error)) return undefined;
+  if (
+    typeof error.statusCode === "number" &&
+    Number.isInteger(error.statusCode)
+  ) {
+    return error.statusCode;
+  }
+  if (!isRecord(error.rawResponse)) return undefined;
+  const rawStatus = error.rawResponse.status;
+  return typeof rawStatus === "number" && Number.isInteger(rawStatus)
+    ? rawStatus
+    : undefined;
+}
+
+function isRetryableOpikDatasetReadError(error: unknown): boolean {
+  const status = getOpikErrorStatus(error);
+  return (
+    status === 0 ||
+    status === 429 ||
+    (status !== undefined && status >= 500 && status < 600)
+  );
+}
+
+async function sleep(durationMs: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, durationMs));
+}
+
+async function retryOpikDatasetRead<T>(
+  operation: () => Promise<T>,
+  sleepForRetry: SleepFunction,
+  attempt = 1
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (
+      attempt >= OPIK_DATASET_READ_MAX_ATTEMPTS ||
+      !isRetryableOpikDatasetReadError(error)
+    ) {
+      throw error;
+    }
+    const delayMs =
+      OPIK_DATASET_READ_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+    await sleepForRetry(delayMs);
+    return retryOpikDatasetRead(operation, sleepForRetry, attempt + 1);
+  }
 }
 
 function expectedToolCalls(testCase: WeatherGoldenEvalCase): ExpectedToolCall[] {
@@ -251,7 +312,14 @@ function hasMatchingTransportItems(
 }
 
 class SdkDatasetUploader implements DatasetStorePort {
-  constructor(private readonly client: SdkDatasetClient) {}
+  private readonly sleepForRetry: SleepFunction;
+
+  constructor(
+    private readonly client: SdkDatasetClient,
+    options: SdkDatasetUploaderOptions = {}
+  ) {
+    this.sleepForRetry = options.sleep ?? sleep;
+  }
 
   async hasVersion(datasetName: string, version: string): Promise<boolean> {
     return (await this.getVersionItems(datasetName, version)).length > 0;
@@ -261,12 +329,17 @@ class SdkDatasetUploader implements DatasetStorePort {
     datasetName: string,
     version: string
   ): Promise<Array<Record<string, unknown>>> {
-    const dataset = await this.client.getOrCreateDataset(
-      datasetName,
-      WEATHER_DATASET_DESCRIPTION
+    return retryOpikDatasetRead(
+      async () => {
+        const dataset = await this.client.getOrCreateDataset(
+          datasetName,
+          WEATHER_DATASET_DESCRIPTION
+        );
+        const items = await dataset.getItems();
+        return items.filter((item) => itemHasVersion(item, version));
+      },
+      this.sleepForRetry
     );
-    const items = await dataset.getItems();
-    return items.filter((item) => itemHasVersion(item, version));
   }
 
   async upload(dataset: EvaluationDataset): Promise<void> {
@@ -359,8 +432,10 @@ export const datasetTestInternals = {
   OPIK_DATASET_NAMESPACE,
   WEATHER_GOLDEN_EVAL_CASES,
   buildWeatherGoldenDataset,
-  createSdkUploader: (client: SdkDatasetClient): DatasetStorePort =>
-    new SdkDatasetUploader(client),
+  createSdkUploader: (
+    client: SdkDatasetClient,
+    options: SdkDatasetUploaderOptions = {}
+  ): DatasetStorePort => new SdkDatasetUploader(client, options),
   toTransportItems,
   toDeterministicUuid,
 };

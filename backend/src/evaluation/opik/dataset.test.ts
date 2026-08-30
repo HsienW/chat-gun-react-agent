@@ -61,6 +61,101 @@ describe("createWeatherGoldenDataset", () => {
     );
   });
 
+  it.each([
+    ["status-zero transport failure", { rawResponse: { status: 0 } }],
+    ["rate limit", { statusCode: 429 }],
+    ["server failure", { statusCode: 503 }],
+  ])("retries a transient %s before succeeding", async (_label, errorFields) => {
+    const target = {
+      getItems: vi.fn(async () => [
+        { metadata: { datasetVersion: "v1.0.0" } },
+      ]),
+      insert: vi.fn(async () => undefined),
+    };
+    const transientError = Object.assign(new Error("temporary failure"), errorFields);
+    const client = {
+      getOrCreateDataset: vi
+        .fn()
+        .mockRejectedValueOnce(transientError)
+        .mockResolvedValueOnce(target),
+      flush: vi.fn(async () => undefined),
+    };
+    const sleep = vi.fn(async () => undefined);
+    const uploader = datasetTestInternals.createSdkUploader(client, { sleep });
+
+    await expect(uploader.hasVersion("weather-golden", "v1.0.0")).resolves.toBe(
+      true
+    );
+    expect(client.getOrCreateDataset).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(sleep).toHaveBeenCalledWith(250);
+  });
+
+  it("does not retry a non-transient dataset error", async () => {
+    const permissionError = Object.assign(new Error("forbidden"), {
+      statusCode: 403,
+      rawResponse: { status: 403 },
+    });
+    const client = {
+      getOrCreateDataset: vi.fn(async () => {
+        throw permissionError;
+      }),
+      flush: vi.fn(async () => undefined),
+    };
+    const sleep = vi.fn(async () => undefined);
+    const uploader = datasetTestInternals.createSdkUploader(client, { sleep });
+
+    await expect(
+      uploader.hasVersion("weather-golden", "v1.0.0")
+    ).rejects.toBe(permissionError);
+    expect(client.getOrCreateDataset).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("stops after three transient dataset read attempts", async () => {
+    const transportError = Object.assign(new Error("fetch failed"), {
+      rawResponse: { status: 0 },
+    });
+    const client = {
+      getOrCreateDataset: vi.fn(async () => {
+        throw transportError;
+      }),
+      flush: vi.fn(async () => undefined),
+    };
+    const sleep = vi.fn(async () => undefined);
+    const uploader = datasetTestInternals.createSdkUploader(client, { sleep });
+
+    await expect(
+      uploader.hasVersion("weather-golden", "v1.0.0")
+    ).rejects.toBe(transportError);
+    expect(client.getOrCreateDataset).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenNthCalledWith(1, 250);
+    expect(sleep).toHaveBeenNthCalledWith(2, 500);
+  });
+
+  it("does not retry upload-side dataset access after a transport failure", async () => {
+    const transportError = Object.assign(new Error("fetch failed"), {
+      rawResponse: { status: 0 },
+    });
+    const client = {
+      getOrCreateDataset: vi.fn(async () => {
+        throw transportError;
+      }),
+      flush: vi.fn(async () => undefined),
+    };
+    const sleep = vi.fn(async () => undefined);
+    const uploader = datasetTestInternals.createSdkUploader(client, { sleep });
+    const dataset = datasetTestInternals.buildWeatherGoldenDataset(
+      "v1.0.0",
+      datasetTestInternals.WEATHER_GOLDEN_EVAL_CASES
+    );
+
+    await expect(uploader.upload(dataset)).rejects.toBe(transportError);
+    expect(client.getOrCreateDataset).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+    expect(client.flush).not.toHaveBeenCalled();
+  });
+
   it("namespaces uploaded item identifiers by immutable dataset version", async () => {
     const target = {
       getItems: vi.fn(async () => []),
