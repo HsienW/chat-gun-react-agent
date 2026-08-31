@@ -44,7 +44,7 @@ Chat Gun React Agent 是一套以 React、TypeScript 与 LangGraph JS 构建的�
 ## Demo
 
 <p align="center">
-  <img src="./assets/chat-gun-demo.gif" alt="Chat Gun React Agent demo" width="1280" />
+  <img src="./assets/chat-gun-demo.webp" alt="Chat Gun React Agent demo" width="1280" />
 </p>
 
 <p align="center">
