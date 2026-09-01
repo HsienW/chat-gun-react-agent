@@ -179,6 +179,11 @@ describe("Wind direction descriptions", () => {
 });
 
 describe("WeatherToolResult contract (Task 4.1-4.8)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
   it("should have schemaVersion '1.0' and tool 'current_weather' (Task 4.2)", () => {
     const success: WeatherSuccessResult = {
       schemaVersion: "1.0",
@@ -299,6 +304,21 @@ describe("WeatherToolResult contract (Task 4.1-4.8)", () => {
   });
 
   it("accepts optional queryName without changing WeatherToolResult schemaVersion", async () => {
+    const fetchSpy = vi.fn((input: string | URL | Request) => {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+      );
+      if (url.hostname !== "geocoding-api.open-meteo.com") {
+        throw new Error(`Unexpected network call: ${url.toString()}`);
+      }
+      return Promise.resolve(jsonResponse({ results: [] }));
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
     const raw = await weatherTool.invoke({
       location: "Definitely Missing Place",
       queryName: "Definitely Missing Place",
@@ -306,6 +326,8 @@ describe("WeatherToolResult contract (Task 4.1-4.8)", () => {
     const result = JSON.parse(String(raw)) as WeatherToolResult;
 
     expect(result.schemaVersion).toBe("1.0");
+    expect(result.status).toBe("not_found");
+    expect(fetchSpy).toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain("queryName");
   });
 

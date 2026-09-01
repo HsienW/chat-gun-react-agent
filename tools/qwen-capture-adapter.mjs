@@ -574,6 +574,7 @@ function parseArgs(argv) {
     stage: DEFAULT_STAGE,
     command: commandParts[0],
     commandArgs: commandParts.slice(1),
+    fromFile: null,
   };
 
   for (let index = 0; index < adapterArgs.length; index += 1) {
@@ -592,6 +593,9 @@ function parseArgs(argv) {
     } else if (arg === "--stage") {
       parsed.stage = value;
       index += 1;
+    } else if (arg === "--from-file") {
+      parsed.fromFile = value;
+      index += 1;
     } else if (arg === "--help" || arg === "-h") {
       parsed.help = true;
     } else {
@@ -606,10 +610,14 @@ function usage() {
   return [
     "Usage:",
     "  node tools/qwen-capture-adapter.mjs --change-id <change-id> --run-id <run-id> [--stage review-result] -- qwen <args...>",
+    "  node tools/qwen-capture-adapter.mjs --change-id <change-id> --run-id <run-id> [--stage review-plan] --from-file <path-to-review-result.json>",
     "",
-    "The adapter captures stdout from the command, extracts a review_result JSON object, validates",
-    "changeId/runId/stage/kind/producer, then atomically writes:",
+    "The adapter captures stdout from the command (or reads --from-file), extracts a review_result",
+    "JSON object, validates changeId/runId/stage/kind/producer, then atomically writes:",
     "  .agent-runtime/<change-id>/artifacts/review-result.json",
+    "",
+    "Options:",
+    "  --from-file <path>  Read review_result from an existing JSON file instead of spawning a command.",
   ].join("\n");
 }
 
@@ -629,9 +637,18 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
 
     requireNonEmptyString("changeId", args.changeId);
     requireNonEmptyString("runId", args.runId);
-    requireNonEmptyString("command", args.command);
     validatePathSegment("changeId", args.changeId);
     await assertCurrentStateExists(args.workspaceRoot, args.changeId);
+
+    if (args.fromFile) {
+      const fileContent = await readFile(args.fromFile, "utf8");
+      const parsed = extractJsonObjectFromOutput(fileContent);
+      args.processResult = { exitCode: 0, stdout: JSON.stringify(parsed), stderr: "" };
+      args.command = "node";
+      args.commandArgs = ["-e", ""];
+    } else {
+      requireNonEmptyString("command", args.command);
+    }
 
     const result = await captureQwenReviewResult(args);
     console.log(
