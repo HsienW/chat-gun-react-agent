@@ -44,7 +44,7 @@ Chat Gun React Agent is a full-stack agent chat application built with React, Ty
 ## Demo
 
 <p align="center">
-  <img src="./assets/chat-gun-demo.gif" alt="Chat Gun React Agent demo" width="1280" />
+  <img src="./assets/chat-gun-demo.webp" alt="Chat Gun React Agent demo" width="1280" />
 </p>
 
 <p align="center">
