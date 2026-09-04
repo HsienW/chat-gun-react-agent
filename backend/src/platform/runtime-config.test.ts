@@ -130,7 +130,7 @@ describe("getAgentRuntimeConfig tracing", () => {
 
     expect(getAgentRuntimeConfig()).toMatchObject({
       otelEnabled: false,
-      otelServiceName: "chat-gun-react-agent",
+      otelServiceName: "chat-gun",
       otelExporterEndpoint: undefined,
       otelExporterProtocol: "http",
       otelSampleRate: 1,
@@ -185,7 +185,7 @@ describe("getAgentRuntimeConfig Opik", () => {
       opikApiKey: undefined,
       opikWorkspace: undefined,
       opikHost: "https://www.comet.com/opik/api",
-      opikProjectName: "chat-gun-react-agent",
+      opikProjectName: "chat-gun",
       opikRedactEnabled: true,
       opikEvalOutputDir: "./eval-results",
     });

@@ -44,7 +44,7 @@ export type AgentRuntimeConfig = {
 };
 
 const DEFAULT_OPIK_HOST = "https://www.comet.com/opik/api";
-const DEFAULT_OPIK_PROJECT_NAME = "chat-gun-react-agent";
+const DEFAULT_OPIK_PROJECT_NAME = "chat-gun";
 
 function readPositiveInt(name: string, fallback: number): number {
   const rawValue = getEnv(name);
@@ -147,7 +147,7 @@ export function getAgentRuntimeConfig(): AgentRuntimeConfig {
     llmRepairStrategy: readRepairStrategy(),
     otelEnabled: readBoolean("OTEL_ENABLED", false),
     otelServiceName:
-      getEnv("OTEL_SERVICE_NAME").trim() || "chat-gun-react-agent",
+      getEnv("OTEL_SERVICE_NAME").trim() || "chat-gun",
     otelExporterEndpoint: readOptionalUrl("OTEL_EXPORTER_OTLP_ENDPOINT"),
     otelExporterProtocol: readOtelProtocol(),
     otelSampleRate: readSampleRate(),
