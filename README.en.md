@@ -1,4 +1,4 @@
-# Chat Gun React Agent
+# Chat Gun
 
 <p align="center">
   <img src="./assets/chat-gun-logo.jpg" alt="chat-gun" width="1024" />
@@ -20,7 +20,7 @@
   <a href="./README.zh-CN.md">简体中文</a>
 </p>
 
-Chat Gun React Agent is a full-stack agent chat application built with React, TypeScript, and LangGraph JS. It supports multi-agent conversations, streamed responses, tool calling, image input, and human-in-the-loop workflows, with a BFF that manages API traffic between the browser and the LangGraph runtime.
+Chat Gun is a full-stack agent chat application built with React, TypeScript, and LangGraph JS. It supports multi-agent conversations, streamed responses, tool calling, image input, and human-in-the-loop workflows, with a BFF that manages API traffic between the browser and the LangGraph runtime.
 
 ## Core Features
 
@@ -44,7 +44,7 @@ Chat Gun React Agent is a full-stack agent chat application built with React, Ty
 ## Demo
 
 <p align="center">
-  <img src="./assets/chat-gun-demo.webp" alt="Chat Gun React Agent demo" width="1280" />
+  <img src="./assets/chat-gun-demo.webp" alt="Chat Gun demo" width="1280" />
 </p>
 
 <p align="center">
@@ -106,8 +106,8 @@ The frontend offers `qwen-plus`, `qwen-max`, and `qwen-turbo`, with `qwen-plus` 
 ## Installation
 
 ```bash
-git clone https://github.com/HsienW/chat-gun-react-agent.git
-cd chat-gun-react-agent
+git clone https://github.com/HsienW/chat-gun.git
+cd chat-gun
 
 cd backend && npm ci
 cd ../bff && npm ci
@@ -118,8 +118,8 @@ cd ..
 PowerShell:
 
 ```powershell
-git clone https://github.com/HsienW/chat-gun-react-agent.git
-Set-Location chat-gun-react-agent
+git clone https://github.com/HsienW/chat-gun.git
+Set-Location chat-gun
 
 Set-Location backend
 npm ci
@@ -312,7 +312,7 @@ OpenTelemetry is disabled by default. Connect an OTLP collector with:
 
 ```env
 OTEL_ENABLED=true
-OTEL_SERVICE_NAME=chat-gun-react-agent
+OTEL_SERVICE_NAME=chat-gun
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 OTEL_EXPORTER_OTLP_PROTOCOL=http
 OTEL_SAMPLE_RATE=1

@@ -1,6 +1,6 @@
 ---
 name: chat-gun-frontend-contract
-description: Chat Gun React Agent 的前端、OpenSpec、Streaming Event、Tool Renderer、型別邊界、多模態流式鏈路與 React/Vite 編程約束。Use when working on frontend code, tool rendering, streaming contracts, multimodal requests/responses, Weather legacy refactors, or OpenSpec-driven changes in this repository.
+description: Chat Gun 的前端、OpenSpec、Streaming Event、Tool Renderer、型別邊界、多模態流式鏈路與 React/Vite 編程約束。Use when working on frontend code, tool rendering, streaming contracts, multimodal requests/responses, Weather legacy refactors, or OpenSpec-driven changes in this repository.
 ---
 
 # Chat Gun Frontend Contract

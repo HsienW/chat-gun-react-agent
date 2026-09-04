@@ -1,7 +1,7 @@
 schema: spec-driven
 
 context: |
-  專案名稱：chat-gun-react-agent
+  專案名稱：chat-gun
 
   系統架構：
   - frontend 使用 Vite、React 與 TypeScript。

@@ -253,7 +253,7 @@ async function loadStdioServerTools(
   config: StdioMcpServerConfig
 ): Promise<StructuredToolInterface[]> {
   const client = new Client({
-    name: `chat-gun-react-agent-${serverName}`,
+    name: `chat-gun-${serverName}`,
     version: "0.1.0",
   });
   const transport = new StdioClientTransport({

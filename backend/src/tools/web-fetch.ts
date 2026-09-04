@@ -247,7 +247,7 @@ export const webFetchTool = tool(
           signal: controller.signal,
           headers: {
             Accept: "text/html,text/plain,application/json;q=0.9,*/*;q=0.8",
-            "User-Agent": "chat-gun-react-agent/0.1",
+            "User-Agent": "chat-gun/0.1",
           },
         });
 

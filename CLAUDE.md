@@ -1,6 +1,6 @@
 @AGENTS.md
 
-# Chat Gun React Agent：Claude 協調與規格管理規則
+# Chat Gun：Claude 協調與規格管理規則
 
 ## 1. 文件定位
 本文件只定義 Claude Code 的工具專屬角色、協調流程與驗收責任。

@@ -1,4 +1,4 @@
-# Chat Gun React Agent
+# Chat Gun
 
 <p align="center">
   <img src="./assets/chat-gun-logo.jpg" alt="chat-gun" width="1024" />
@@ -20,7 +20,7 @@
   <a href="./README.zh-CN.md">简体中文</a>
 </p>
 
-Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 建構的全端 Agent Chat 應用。它支援多 Agent 對話、串流回覆、Tool Calling、圖片輸入與 Human-in-the-Loop，並透過 BFF 統一處理瀏覽器與 LangGraph Runtime 之間的 API 流量。
+Chat Gun 是一套以 React、TypeScript 與 LangGraph JS 建構的全端 Agent Chat 應用。它支援多 Agent 對話、串流回覆、Tool Calling、圖片輸入與 Human-in-the-Loop，並透過 BFF 統一處理瀏覽器與 LangGraph Runtime 之間的 API 流量。
 
 ## 核心功能
 
@@ -44,7 +44,7 @@ Chat Gun React Agent 是一套以 React、TypeScript 與 LangGraph JS 建構的�
 ## Demo
 
 <p align="center">
-  <img src="./assets/chat-gun-demo.webp" alt="Chat Gun React Agent demo" width="1280" />
+  <img src="./assets/chat-gun-demo.webp" alt="Chat Gun demo" width="1280" />
 </p>
 
 <p align="center">
@@ -106,8 +106,8 @@ Frontend 提供 `qwen-plus`、`qwen-max` 與 `qwen-turbo`，預設選用 `qwen-p
 ## 安裝
 
 ```bash
-git clone https://github.com/HsienW/chat-gun-react-agent.git
-cd chat-gun-react-agent
+git clone https://github.com/HsienW/chat-gun.git
+cd chat-gun
 
 cd backend && npm ci
 cd ../bff && npm ci
@@ -118,8 +118,8 @@ cd ..
 PowerShell：
 
 ```powershell
-git clone https://github.com/HsienW/chat-gun-react-agent.git
-Set-Location chat-gun-react-agent
+git clone https://github.com/HsienW/chat-gun.git
+Set-Location chat-gun
 
 Set-Location backend
 npm ci
@@ -312,7 +312,7 @@ OpenTelemetry 預設關閉。連接 OTLP collector：
 
 ```env
 OTEL_ENABLED=true
-OTEL_SERVICE_NAME=chat-gun-react-agent
+OTEL_SERVICE_NAME=chat-gun
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 OTEL_EXPORTER_OTLP_PROTOCOL=http
 OTEL_SAMPLE_RATE=1
