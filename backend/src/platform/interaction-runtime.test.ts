@@ -12,6 +12,35 @@ import {
   type InteractionOrchestratorConfig,
 } from "./interaction-runtime.js";
 
+const STREAM_METHOD_NAMES = ["stream", "streamEvents", "streamLog"] as const;
+
+function createTestStream(chunk: unknown): AsyncIterable<unknown> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield chunk;
+    },
+  };
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      Symbol.asyncIterator in value &&
+      typeof value[Symbol.asyncIterator] === "function"
+  );
+}
+
+async function consumeTestStream(value: unknown): Promise<unknown[]> {
+  if (!isAsyncIterable(value)) {
+    throw new TypeError("Expected an AsyncIterable test stream");
+  }
+
+  const chunks: unknown[] = [];
+  for await (const chunk of value) chunks.push(chunk);
+  return chunks;
+}
+
 const configuredPolicy = (strategy: "reject" | "enqueue" | "supersede") =>
   JSON.stringify({
     strategy,
@@ -99,6 +128,40 @@ function configuredDependencies(strategy: "reject" | "enqueue" | "supersede") {
 }
 
 describe("interaction runtime production wrapper", () => {
+  it.each(STREAM_METHOD_NAMES)(
+    "returns %s as an AsyncIterable before asynchronous setup starts",
+    async (streamMethodName) => {
+      const orchestrator: InteractionOrchestrator = {
+        isConfigured: true,
+        beforeRun: vi.fn(async () => ({ configured: true, events: [] })),
+        afterRun: vi.fn(async () => undefined),
+      };
+      const graph = {
+        stream: vi.fn((_input?: unknown, _config?: unknown) =>
+          createTestStream("stream")
+        ),
+        streamEvents: vi.fn((_input?: unknown, _config?: unknown) =>
+          createTestStream("streamEvents")
+        ),
+        streamLog: vi.fn((_input?: unknown, _config?: unknown) =>
+          createTestStream("streamLog")
+        ),
+      };
+      const governed = applyInteractionGovernance(graph, orchestrator);
+
+      const stream = governed[streamMethodName]({}, runConfig());
+
+      expect(stream).not.toBeInstanceOf(Promise);
+      expect(orchestrator.beforeRun).not.toHaveBeenCalled();
+
+      const chunks: unknown[] = [];
+      for await (const chunk of stream) chunks.push(chunk);
+
+      expect(chunks).toEqual([streamMethodName]);
+      expect(orchestrator.afterRun).toHaveBeenCalledOnce();
+    }
+  );
+
   it("is a true no-op when no InteractionPolicy is configured", async () => {
     let markFirstStarted: (() => void) | undefined;
     let releaseFirst: (() => void) | undefined;
@@ -314,18 +377,19 @@ describe("interaction runtime production wrapper", () => {
   it("marks ownership terminal when stream setup fails", async () => {
     const dependencies = configuredDependencies("supersede");
     const graph = {
-      stream: vi.fn(async (_input: unknown, _config?: unknown) => {
-        throw new Error("stream setup failed");
-      }),
+      stream: vi.fn(
+        (_input: unknown, _config?: unknown): unknown =>
+          Promise.reject(new Error("stream setup failed"))
+      ),
     };
     const governed = applyInteractionGovernance(
       graph,
       createInteractionOrchestrator(dependencies.config)
     );
 
-    await expect(governed.stream({}, runConfig())).rejects.toThrow(
-      "stream setup failed"
-    );
+    await expect(
+      consumeTestStream(governed.stream({}, runConfig()))
+    ).rejects.toThrow("stream setup failed");
     expect(dependencies.ownershipRepository.markTerminal).toHaveBeenCalledWith({
       threadId: "thread-1",
       scopeId: "scope-1",

@@ -84,6 +84,15 @@ async function invokeStreamMethod(
   return output;
 }
 
+function createDeferredStream(
+  streamFactory: () => Promise<AsyncIterable<unknown>>
+): AsyncIterable<unknown> {
+  return (async function* generateDeferredStream() {
+    const stream = await streamFactory();
+    for await (const chunk of stream) yield chunk;
+  })();
+}
+
 export function instrumentGraphWithOpik<TGraph extends object>(
   graph: TGraph,
   agentName: string,
@@ -105,12 +114,12 @@ export function instrumentGraphWithOpik<TGraph extends object>(
       }
 
       if (TRACED_STREAM_METHODS.has(property)) {
-        return async (input: unknown, config?: unknown) => {
+        return (input: unknown, config?: unknown) => {
           const metadata = readAgentRunMetadata(config);
           const execution = () => invokeStreamMethod(member, target, input, config);
           return metadata && !tracer.getActiveTraceId()
             ? tracer.traceAgentStream(agentName, metadata, execution)
-            : execution();
+            : createDeferredStream(execution);
         };
       }
 
