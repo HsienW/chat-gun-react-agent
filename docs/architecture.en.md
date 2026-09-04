@@ -5,7 +5,7 @@
   <a href="./architecture.md">繁體中文</a>
 </p>
 
-This document explains how Chat Gun React Agent receives requests, selects execution paths, calls models and tools, and streams results back to the browser. For package boundaries and extension points, see the [TypeScript + LangGraph Code Structure](./typescript-langgraph-architecture.en.md).
+This document explains how Chat Gun receives requests, selects execution paths, calls models and tools, and streams results back to the browser. For package boundaries and extension points, see the [TypeScript + LangGraph Code Structure](./typescript-langgraph-architecture.en.md).
 
 ## Request Flow
 

@@ -5,7 +5,7 @@
   <a href="./typescript-langgraph-architecture.md">繁體中文</a>
 </p>
 
-Chat Gun React Agent 採用 TypeScript monorepo。Frontend、BFF 與 LangGraph backend 各自有清楚的責任邊界，可獨立開發與部署。
+Chat Gun 採用 TypeScript monorepo。Frontend、BFF 與 LangGraph backend 各自有清楚的責任邊界，可獨立開發與部署。
 
 ## 套件分工
 
