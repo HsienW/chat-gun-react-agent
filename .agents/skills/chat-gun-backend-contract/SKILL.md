@@ -4,7 +4,7 @@ description: >
   Apply when creating, modifying, refactoring, debugging, testing, or
   reviewing TypeScript, LangGraph JS, LangChain, provider adapter, tool,
   MCP, prompt, state, checkpoint, runtime event, or backend code under
-  backend/** in chat-gun-react-agent.
+  backend/** in chat-gun.
 ---
 
 # ChatGun Backend Engineering Contract

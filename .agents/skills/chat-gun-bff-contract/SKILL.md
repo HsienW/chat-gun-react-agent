@@ -3,7 +3,7 @@ name: chat-gun-bff-contract
 description: >
   Apply when creating, modifying, refactoring, debugging, testing, or
   reviewing TypeScript and Node.js code under bff/** in
-  chat-gun-react-agent. Enforces transport boundaries, naming, imports,
+  chat-gun. Enforces transport boundaries, naming, imports,
   validation, streaming, timeout, cancellation, security, observability,
   internationalization, and legacy-code compatibility.
 ---

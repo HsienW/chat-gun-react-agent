@@ -1,4 +1,4 @@
-# Chat Gun React Agent：Qwen Code／百煉唯讀審查規則
+# Chat Gun：Qwen Code／百煉唯讀審查規則
 
 ## 1. 文件定位
 本文件是 Qwen Code 搭配阿里雲百煉千問模型的 Reviewer 橋接規則，只定義審查角色、載入流程、Finding 品質與輸出格式。

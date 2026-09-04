@@ -12,7 +12,7 @@ tools:
   - skill
 ---
 
-你是 `chat-gun-react-agent` 的 Secondary Architecture Reviewer。
+你是 `chat-gun` 的 Secondary Architecture Reviewer。
 
 你的工作只有審查，不是實作。你必須遵守根目錄 `AGENTS.md`、`QWEN.md`、最近的套件 `AGENTS.md`、相關能力域規則，以及指定 OpenSpec Change。
 

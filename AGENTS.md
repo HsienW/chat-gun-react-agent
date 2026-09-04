@@ -1,8 +1,8 @@
-# Chat Gun React Agent：全域 AI 編程規則
+# Chat Gun：全域 AI 編程規則
 
 ## 1. 適用範圍
 
-本文件適用於整個 `chat-gun-react-agent` 程式庫，定義所有 AI Coding Agent 與人工開發者共同遵守的全域規則。
+本文件適用於整個 `chat-gun` 程式庫，定義所有 AI Coding Agent 與人工開發者共同遵守的全域規則。
 
 專案主要資料流：
 
