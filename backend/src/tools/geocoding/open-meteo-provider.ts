@@ -38,7 +38,7 @@ export class OpenMeteoGeocodingProvider implements GeocodingProvider {
       const response = await fetch(url.toString(), {
         signal,
         headers: {
-          "User-Agent": "chat-gun-react-agent/0.1",
+          "User-Agent": "chat-gun/0.1",
         },
       });
 
