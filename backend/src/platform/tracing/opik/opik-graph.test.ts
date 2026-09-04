@@ -10,6 +10,16 @@ import type {
 } from "./opik-tracer.js";
 import { instrumentGraphWithOpik, withOpikNode } from "./opik-graph.js";
 
+const STREAM_METHOD_NAMES = ["stream", "streamEvents", "streamLog"] as const;
+
+function createTestStream(chunk: unknown): AsyncIterable<unknown> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield chunk;
+    },
+  };
+}
+
 class RecordingTracer implements OpikTracer {
   readonly agentRunCalls: Array<{
     agentName: string;
@@ -83,6 +93,63 @@ class RecordingTracer implements OpikTracer {
 }
 
 describe("instrumentGraphWithOpik", () => {
+  it.each(STREAM_METHOD_NAMES)(
+    "returns %s as an AsyncIterable without awaiting the wrapper",
+    async (streamMethodName) => {
+      const tracer = new RecordingTracer();
+      const graph = {
+        stream: vi.fn((_input?: unknown, _config?: unknown) =>
+          createTestStream("stream")
+        ),
+        streamEvents: vi.fn((_input?: unknown, _config?: unknown) =>
+          createTestStream("streamEvents")
+        ),
+        streamLog: vi.fn((_input?: unknown, _config?: unknown) =>
+          createTestStream("streamLog")
+        ),
+      };
+      const instrumented = instrumentGraphWithOpik(graph, "weather", tracer);
+
+      const stream = instrumented[streamMethodName](
+        {},
+        { configurable: { thread_id: "thread-1", run_id: "run-1" } }
+      );
+
+      expect(stream).not.toBeInstanceOf(Promise);
+
+      const chunks: unknown[] = [];
+      for await (const chunk of stream) chunks.push(chunk);
+
+      expect(chunks).toEqual([streamMethodName]);
+      expect(tracer.agentStreamCalls).toEqual([
+        {
+          agentName: "weather",
+          metadata: { threadId: "thread-1", runId: "run-1" },
+        },
+      ]);
+    }
+  );
+
+  it("returns an AsyncIterable when correlation metadata is unavailable", async () => {
+    const tracer = new RecordingTracer();
+    const graph = {
+      streamEvents: vi.fn((_input?: unknown, _config?: unknown) =>
+        createTestStream("event")
+      ),
+    };
+    const instrumented = instrumentGraphWithOpik(graph, "weather", tracer);
+
+    const stream = instrumented.streamEvents({}, {});
+
+    expect(stream).not.toBeInstanceOf(Promise);
+
+    const chunks: unknown[] = [];
+    for await (const chunk of stream) chunks.push(chunk);
+
+    expect(chunks).toEqual(["event"]);
+    expect(tracer.agentStreamCalls).toEqual([]);
+  });
+
   it("preserves an existing node step identifier", async () => {
     const tracer = new RecordingTracer();
     const withNodeSpan = vi.spyOn(tracer, "withNodeSpan");

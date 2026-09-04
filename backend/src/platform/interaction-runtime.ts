@@ -618,33 +618,49 @@ async function invokeGraphMethod(
 }
 
 function createGovernedStream(
-  source: AsyncIterable<unknown>,
-  start: InteractionRunStart,
+  method: (...args: unknown[]) => unknown,
+  target: object,
+  input: unknown,
   config: unknown,
   orchestrator: InteractionOrchestrator
 ): AsyncIterable<unknown> {
-  return {
-    async *[Symbol.asyncIterator]() {
-      let completed = false;
-      let terminalStatus: "completed" | "cancelled" = "cancelled";
-      try {
-        for (const event of start.events) {
-          yield { interaction_runtime: { taskEvent: event } };
-        }
-        for await (const chunk of source) yield chunk;
-        completed = true;
-        terminalStatus = "completed";
-      } catch (error) {
-        terminalStatus = isCancelled(error, config) ? "cancelled" : "completed";
-        throw error;
-      } finally {
-        if (!completed && terminalStatus !== "completed") {
-          terminalStatus = "cancelled";
-        }
-        await orchestrator.afterRun(start, terminalStatus);
+  return (async function* generateGovernedStream() {
+    const start = await orchestrator.beforeRun(input, config);
+    let source: unknown;
+    try {
+      source = await invokeGraphMethod(method, target, input, config);
+      if (!isAsyncIterable(source)) {
+        throw new TypeError(
+          "Interaction-governed graph stream method did not return an AsyncIterable"
+        );
       }
-    },
-  };
+    } catch (error) {
+      await orchestrator.afterRun(
+        start,
+        isCancelled(error, config) ? "cancelled" : "completed"
+      );
+      throw error;
+    }
+
+    let completed = false;
+    let terminalStatus: "completed" | "cancelled" = "cancelled";
+    try {
+      for (const event of start.events) {
+        yield { interaction_runtime: { taskEvent: event } };
+      }
+      for await (const chunk of source) yield chunk;
+      completed = true;
+      terminalStatus = "completed";
+    } catch (error) {
+      terminalStatus = isCancelled(error, config) ? "cancelled" : "completed";
+      throw error;
+    } finally {
+      if (!completed && terminalStatus !== "completed") {
+        terminalStatus = "cancelled";
+      }
+      await orchestrator.afterRun(start, terminalStatus);
+    }
+  })();
 }
 
 export function applyInteractionGovernance<TGraph extends object>(
@@ -677,25 +693,8 @@ export function applyInteractionGovernance<TGraph extends object>(
       }
 
       if (STREAM_METHODS.has(property)) {
-        return async (input: unknown, config?: RunnableConfig) => {
-          const start = await orchestrator.beforeRun(input, config);
-          let source: unknown;
-          try {
-            source = await invokeGraphMethod(member, target, input, config);
-            if (!isAsyncIterable(source)) {
-              throw new TypeError(
-                "Interaction-governed graph stream method did not return an AsyncIterable"
-              );
-            }
-          } catch (error) {
-            await orchestrator.afterRun(
-              start,
-              isCancelled(error, config) ? "cancelled" : "completed"
-            );
-            throw error;
-          }
-          return createGovernedStream(source, start, config, orchestrator);
-        };
+        return (input: unknown, config?: RunnableConfig) =>
+          createGovernedStream(member, target, input, config, orchestrator);
       }
 
       return member.bind(target);
