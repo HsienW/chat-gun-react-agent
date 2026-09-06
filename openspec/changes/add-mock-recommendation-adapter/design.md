@@ -50,7 +50,7 @@ interface MockIntent {
 ```
 
 - `extractIntent(input)` 只讀 `input.signals`（`Constraint[]`），將 `field=category/color/price` 的 resolved 值對映進 `MockIntent`；MUST NOT 解析 `rawText`。
-- `confidence` 用於框架的 `getIntentConfidence`（clarification 判定），Mock 預設採 signals 中最高優先 source 的 confidence，或固定 high confidence（由 compose factory 注入）。
+- `confidence` 用於框架的 `getIntentConfidence`（clarification 判定），採已解析且已知欄位 signals 的最高 confidence；signals 為空或沒有已知欄位時固定為 `0`，以 fail-closed 觸發澄清。
 - 未知欄位（`field` 不屬於 category/color/price）直接忽略，不臆測為業務屬性。
 
 ### MockCandidateRetriever（recall 注入）
@@ -81,7 +81,7 @@ class MockRecommendationAdapter
 
 - `buildRetrievalPolicy`：`{ domain: "mock", candidateLimit: N, ...(intent.category ? { filters: { category: intent.category } } : {}) }`。`domain` MUST 恆為 `mock`（engine 驗證 policy.domain === routed domain）。
 - `toCandidateFields`：`{ category, color, price: String(price) }`；純欄位對映，不判定 hard/soft。
-- `buildCard`：以 `candidate.productId` 為 `resourceId`、`resourceType: "mock_product"`、`tenantId`/`ownerScopeId` 取自 candidate，產出 `RecommendationCard<MockCardPayload>`（`payload` 含 title/category/color/price 展示欄位）。
+- `buildCard`：以 `mock-${candidate.productId}` 為 deterministic `cardId`、`candidate.productId` 為 `resourceId`、`resourceType: "mock_product"`、`tenantId`/`ownerScopeId` 取自 candidate，產出 `RecommendationCard<MockCardPayload>`（`payload` 含 title/category/color/price 展示欄位）。
 
 ### compose factory（組裝 engine）
 
@@ -97,6 +97,8 @@ function createMockRecommendationEngine(options?): RecommendationEngine<MockInte
 ```
 
 - 集中組裝 `DomainRouter`（單一註冊 `MockRecommendationAdapter`）、`MockCandidateRetriever`、`ConstraintEngine`、`BusinessPolicyGate`、`ClarificationFlow` 與 provenance writer，供整合測試與未來 live smoke 使用。
+- 未注入 `provenanceWriter` 時使用 async noop，確保 Mock/test 不依賴 DB；任何 live 使用 MUST 注入真實 writer，不能把 noop 當成正式決策稽核。
+- Adapter-swap 測試的第二個變體固定為 `mock-v2`，保留 `category` 並以 `size` 取代 `color`，藉此驗證 Core 不依賴 Mock v1 的屬性集合。
 
 ## Hard Negative 案例與 reasonCode 仲裁
 
