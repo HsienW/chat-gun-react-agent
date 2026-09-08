@@ -2,21 +2,40 @@
 
 > 對應 `second-stage-plan-en-v3.md` X10.1（Layer 2 Platform Governance 的 Long-Term Memory），backend-only。每個 Task 只有在實作完成、測試新增、驗證實際執行通過後才勾選 `- [x]`。T0 為 hard gate：不通過即停止並回報 ADR。
 
-## Phase 0：T0 compatibility spike（hard gate）
+## Phase 0：dependency upgrade compatibility spike（hard gate）
 
-### Task 0.1：LangGraph PostgresStore（0.2.74）＋真實 PostgreSQL 邊界驗證
+> 首次 T0（0.2.74）已以 hard gate 失敗；ADR（`docs/decisions/production-memory-store-boundary.md`）定案升級整組 LangGraph persistence dependencies。以下三個 Task 為新的 hard gate：任一失敗即停止並回報 ADR，不得靜默改自建 repository 或降級至 `PostgresSaver`。
 
-- [ ] 以 lockfile 解析的 `@langchain/langgraph` 0.2.74（package.json 宣告 `^0.2.67`）確認 `BaseStore`／`PostgresStore`／`InMemoryStore` 的實際 package/module 路徑並記錄
-- [ ] 以真實 PostgreSQL 驗證 setup/migration（`PostgresStore` 建表語意）
+### Task 0.1：升級 LangGraph persistence dependencies 至候選矩陣
+
+- [ ] 依 ADR 候選矩陣升級 `backend/package.json` 與 lockfile：`@langchain/langgraph` 1.4.14、`@langchain/langgraph-checkpoint` 1.1.5、`@langchain/langgraph-checkpoint-postgres` 1.0.5、`@langchain/core` 1.2.9、`@langchain/langgraph-cli` 1.4.5、`zod` ^3.25.32（保留 Zod 3）
+- [ ] 驗證 dependency 安裝成功且為**單一 checkpoint 版本**（無雙 checkpoint/core 型別與 runtime 不一致）
+- [ ] 確認 `import { PostgresStore } from "@langchain/langgraph-checkpoint-postgres/store"` 的 `./store` subpath 可用
+
+**驗證：** `cd backend && npm install` 成功；`npm ls @langchain/langgraph @langchain/langgraph-checkpoint @langchain/langgraph-checkpoint-postgres @langchain/core` 顯示單一版本。
+
+### Task 0.2：PostgresStore（1.0.5）＋真實 PostgreSQL 邊界驗證
+
+- [ ] 以真實 PostgreSQL（Docker Compose）驗證 `PostgresStore.setup()` 建表與重複執行安全性
 - [ ] 驗證 put/get/search/delete 全 CRUD
 - [ ] 驗證跨 Thread 讀寫（Thread A 寫、Thread B 讀，同一 authorized principal/tenant）
 - [ ] 驗證 process restart 後資料仍可讀
-- [ ] 驗證 TTL/expiry 行為
+- [ ] 驗證 TTL/expiry 行為（Store 原生 expiry + Governance 層過濾）
 - [ ] 驗證 tenant/scope isolation（同 namespace 不同 tenant 不得互相可見——governance 層隔離，非依賴 DB namespace）
+- [ ] 驗證 atomic CAS 可行方案並記錄（adapter 原生 conditional put，否則單一寫入 transaction）
 - [ ] 產出 spike 證據與結論（`InMemoryStore` smoke 已具，`PostgresStore` 結論於此固化）
-- [ ] 任一失敗 → 停止並回報 ADR，不得靜默改自建 repository
 
 **驗證：** T0 spike 腳本（backend 內，真實 PostgreSQL）全綠；結論記錄至 change evidence。`cd backend && npx vitest run src/memory/__spike__`
+
+### Task 0.3：既有 LangGraph runtime 全量回歸（升級相容性）
+
+- [ ] 驗證既有 graph compile 全量通過
+- [ ] 驗證 streaming 行為不變
+- [ ] 驗證 checkpoint/resume 不變
+- [ ] 驗證 tool calling 不變
+- [ ] 驗證既有 test 全量通過（含 context／authorization／provenance 回歸）
+
+**驗證：** `cd backend && npm run lint && npm run test && npm run build` 全綠。
 
 ---
 
@@ -60,7 +79,7 @@
 ### Task 2.3：PostgresStoreAdapter（production，依 T0 結論）
 
 - [ ] 建立 `backend/src/memory/store/postgres-adapter.ts`
-- [ ] 包裝 `PostgresStore`（模組路徑依 T0 結論），實作 `MemoryStorePort`
+- [ ] 包裝 `PostgresStore`（模組路徑 `@langchain/langgraph-checkpoint-postgres/store`，版本依 T0 鎖版），實作 `MemoryStorePort`
 - [ ] 連線設定由注入提供，不寫死 URL／credential
 - [ ] 測試：以 test double／T0 結論覆蓋 CRUD 對映（不含 live PG，除非 T0 已具備）
 
@@ -76,7 +95,10 @@
 - [ ] `recall(principal: PrincipalContext, scope: RuntimeScope, budgetHint)`：search 候選 → 每筆 `authorize({ action: "read", resource: ResourceRef })` → 過濾 expired/deleted → relevance score（`confidence × memoryTypeWeight × recencyDecay`，deterministic 排序）→ 截斷 → 回傳 authorized blocks
 - [ ] 必要時經 X8.9 `AuthorizedContextReferenceResolver.findRelated`（direct/1-hop）擴展，MUST NOT 任意 multi-hop 遍歷
 - [ ] 跨 tenant／未授權在回傳前 deny
-- [ ] 測試：授權通過回傳、跨 tenant deny、未授權 scope deny、expired 不注入
+- [ ] bounded、metadata-first recall：先以 metadata 取得有限候選，再載入 value 排序；candidate／token 受 configurable cap（`maxCandidates`／`maxTokens`）約束
+- [ ] relevance ordering deterministic（同輸入同輸出）；同分依 `recordedAt` 再 `memoryId` 斷 tie
+- [ ] telemetry 只記錄 scope/provenance/revision，不記錄 memory value
+- [ ] 測試：授權通過回傳、跨 tenant deny、未授權 scope deny、expired 不注入、cap 截斷、ordering 可重現、telemetry 無 value
 
 **驗證：** `cd backend && npx vitest run src/memory/governance/memory-governance-service.test.ts`
 
@@ -121,8 +143,9 @@
 - [ ] 建立 `backend/src/memory/governance/write-policy.ts`
 - [ ] 僅 approved source（user_explicit／user_feedback／task_result，model_inferred 需滿足最低 confidence 門檻）
 - [ ] 敏感資料／consent／retention 檢查；dedupe（與既有 record 比對）；idempotency（依 `idempotencyKey`）
-- [ ] MUST NOT 保存 raw prompt／整段對話／credential／unmasked PII
-- [ ] 測試：approved source 通過、raw/PII 拒存、重複 idempotencyKey 不重複寫入
+- [ ] MUST NOT 保存 raw prompt／整段對話／credential／unmasked PII、derivable information、ephemeral task state 或已有 authoritative record 的內容
+- [ ] 雙層敏感資料防護：`MemoryCandidate` 接受時與呼叫 Store adapter 前各檢查一次，共用同一 policy/detector
+- [ ] 測試：approved source 通過、raw/PII/derivable/ephemeral 拒存、重複 idempotencyKey 不重複寫入、雙層檢查共用同一 detector
 
 **驗證：** `cd backend && npx vitest run src/memory/governance/write-policy.test.ts`
 
@@ -131,8 +154,9 @@
 - [ ] 建立 `backend/src/memory/governance/relation-classifier.ts`
 - [ ] 於 replace/merge 前分類 `same`／`supersedes`／`conflicts`／`coexists`
 - [ ] current-turn explicit intent 永遠優先；low-confidence inferred 不得成為 Hard Constraint
+- [ ] memory non-authoritative：與 current authoritative state 衝突時以 authoritative state 優先、過時 memory supersede
 - [ ] 衝突/supersession 決策 SHOULD 產出 X8.9 `DecisionRecord`（provenance，非 gate）
-- [ ] 測試：supersede、conflict、coexists、low-confidence 不升格 Hard Constraint
+- [ ] 測試：supersede、conflict、coexists、low-confidence 不升格 Hard Constraint、memory non-authoritative（current state 優先）
 
 **驗證：** `cd backend && npx vitest run src/memory/governance/relation-classifier.test.ts`
 
@@ -155,7 +179,7 @@
 - [ ] 支援 bounded point-in-time 查詢（valid/recorded）供測試與除錯
 - [ ] 測試：valid 時間可獨立表示、restore 不抹除歷史、point-in-time 查詢
 
-**驗證：** `cd backend && npx vitest run src/memory/governance/relation-classifier.test.ts`
+**驗證：** `cd backend && npx vitest run src/memory/governance/memory-governance-service.test.ts`
 
 ---
 
@@ -192,6 +216,9 @@
 - [ ] 案例：expired/deleted 不注入 Context
 - [ ] 案例：low-confidence inferred 不升格 Hard Constraint
 - [ ] 案例：寫入失敗不改已成功回答
+- [ ] 案例：derivable／ephemeral candidate 拒存（雙層防護）
+- [ ] 案例：bounded recall cap 截斷與 deterministic ordering
+- [ ] 案例：memory non-authoritative（current state 優先）
 
 **驗證：** `cd backend && npx vitest run src/memory/integration.test.ts`
 
