@@ -24,7 +24,7 @@ AND MUST NOT 以任意值靜默接受
 
 ### Requirement: production memory persistence MUST 使用已驗證的 LangGraph Store 邊界，未驗證不得宣稱 production boundary 完成
 
-production memory persistence MUST 採 LangGraph Store 邊界並以 project-owned port 封裝，production adapter 採 `PostgresStore`、`InMemoryStore` 僅供 deterministic tests。X0 的 native Store boundary MUST 記錄為「僅完成 InMemoryStore smoke；PostgresStore 未驗證；Decision Record 遺失」。production boundary MUST 經 T0 compatibility spike（真實 PostgreSQL + 實際解析的 `@langchain/langgraph` 版本）驗證 setup/migration、put/get/search/delete、跨 Thread、process restart、TTL 與 tenant/scope isolation 後才可宣告完成；spike 不通過 MUST 停止並回報 ADR，MUST NOT 靜默改採自建 repository。
+production memory persistence MUST 採 LangGraph Store 邊界並以 project-owned port 封裝，production adapter 採 `PostgresStore`（`@langchain/langgraph-checkpoint-postgres/store`）、`InMemoryStore` 僅供 deterministic tests。X0 的 native Store boundary MUST 記錄為「僅完成 InMemoryStore smoke；PostgresStore 未驗證；Decision Record 遺失」。production boundary MUST 經 dependency upgrade compatibility spike（真實 PostgreSQL + 候選版本矩陣）驗證 dependency 安裝與單一 checkpoint 版本、`PostgresStore.setup()`、put/get/search/delete、跨 Thread、process restart、TTL、atomic CAS、tenant/scope isolation 與既有 graph/checkpoint/resume/tool-calling 全量回歸後才可宣告完成；spike 不通過 MUST 停止並回報 ADR，MUST NOT 靜默改採自建 repository 或降級至 `PostgresSaver`。
 
 #### Scenario: 未驗證前不宣告 production boundary 完成
 
@@ -33,12 +33,12 @@ WHEN 描述 production Store boundary 狀態
 THEN MUST 標記為未驗證
 AND MUST NOT 宣稱 production native Store boundary 已完成
 
-#### Scenario: spike 不通過不得靜默改採自建 repository
+#### Scenario: spike 不通過不得靜默改採自建 repository 或降級至 PostgresSaver
 
-GIVEN T0 compatibility spike 任一步失敗
+GIVEN dependency upgrade compatibility spike 任一步失敗
 WHEN 決定後續儲存方案
 THEN MUST 停止並回報 ADR
-AND MUST NOT 未經 ADR 即改採自建 repository
+AND MUST NOT 未經 ADR 即改採自建 repository 或降級至 `PostgresSaver`
 
 ---
 
@@ -96,6 +96,26 @@ AND MUST NOT 任意 multi-hop 圖遍歷
 
 ---
 
+### Requirement: recall MUST 為 bounded、metadata-first 且 deterministic，逾時或空結果 MUST 降級並可觀測
+
+recall MUST 先以 metadata（namespace／`memoryType`／`validFrom`／`validUntil`／`recordedAt`）取得有限候選，再套 relevance score 與 configurable cap（record/token）與 deterministic ordering；MUST NOT 全表載入或引入外部檔案索引。recall timeout 或 Store unavailable MUST 降級為空 memory context 並產生不洩漏 memory value 的觀測事件；取消 MUST 傳遞，MUST NOT 以空結果吞掉取消。
+
+#### Scenario: 召回受限於 cap 且排序 deterministic
+
+GIVEN 候選數超過 `maxCandidates` 或注入 token 超過 `maxTokens`
+WHEN 執行 recall
+THEN MUST 截斷至 cap
+AND 排序 MUST deterministic（相同輸入產生相同輸出與順序）
+
+#### Scenario: recall 觀測事件不記錄 memory value
+
+GIVEN recall 產生觀測事件（含降級、deny、timeout）
+WHEN 檢視觀測事件內容
+THEN MUST 只含 scope/provenance/revision 中繼資料
+AND MUST NOT 記錄 memory `value` 全文
+
+---
+
 ### Requirement: 寫入 MUST 只能由 runtime-validated MemoryCandidate 經 MemoryWritePolicy 與 X8.7 write authorization 後 commit
 
 synthesis 後只能產出 runtime-validated `MemoryCandidate`，經 `MemoryWritePolicy`（敏感資料／consent／retention、dedupe、idempotency）與 X8.7 write authorization 後 commit。MUST NOT 無條件保存整段對話、raw prompt、模型自由文字、credential 或未遮蔽 PII。`EvidenceStore`／`DecisionRecord`／Audit 僅記錄 provenance，MUST NOT 作為 memory persistence 或 authorization gate。
@@ -120,6 +140,26 @@ GIVEN `DecisionRecord`／`EvidenceStore` 已記錄某決策
 WHEN 判定 memory 寫入權限
 THEN MUST 以 X8.7 `authorize()` 為準
 AND MUST NOT 因 provenance 已記錄而授與寫入
+
+---
+
+### Requirement: 寫入 MUST 只保存 durable、non-derivable 內容，並於候選接受與落盤前各做一次敏感資料防護
+
+`MemoryCandidate` MUST 只承載 durable、跨 session 有效、且無法由 authoritative source（code／Git／既有文件／transcript）重建的內容。MUST NOT 保存 derivable information、ephemeral task state 或已有 authoritative record 的內容。敏感資料／PII／credential 防護 MUST 於 (a) `MemoryCandidate` 接受時與 (b) 真正呼叫 Store adapter 前各執行一次，兩者共用同一 policy/detector（單一來源）。
+
+#### Scenario: derivable 或 ephemeral 內容拒存
+
+GIVEN `MemoryCandidate.value` 可由 authoritative source（code／Git／既有文件）重建，或屬 ephemeral task state
+WHEN 經 `MemoryWritePolicy` 評估
+THEN MUST 拒絕寫入
+AND MUST NOT 落盤該內容
+
+#### Scenario: 落盤前二次敏感資料防護使用同一 policy
+
+GIVEN `MemoryCandidate` 已通過接受時檢查
+WHEN 真正呼叫 Store adapter 前再次檢查敏感資料
+THEN 兩次檢查 MUST 使用同一 policy/detector（單一來源）
+AND MUST NOT 因兩套規則漂移而漏過 PII／credential
 
 ---
 
@@ -168,6 +208,13 @@ GIVEN 新 memory supersede 舊 memory
 WHEN 執行 supersession
 THEN SHOULD 產出 X8.9 Decision Provenance
 AND MUST NOT 靜默覆寫舊 memory
+
+#### Scenario: memory 與 current authoritative state 衝突時視為 non-authoritative
+
+GIVEN memory 內容與 current authoritative state（非 memory 來源）衝突
+WHEN 決定生效值
+THEN current authoritative state MUST 優先
+AND 衝突 memory MUST 視為 non-authoritative 並以 supersede 處理，而非靜默覆寫 authoritative state
 
 ---
 
