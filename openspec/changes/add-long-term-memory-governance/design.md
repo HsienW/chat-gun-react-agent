@@ -45,7 +45,7 @@ interface MemoryStorePort {
 
 - `MemoryNamespace = { tenantId, principalId, domain?, scopeId }` 序列化為 BaseStore namespace tuple（如 `["mem", tenantId, principalId, domain ?? SENTINEL, scopeId]`）；runtime validation MUST reject `domain === SENTINEL`（保留字），避免「未定義 domain」與合法值碰撞。
 - `key = memoryId`；`value = LongTermMemoryRecord`（含 bi-temporal、revision、provenance 欄位）。
-- `revision` 產生策略：monotonic counter string（如 `r0001`），成功 commit 時遞增。BaseStore `put` 為覆寫語意，故 optimistic concurrency 由 `putIfRevision` 保證（`expectedRevision` 不符回傳 `false` 且不覆寫）；若 `PostgresStore` 原生不提供 conditional put，adapter 須以單一寫入交易或 lock 補足（由 T0 spike 確認並記錄）。
+- `revision` 產生策略：canonical monotonic counter token `r<counter>`；`counter` 為不含前導零的正整數十進位字串（如 `r1`、`r2`、`r10000`），runtime validation 使用 `^r[1-9][0-9]*$`。格式不設固定位寬或 `r9999` 上限；遞增時以 `BigInt`（或等價任意精度整數）解析，CAS 只比較 token 是否相等，MUST NOT 以字典序判斷新舊。BaseStore `put` 為覆寫語意，故 optimistic concurrency 由 `putIfRevision` 保證（`expectedRevision` 不符回傳 `false` 且不覆寫）；若 `PostgresStore` 原生不提供 conditional put，adapter 須以單一寫入交易或 lock 補足（由 T0 spike 確認並記錄）。
 - **namespace 只是路由鍵，不是安全邊界**。授權一律由 Governance Service 在 Store I/O 之前執行。
 
 ### Adapter 選擇
@@ -53,23 +53,26 @@ interface MemoryStorePort {
 | Adapter | 用途 | 持久化 |
 |---------|------|--------|
 | `InMemoryStoreAdapter` | deterministic tests | 否（LangGraph `InMemoryStore`） |
-| `PostgresStoreAdapter` | production | 是（LangGraph `PostgresStore`） |
+| `PostgresStoreAdapter` | production | 是（LangGraph `PostgresStore` 1.0.5，`@langchain/langgraph-checkpoint-postgres/store`） |
 
-- `PostgresStore` 的 JS package/module 路徑（`@langchain/langgraph` 內建或另裝）**不在 design 寫死**，由 T0 spike 以 0.2.74 實測確認。
+- `PostgresStore` 的 JS package/module 路徑已定案為 `import { PostgresStore } from "@langchain/langgraph-checkpoint-postgres/store"`（1.0.5 提供 `./store` subpath）；採用 ADR 候選矩陣（`@langchain/langgraph` 1.4.14／checkpoint 1.1.5／checkpoint-postgres 1.0.5／core 1.2.9），精確鎖版由 T0 驗證後以 lockfile 完成。
 - 兩者皆實作同一 `MemoryStorePort`；test 注入 InMemory，production 注入 Postgres。
 
-### T0 compatibility spike（hard gate）
+### T0 dependency upgrade compatibility spike（hard gate）
 
-T0 以 lockfile 解析的 `@langchain/langgraph` **0.2.74**（package.json 宣告 `^0.2.67`）+ 真實 PostgreSQL 驗證：
+首次 T0（0.2.74）已以 hard gate 失敗（相容 PostgreSQL adapter 只 export `PostgresSaver`，無 `PostgresStore`）。ADR 定案改為 **dependency upgrade compatibility spike**，以候選矩陣（`@langchain/langgraph` 1.4.14／checkpoint 1.1.5／checkpoint-postgres 1.0.5／core 1.2.9／cli 1.4.5／zod ^3.25.32）＋真實 PostgreSQL 驗證：
 
-- setup/migration（`PostgresStore` 建表語意）
-- put/get/search/delete
+- dependency 安裝與單一 checkpoint 版本（無雙 checkpoint/core 型別與 runtime 不一致）
+- `PostgresStore.setup()` 建表與重複執行安全性（不新增 project migration）
+- put/get/search/delete 全 CRUD
 - 跨 Thread 讀寫（Thread A 寫、Thread B 讀）
 - process restart 後資料仍可讀
-- TTL/expiry 行為
-- tenant/scope isolation（同 namespace 不同 tenant 不得互相可見——注意此為 governance 層隔離，非依賴 DB namespace）
+- TTL/expiry 行為（Store 原生 expiry + Governance 層過濾 defense-in-depth）
+- tenant/scope isolation（同 namespace 不同 tenant 不得互相可見——governance 層隔離，非依賴 DB namespace）
+- atomic CAS 可行方案（adapter 原生 conditional put，否則單一寫入 transaction）
+- 既有 graph compile、streaming、checkpoint/resume、tool calling 全量回歸
 
-**判定**：任一步不通過 → 停止並回報 ADR，不得靜默改成自建 repository。X0 記錄為「僅完成 InMemoryStore smoke；PostgresStore 未驗證；Decision Record 遺失」。
+**判定**：任一步不通過 → 停止並回報 ADR，不得靜默改成自建 repository 或降級至 `PostgresSaver`。X0 記錄為「僅完成 InMemoryStore smoke；PostgresStore 未驗證；Decision Record 遺失」。
 
 ## 核心模型
 
@@ -156,7 +159,8 @@ synthesis / runtime orchestration
 - `MemoryContextProvider` 是 pre-model/runtime orchestration boundary，**不執行 Store I/O**；Store I/O 只發生在 Governance Service 內（經 `MemoryStorePort`）。
 - `principal` 型別為 X8.7 `PrincipalContext`、`scope` 型別為 X8.7 `RuntimeScope`（唯讀引用，不重定義）；`MemoryContextProvider` 自 graph state 的 canonical trusted context 取得並傳入，Governance Service 不自行構造身份。
 - 召回結果固定落在 P3，MUST NOT 注入 P0/P1；P4 保留 current-thread recent conversation。
-- relevance scoring（截斷前排序）：`score = confidence × memoryTypeWeight(memoryType) × recencyDecay(recordedAt)`，降冪排序後依 `budgetHint` 截斷。`memoryTypeWeight` 為封閉常數表（單一來源、有預設值）、`recencyDecay` 為 monotonic、有界、deterministic；同分時依 `recordedAt` 再依 `memoryId` 斷 tie。單元測試以固定基準案例驗證排序可重現。
+- **bounded、metadata-first recall**：先以 metadata（namespace／`memoryType`／`validFrom`／`validUntil`／`recordedAt`）取得有限候選，再載入 `value` 做 relevance 排序；candidate 數與注入 token 受 configurable cap（`maxCandidates`／`maxTokens`）約束，避免全表載入。此為 metadata-first recall，不引入 MEMORY.md 或 Markdown 檔案儲存。
+- relevance scoring（截斷前排序）：`score = confidence × memoryTypeWeight(memoryType) × recencyDecay(recordedAt)`，降冪排序後依 `budgetHint` 截斷。`memoryTypeWeight` 由 application composition root 以 `MemoryRelevanceConfig.memoryTypeWeights: Readonly<Record<LongTermMemoryRecord["memoryType"], number>>` 注入 `MemoryGovernanceService`；五個 `memoryType` key 必須完整提供，值必須為 finite non-negative number，缺值、未知 key 或非法值一律 fail-closed reject，不使用隱含 fallback。production 值只由 backend config 單一來源提供，單元測試注入固定 fixture。`recencyDecay` 為 monotonic、有界、deterministic；同分時依 `recordedAt` 再依 `memoryId` 斷 tie。單元測試須覆蓋 config 驗證與固定基準案例，證明排序可重現。
 - 每筆注入 block 附 scope/provenance/confidence/revision 供 debug/trace。
 
 ## 寫入路徑（決策 2）
@@ -177,6 +181,8 @@ synthesis 後產出結構化 MemoryCandidate（runtime-validated）
 - `EvidenceStore`／`DecisionRecord`／Audit 僅記錄 provenance，**不作為 memory persistence 或 authorization gate**。
 - 寫入為**非阻斷後寫**：失敗不得把已成功產生的使用者回答改成失敗；但必須可觀測，且僅能以 idempotency key 安全重試。
 - 只保存 approved source：explicit user preference/correction、accepted recommendation／confirmed outcome、stable task summary。MUST NOT 保存 raw prompt、整段對話、credential、unmasked PII。
+- **寫入排除政策**：除 raw prompt／整段對話／credential／unmasked PII 外，MUST NOT 保存 derivable information（可由 code／Git／既有文件重建）、ephemeral state（暫時任務狀態、單次對話中繼狀態）與已有 authoritative record 的內容。
+- **雙層敏感資料防護**：敏感資料／PII／credential 於 (1) `MemoryCandidate` 接受時與 (2) 真正呼叫 Store adapter 前各檢查一次，兩層共用同一 policy/detector（單一來源），避免兩套規則漂移。
 
 ## 衝突分類與 bi-temporal（承 issue Part C/E/F）
 
@@ -185,10 +191,11 @@ synthesis 後產出結構化 MemoryCandidate（runtime-validated）
 - `validFrom/validUntil`（valid time）與 `recordedAt`（recorded time）分離：新觀察可 supersede 舊偏好而不抹除舊偏好的有效性事實。
 - 歷史 revision immutable；restore 以「舊值 + 新 revision」寫回，保留 provenance/audit 連結。
 - low-confidence inferred memory 不得成為 Hard Constraint。
+- **memory non-authoritative**：memory 不是 fact 的 authoritative source；current-turn explicit intent 與 current authoritative state 永遠優先，過時 memory 以 `supersedes` 處理。主動 re-validation（grep／讀檔／查外部服務）不屬本階段，延後至後續 change，避免擴張成 Tool／深度召回。
 
 ## 資料模型與 migration
 
-- 記憶資料走 LangGraph `PostgresStore` 自身表（BaseStore 通用 `(namespace, key, value)` 儲存），**不新增 project `runtime/persistence/migrations`**。
+- 記憶資料走 LangGraph `PostgresStore` 自身表（BaseStore 通用 `(namespace, key, value)` 儲存），由 `PostgresStore.setup()` 建表，**不新增 project `runtime/persistence/migrations`**。
 - project 既有 migration 001–016 不動；X8.9 §9 的 additive migration 約束適用於其自身表（`decision_records`／`context_refs`），與本變更的 store 表正交。
 - tenant/scope ownership 由 record 內 `namespace` 欄位與 `ResourceRef` 投影承載；安全隔離由 Governance Service 的 `authorize()` 保證，不依賴 DB 層 namespace 隔離。
 
@@ -218,6 +225,15 @@ synthesis 後產出結構化 MemoryCandidate（runtime-validated）
 | planner-controlled memory Tool | ❌ X10.1 明訂不提供；留待後續 change |
 | 無條件保存整段對話／模型自由文字 | ❌ 違反 write policy；僅 approved source |
 | 把 EvidenceStore/DecisionRecord 當 persistence gate | ❌ provenance 不得作為 memory 持久化或授權 gate |
+| MEMORY.md／Markdown filesystem 作為 production store | ❌ 參考實作的非資料庫儲存，不符 BaseStore/PostgresStore 邊界與逐筆授權／revision 要求 |
+| 硬編碼召回數字（固定掃描 N 筆、固定選 M 筆） | ❌ 違反「不得硬編碼」；採 configurable cap |
+| 以 user／feedback／project／reference 取代既有 `memoryType` | ❌ 直接硬複製外部分類；應映射到 X10.1 既有 `memoryType` |
+| daily log／背景 consolidation（/dream） | ❌ 不屬 X10.1；寫入採政策式，非背景整理 |
+| 模型／planner 直接以 Write／Edit 保存記憶 | ❌ 違反「政策式寫入、無 planner-controlled memory Tool」 |
+| repo team sync API、local-wins 衝突、不傳播刪除 | ❌ 不符合 revision/CAS 與 explicit delete 語意 |
+| 取消時回傳空記憶（吞掉取消） | ❌ X10.1 MUST 傳遞取消 |
+| standalone vector database | ❌ native `PostgresStore` 是本 Change 的凍結邊界；若 T0 證明不足，須另開 ADR／Change 評估，不在 X10.1 內替換 |
+| 主動 re-validation（grep／讀檔／查外部服務） | ❌ 會引入額外 I/O／Tool 與授權語意，延後至後續 Change；X10.1 只將 memory 視為 non-authoritative 並以 current authoritative state 優先 |
 
 ## 責任邊界
 
