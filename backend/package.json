@@ -8,13 +8,16 @@
     "dev": "langgraphjs dev",
     "build": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "postinstall": "patch-package",
     "start": "langgraphjs dev",
     "test": "vitest run",
     "eval:opik": "vitest run src/evaluation/opik/experiment.live-smoke.test.ts"
   },
   "dependencies": {
-    "@langchain/core": "^0.3.55",
-    "@langchain/langgraph": "^0.2.67",
+    "@langchain/core": "1.2.10",
+    "@langchain/langgraph": "1.4.14",
+    "@langchain/langgraph-checkpoint": "1.1.5",
+    "@langchain/langgraph-checkpoint-postgres": "1.0.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@modelcontextprotocol/server-filesystem": "^2026.1.14",
     "@opentelemetry/api": "^1.9.1",
@@ -26,12 +29,13 @@
     "ioredis": "^6.0.0",
     "pg": "^8.22.0",
     "undici": "^8.4.1",
-    "zod": "^3.24.4"
+    "zod": "^3.25.32"
   },
   "devDependencies": {
-    "@langchain/langgraph-cli": "^0.0.36",
+    "@langchain/langgraph-cli": "1.4.5",
     "@types/node": "^22.15.17",
     "@types/pg": "^8.20.0",
+    "patch-package": "8.0.0",
     "typescript": "~5.7.2",
     "vitest": "^4.1.8"
   },

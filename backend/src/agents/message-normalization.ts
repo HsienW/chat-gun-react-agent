@@ -1,7 +1,8 @@
 import { AIMessage, BaseMessage } from "@langchain/core/messages";
+import type { ContentBlock } from "@langchain/core/messages";
 import type { ToolCall } from "@langchain/core/messages/tool";
 
-type FunctionCallBlock = {
+type FunctionCallBlock = ContentBlock & {
   functionCall?: {
     name?: string;
     args?: Record<string, unknown>;
