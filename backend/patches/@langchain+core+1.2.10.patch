@@ -1,0 +1,52 @@
+diff --git a/node_modules/@langchain/core/dist/tools/index.cjs b/node_modules/@langchain/core/dist/tools/index.cjs
+index 1111111..2222222 100644
+--- a/node_modules/@langchain/core/dist/tools/index.cjs
++++ b/node_modules/@langchain/core/dist/tools/index.cjs
+@@ -292,10 +292,11 @@ function tool(func, fields) {
+ 		func: async (input, runManager, config) => {
+ 			return new Promise((resolve, reject) => {
+ 				let listener;
++				const wasAlreadyAborted = config?.signal?.aborted === true;
+ 				const cleanup = () => {
+ 					if (config?.signal && listener) config.signal.removeEventListener("abort", listener);
+ 				};
+-				if (config?.signal) {
++				if (config?.signal && !wasAlreadyAborted) {
+ 					listener = () => {
+ 						cleanup();
+ 						reject(require_signal.getAbortSignalError(config.signal));
+@@ -313,7 +314,7 @@ function tool(func, fields) {
+ 						* If the signal is aborted, we don't want to resolve the promise
+ 						* as the promise is already rejected.
+ 						*/
+-						if (config?.signal?.aborted) {
++						if (config?.signal?.aborted && !wasAlreadyAborted) {
+ 							cleanup();
+ 							return;
+ 						}
+diff --git a/node_modules/@langchain/core/dist/tools/index.js b/node_modules/@langchain/core/dist/tools/index.js
+index 3333333..4444444 100644
+--- a/node_modules/@langchain/core/dist/tools/index.js
++++ b/node_modules/@langchain/core/dist/tools/index.js
+@@ -291,10 +291,11 @@ function tool(func, fields) {
+ 		func: async (input, runManager, config) => {
+ 			return new Promise((resolve, reject) => {
+ 				let listener;
++				const wasAlreadyAborted = config?.signal?.aborted === true;
+ 				const cleanup = () => {
+ 					if (config?.signal && listener) config.signal.removeEventListener("abort", listener);
+ 				};
+-				if (config?.signal) {
++				if (config?.signal && !wasAlreadyAborted) {
+ 					listener = () => {
+ 						cleanup();
+ 						reject(getAbortSignalError(config.signal));
+@@ -312,7 +313,7 @@ function tool(func, fields) {
+ 						* If the signal is aborted, we don't want to resolve the promise
+ 						* as the promise is already rejected.
+ 						*/
+-						if (config?.signal?.aborted) {
++						if (config?.signal?.aborted && !wasAlreadyAborted) {
+ 							cleanup();
+ 							return;
+ 						}
