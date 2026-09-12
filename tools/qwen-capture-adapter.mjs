@@ -249,14 +249,21 @@ function applyVerdictTransition(currentState, reviewResult, { changeId, runId, r
       ...currentState.gateStatus,
       reviewPassed: transition.reviewPassed,
     },
-    blockers: buildBlockerEntries(reviewResult, changeId, runId),
+    blockers: buildBlockerEntries(reviewResult, changeId, runId, currentState.blockers ?? []),
     nextActions: buildNextActions(verdict, reviewResult),
     updatedAt: now().toISOString(),
   };
 }
 
-function buildBlockerEntries(reviewResult, changeId, runId) {
+function buildBlockerEntries(reviewResult, changeId, runId, existingBlockers) {
+  const reviewPrefix = `${reviewResult.artifactId}:`;
   const entries = [];
+
+  for (const blocker of existingBlockers ?? []) {
+    if (typeof blocker?.source === "string" && !blocker.source.startsWith(reviewPrefix)) {
+      entries.push({ ...blocker });
+    }
+  }
 
   for (const finding of reviewResult.payload.findings.blocker) {
     entries.push({
