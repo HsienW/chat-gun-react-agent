@@ -55,12 +55,12 @@ interface MemoryStorePort {
 | `InMemoryStoreAdapter` | deterministic tests | 否（LangGraph `InMemoryStore`） |
 | `PostgresStoreAdapter` | production | 是（LangGraph `PostgresStore` 1.0.5，`@langchain/langgraph-checkpoint-postgres/store`） |
 
-- `PostgresStore` 的 JS package/module 路徑已定案為 `import { PostgresStore } from "@langchain/langgraph-checkpoint-postgres/store"`（1.0.5 提供 `./store` subpath）；採用 ADR 候選矩陣（`@langchain/langgraph` 1.4.14／checkpoint 1.1.5／checkpoint-postgres 1.0.5／core 1.2.9），精確鎖版由 T0 驗證後以 lockfile 完成。
+- `PostgresStore` 的 JS package/module 路徑已定案為 `import { PostgresStore } from "@langchain/langgraph-checkpoint-postgres/store"`（1.0.5 提供 `./store` subpath）；採用 ADR 候選矩陣（`@langchain/langgraph` 1.4.14／checkpoint 1.1.5／checkpoint-postgres 1.0.5／core 1.2.10），精確鎖版由 T0 驗證後以 lockfile 完成。
 - 兩者皆實作同一 `MemoryStorePort`；test 注入 InMemory，production 注入 Postgres。
 
 ### T0 dependency upgrade compatibility spike（hard gate）
 
-首次 T0（0.2.74）已以 hard gate 失敗（相容 PostgreSQL adapter 只 export `PostgresSaver`，無 `PostgresStore`）。ADR 定案改為 **dependency upgrade compatibility spike**，以候選矩陣（`@langchain/langgraph` 1.4.14／checkpoint 1.1.5／checkpoint-postgres 1.0.5／core 1.2.9／cli 1.4.5／zod ^3.25.32）＋真實 PostgreSQL 驗證：
+首次 T0（0.2.74）已以 hard gate 失敗（相容 PostgreSQL adapter 只 export `PostgresSaver`，無 `PostgresStore`）。ADR 定案改為 **dependency upgrade compatibility spike**，以候選矩陣（`@langchain/langgraph` 1.4.14／checkpoint 1.1.5／checkpoint-postgres 1.0.5／core 1.2.10／cli 1.4.5／zod ^3.25.32）＋真實 PostgreSQL 驗證：
 
 - dependency 安裝與單一 checkpoint 版本（無雙 checkpoint/core 型別與 runtime 不一致）
 - `PostgresStore.setup()` 建表與重複執行安全性（不新增 project migration）
@@ -70,9 +70,10 @@ interface MemoryStorePort {
 - TTL/expiry 行為（Store 原生 expiry + Governance 層過濾 defense-in-depth）
 - tenant/scope isolation（同 namespace 不同 tenant 不得互相可見——governance 層隔離，非依賴 DB namespace）
 - atomic CAS 可行方案（adapter 原生 conditional put，否則單一寫入 transaction）
-- 既有 graph compile、streaming、checkpoint/resume、tool calling 全量回歸
+- 既有 graph compile、streaming、checkpoint/resume、tool calling 全量回歸（升級引發的型別／compile 斷裂，依 ADR「相容性修補授權」可做有界修補、行為語意不變；語意／runtime 契約斷裂仍回報 ADR）
+- tool-calling cancellation 契約：pre-aborted signal 的 `tool().invoke()` 立即 settle（resolve 為 wrapped 結構化 `cancelled` 結果，非 reject `AbortError`；見 ADR「canonical cancellation outcome」）；既有 weather cancellation 回歸通過（core 1.2.10；未修復則走 ADR dependency patch fallback）
 
-**判定**：任一步不通過 → 停止並回報 ADR，不得靜默改成自建 repository 或降級至 `PostgresSaver`。X0 記錄為「僅完成 InMemoryStore smoke；PostgresStore 未驗證；Decision Record 遺失」。
+**判定**：除 ADR「相容性修補授權」明訂的型別／compile 層級修補，與 ADR「tool-calling cancellation runtime 斷裂的處置」明訂的版本升級（core 1.2.10）／dependency patch 外，任一步不通過 → 停止並回報 ADR，不得靜默改成自建 repository 或降級至 `PostgresSaver`。X0 記錄為「僅完成 InMemoryStore smoke；PostgresStore 未驗證；Decision Record 遺失」。
 
 ## 核心模型
 
