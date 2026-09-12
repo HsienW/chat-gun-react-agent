@@ -28,7 +28,7 @@ X7 已提供量化的 Context Budgeting、優先序組裝與壓縮；X8.7 提供
 
 ### 架構決策（本提案已凍結，勿再當作開放疑問）
 
-**決策 1 — 儲存媒介**：採 LangGraph **BaseStore 邊界**，由 project-owned **`MemoryStorePort`／Memory Governance Service** 封裝，不直接裸露 BaseStore。production adapter 採 **`PostgresStore`**；**`InMemoryStore` 僅供 deterministic tests**。首次 T0 compatibility spike（0.2.74）已以 hard gate 失敗：相容的 PostgreSQL adapter 只 export `PostgresSaver`，沒有 `PostgresStore`。CCR 已仲裁凍結 **升級整組 LangGraph persistence dependencies** 至共同支援 `PostgresStore` 的版本組合（詳見 `docs/decisions/production-memory-store-boundary.md` 的 T0 候選矩陣），並把原 T0 改為 **dependency upgrade compatibility spike** 作為新 hard gate：以候選矩陣（`@langchain/langgraph` 1.4.14／checkpoint 1.1.5／checkpoint-postgres 1.0.5／core 1.2.9）＋真實 PostgreSQL 驗證 dependency 安裝與單一 checkpoint 版本、`PostgresStore.setup()`、CRUD、跨 Thread、process restart、TTL、atomic CAS 與既有 graph/checkpoint/resume/tool-calling 全量回歸。X0 記錄為「僅完成 InMemoryStore smoke；PostgresStore 未驗證；Decision Record 遺失」，不得宣稱 production native Store boundary 已完成。所有讀寫刪除仍須經 X8.7 `authorize(ResourceRef)`；namespace 不得視為安全邊界。**spike 不通過 → 停止並回報 ADR，不得靜默改成自建 repository 或降級至 `PostgresSaver`。**
+**決策 1 — 儲存媒介**：採 LangGraph **BaseStore 邊界**，由 project-owned **`MemoryStorePort`／Memory Governance Service** 封裝，不直接裸露 BaseStore。production adapter 採 **`PostgresStore`**；**`InMemoryStore` 僅供 deterministic tests**。首次 T0 compatibility spike（0.2.74）已以 hard gate 失敗：相容的 PostgreSQL adapter 只 export `PostgresSaver`，沒有 `PostgresStore`。CCR 已仲裁凍結 **升級整組 LangGraph persistence dependencies** 至共同支援 `PostgresStore` 的版本組合（詳見 `docs/decisions/production-memory-store-boundary.md` 的 T0 候選矩陣），並把原 T0 改為 **dependency upgrade compatibility spike** 作為新 hard gate：以候選矩陣（`@langchain/langgraph` 1.4.14／checkpoint 1.1.5／checkpoint-postgres 1.0.5／core 1.2.10）＋真實 PostgreSQL 驗證 dependency 安裝與單一 checkpoint 版本、`PostgresStore.setup()`、CRUD、跨 Thread、process restart、TTL、atomic CAS 與既有 graph/checkpoint/resume/tool-calling 全量回歸。X0 記錄為「僅完成 InMemoryStore smoke；PostgresStore 未驗證；Decision Record 遺失」，不得宣稱 production native Store boundary 已完成。所有讀寫刪除仍須經 X8.7 `authorize(ResourceRef)`；namespace 不得視為安全邊界。**spike 不通過 → 停止並回報 ADR，不得靜默改成自建 repository 或降級至 `PostgresSaver`；例外僅限 (1) ADR「相容性修補授權」明訂的型別／compile 層級修補（行為不變），與 (2) ADR「tool-calling cancellation runtime 斷裂的處置」明訂的 core 1.2.10 版本升級／dependency patch fallback。**
 
 **決策 2 — 整合邊界**：採「**自動讀取＋政策式寫入**」，**X10.1 不提供 planner-controlled memory Tool**。
 
@@ -133,7 +133,8 @@ X10.1 吸收 Claude Code 記憶子系統（Session／Private／Project／Team Me
 
 | 風險 | 緩解 |
 |------|------|
-| **大版本升級（0.x → 1.x）破壞既有 graph／checkpoint／resume／tool calling，或 `PostgresStore` 1.0.5 的 CAS／TTL／migration 語意與設計不符** | dependency upgrade compatibility spike 為 hard gate（含全量回歸）；不通過 → 停止並回報 ADR，不得靜默改自建 repository 或降級至 `PostgresSaver` |
+| **大版本升級（0.x → 1.x）破壞既有 graph／checkpoint／resume／tool calling，或 `PostgresStore` 1.0.5 的 CAS／TTL／migration 語意與設計不符** | dependency upgrade compatibility spike 為 hard gate（含全量回歸）；不通過 → 停止並回報 ADR，不得靜默改自建 repository 或降級至 `PostgresSaver`；唯一例外為 ADR「相容性修補授權」的型別／compile 層級修補（行為不變），語意／runtime 斷裂仍回報 ADR |
+| **`@langchain/core` 1.2.9 `tool()` 對 pre-aborted signal 永久 pending（cancellation runtime 斷裂）** | core 升級至 1.2.10 且 weather cancellation 回歸為 hard-gate 檢查；未修復則採 ADR 核准的 dependency-level patch fallback，不得 application workaround／放寬測試 |
 | X0「native Store boundary 已完成」被誤認 | 本提案明確標記 X0 缺口，design/spec 不得宣稱 production Store boundary 已完成 |
 | 以 namespace 當安全邊界導致跨 tenant 洩漏 | Governance Service 在 Store I/O 前執行 X8.7 `authorize()`；spec 有跨 tenant deny Scenario |
 | 寫入失敗連帶污染已成功回答 | 寫入為非阻斷後寫；失敗僅可觀測 + idempotency key 重試，不改 user-visible 結果 |

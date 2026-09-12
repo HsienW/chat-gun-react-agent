@@ -8,9 +8,9 @@
 
 ### Task 0.1：升級 LangGraph persistence dependencies 至候選矩陣
 
-- [ ] 依 ADR 候選矩陣升級 `backend/package.json` 與 lockfile：`@langchain/langgraph` 1.4.14、`@langchain/langgraph-checkpoint` 1.1.5、`@langchain/langgraph-checkpoint-postgres` 1.0.5、`@langchain/core` 1.2.9、`@langchain/langgraph-cli` 1.4.5、`zod` ^3.25.32（保留 Zod 3）
-- [ ] 驗證 dependency 安裝成功且為**單一 checkpoint 版本**（無雙 checkpoint/core 型別與 runtime 不一致）
-- [ ] 確認 `import { PostgresStore } from "@langchain/langgraph-checkpoint-postgres/store"` 的 `./store` subpath 可用
+- [x] 依 ADR 候選矩陣升級 `backend/package.json` 與 lockfile：`@langchain/langgraph` 1.4.14、`@langchain/langgraph-checkpoint` 1.1.5、`@langchain/langgraph-checkpoint-postgres` 1.0.5、`@langchain/core` 1.2.10、`@langchain/langgraph-cli` 1.4.5、`zod` ^3.25.32（保留 Zod 3）
+- [x] 驗證 dependency 安裝成功且為**單一 checkpoint 版本**（無雙 checkpoint/core 型別與 runtime 不一致）
+- [x] 確認 `import { PostgresStore } from "@langchain/langgraph-checkpoint-postgres/store"` 的 `./store` subpath 可用
 
 **驗證：** `cd backend && npm install` 成功；`npm ls @langchain/langgraph @langchain/langgraph-checkpoint @langchain/langgraph-checkpoint-postgres @langchain/core` 顯示單一版本。
 
@@ -29,13 +29,19 @@
 
 ### Task 0.3：既有 LangGraph runtime 全量回歸（升級相容性）
 
-- [ ] 驗證既有 graph compile 全量通過
-- [ ] 驗證 streaming 行為不變
-- [ ] 驗證 checkpoint/resume 不變
-- [ ] 驗證 tool calling 不變
-- [ ] 驗證既有 test 全量通過（含 context／authorization／provenance 回歸）
+> 0.x → 1.x 大版本升級可能使既有 runtime 產生**型別／compile 斷裂**（例：`message-normalization.ts` 的 `FunctionCallBlock` type predicate 在 LangChain Core 1.2.9 下 TS2677）。ADR 已明確授權**有界的 LangChain 1.x compatibility remediation**：僅限修正升級引發的型別／compile 斷裂、保持行為語意不變、不觸及 X7／X8.7／X8.9 契約與 `src/memory/` 既有 Tasks 語意；禁止以 `as any`／硬映射掩蓋型別不一致，且出現語意／runtime 契約斷裂仍視為 hard gate 失敗並回報 ADR（詳見 `docs/decisions/production-memory-store-boundary.md`「相容性修補授權」）。
+>
+> 此外，T0 全量回歸已揭露 `@langchain/core@1.2.9` 的 `tool()` wrapper 對 pre-aborted signal 永久 pending（tool-calling cancellation runtime 斷裂）。ADR 已裁定**版本優先**：候選矩陣 `@langchain/core` 升級至 1.2.10 並以 weather cancellation 回歸為 hard-gate 檢查；若未修復，採 ADR 核准的**有界 dependency-level patch**（`patch-package`／overrides，僅修 pre-aborted-signal 路徑：resolve wrapped 結構化 `cancelled` 結果，不得入口 reject `AbortError`），不得 application workaround、放寬測試 timeout/assertion、降級 `PostgresSaver` 或自建 repository（詳見 ADR「tool-calling cancellation runtime 斷裂的處置」）。
 
-**驗證：** `cd backend && npm run lint && npm run test && npm run build` 全綠。
+- [x] 型別／compile 相容性修補：僅修正升級引發的既有型別斷裂（含 `message-normalization.ts` type predicate 對齊 LangChain 1.x 官方 content block 型別），行為語意不變，不擴散 diff
+- [x] 驗證既有 graph compile 全量通過
+- [x] 驗證 streaming 行為不變
+- [x] 驗證 checkpoint/resume 不變
+- [x] 驗證 tool calling 不變
+- [x] 驗證 tool-calling cancellation 契約：pre-aborted signal 的 `tool().invoke()` 立即 settle 且 resolve 為 wrapped 結構化 `cancelled` 結果（不得 reject `AbortError`；見 ADR「canonical cancellation outcome」）；既有 weather cancellation 回歸通過（升級至 core 1.2.10；未修復則走 ADR dependency patch fallback）
+- [x] 驗證既有 test 全量通過（含 context／authorization／provenance 回歸；行為回歸測試 MUST 證明修補未改變行為）
+
+**驗證：** `cd backend && npm run lint && npm run test && npm run build` 全綠；型別修補僅限型別層級、weather cancellation 回歸通過（core 1.2.10 或 dependency patch 後）。
 
 ---
 
